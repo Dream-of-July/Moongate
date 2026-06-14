@@ -2,35 +2,48 @@
 import PackageDescription
 
 // GUI（SwiftUI/AppKit/WebKit）仅 macOS；Windows 上只构建核心库与 CLI。
+// 0.4 仅发布电脑端（macOS + Windows）：iOS/Android 手机端不在此包内。
+var packageProducts: [Product] = [
+    .library(name: "MoongateMobileCore", targets: ["MoongateMobileCore"]),
+    .executable(name: "moongate-cli", targets: ["moongate-cli"]),
+]
+
 var packageTargets: [Target] = [
+    // 共享纯契约核心：不得依赖桌面 Process/Homebrew/AppKit/Windows 实现。
+    .target(name: "MoongateMobileCore", path: "Sources/MoongateMobileCore"),
     // 核心逻辑：链接嗅探 + yt-dlp 封装 + 翻译 + 烧录，可被 App 和 CLI 共用
-    .target(name: "VDLCore", path: "Sources/VDLCore"),
+    .target(name: "MoongateCore", dependencies: ["MoongateMobileCore"], path: "Sources/MoongateCore"),
     // 命令行工具：跨平台（macOS / Windows），不开 GUI 也能走全流程
     .executableTarget(
-        name: "vdl-cli",
-        dependencies: ["VDLCore"],
-        path: "Sources/vdl-cli"
+        name: "moongate-cli",
+        dependencies: ["MoongateCore"],
+        path: "Sources/moongate-cli"
     ),
     .testTarget(
-        name: "VDLCoreTests",
-        dependencies: ["VDLCore"],
-        path: "Tests/VDLCoreTests"
+        name: "MoongateCoreTests",
+        dependencies: ["MoongateCore", "MoongateMobileCore"],
+        path: "Tests/MoongateCoreTests"
     ),
 ]
 
-#if !os(Windows)
+#if os(macOS)
+packageProducts.append(
+    .executable(name: "Moongate", targets: ["Moongate"])
+)
+
 packageTargets.append(
     // SwiftUI 图形界面 App（仅 macOS）
     .executableTarget(
-        name: "VideoDownloader",
-        dependencies: ["VDLCore"],
-        path: "Sources/VideoDownloader"
+        name: "Moongate",
+        dependencies: ["MoongateCore"],
+        path: "Sources/Moongate"
     )
 )
 #endif
 
 let package = Package(
-    name: "VideoDownloader",
+    name: "Moongate",
     platforms: [.macOS(.v14)],
+    products: packageProducts,
     targets: packageTargets
 )

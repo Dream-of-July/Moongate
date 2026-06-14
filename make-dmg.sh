@@ -4,13 +4,14 @@
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
-APP_NAME="视频下载器"
-APP="$HOME/Applications/$APP_NAME.app"
+APP_NAME="月之门"
+# build.sh 把 App 装到 /Applications，这里必须从同一位置取，否则 cp 找不到文件。
+APP="/Applications/$APP_NAME.app"
 OUT="${1:-$HOME/Downloads/$APP_NAME.dmg}"
 
 "$PROJ_DIR/build.sh"
 
-STAGING="$(mktemp -d /tmp/vdl-dmg-XXXXXX)"
+STAGING="$(mktemp -d /tmp/moongate-dmg-XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT
 
 cp -R "$APP" "$STAGING/"
