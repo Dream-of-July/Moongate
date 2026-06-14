@@ -1,12 +1,29 @@
-# 视频下载器
+# 月之门 · Moongate
 
-macOS 原生 App（SwiftUI），类似 Downie：粘贴视频链接 → 解析出清晰度与字幕选项 → 选择后下载到 `~/Downloads`。
+**月之门**：通向视频、字幕与本地收藏的入口。
+
+> 关于名称：本产品于 0.4 版本正式定名为「月之门」，英文标识 `Moongate`。
+> Bundle 标识 `com.moongate.app`，应用安装为 `月之门.app`。
+
+当前可说明的桌面版本是 macOS / Windows 原生 App：粘贴视频链接 → 解析清晰度与字幕 → 下载、（可选）AI 总结 / 翻译 / 烧录字幕 → 保存到本地。
 
 ## 工作方式
 
 1. **解析链接**：yt-dlp 原生支持的链接（YouTube、Vimeo、B 站、直链 mp4 等）直接解析；不支持的网页会自动嗅探页面里内嵌的视频（og:video、`<video>` 标签、YouTube/Vimeo iframe、`data-videoid` 等），列出候选让你选。
-2. **选择**：清晰度按档位列出（含估算大小），字幕区分真实字幕与自动生成字幕。
-3. **下载**：调用系统里的 yt-dlp + ffmpeg 完成下载、合并与字幕转换（srt）。
+2. **选择**：清晰度按档位列出（含估算大小、HDR 可用标记），字幕区分真实字幕与自动生成字幕；可选输出格式（保持源 / 转码到 MP4/MKV）。
+3. **AI 总结（可选）**：下载前用 AI 概述视频内容（优先字幕、回退简介），避免下错视频。
+4. **下载**：调用系统里的 yt-dlp + ffmpeg 完成下载、合并、（可选）字幕翻译与烧录、转码。
+
+## 主要功能
+
+- **AI 视频总结**：选片页一键生成中文内容概述，数据源优先字幕、无字幕时用视频简介。
+- **HDR / 杜比视界下载**：识别 HDR 片源，选片页可开「HDR」开关；HDR 默认 mkv 封装保真。
+- **格式转码**：可把下载结果转码 / remux 到 MP4(H.264/H.265) 或 MKV；HDR 转 H.265 用 10-bit 保留 HDR，转 H.264 会 tonemap 成 SDR 并提示。
+- **HDR 保真烧字幕**：在 HDR 画面上烧录中文字幕（libx265 10-bit + HDR10 元数据透传），字幕本身为 SDR 颜色。
+- **字幕翻译**：Anthropic / OpenAI 兼容 API，或 Apple 本地引擎（见下）。
+- **统一 AI 设置**：翻译与总结共享一份默认 AI 配置，各自可「跟随默认」或单独配置。
+- **未登录引导**：检测到 YouTube / B 站等需要登录时，失败页给「去登录」按钮，弹站点登录页保存 cookies 后重试。
+- **远程更新**：设置 → 更新可检查新版，从 GitHub Releases 全自动下载安装并重启。
 
 ## 依赖
 
@@ -17,36 +34,64 @@ macOS 原生 App（SwiftUI），类似 Downie：粘贴视频链接 → 解析出
 
 ## 构建安装
 
+macOS App：
+
 ```sh
 ./build.sh
 ```
 
-编译产物放在 `~/Library/Caches/vdl-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `~/Applications/视频下载器.app`。
+编译产物放在 `~/Library/Caches/moongate-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
+
+Windows 安装包：
+
+```sh
+./build-windows.sh
+```
+
+移动端脚本和工程只用于当前开发验证，不代表发布构建；状态见下方「移动端状态」。
 
 ## 命令行测试工具
 
 不开 GUI 也能验证全流程：
 
 ```sh
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli resolve <url>
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli analyze <url>
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli download <url> --video-id <id> --format <formatID> [--subs en] [--auto-subs zh-Hans] [--dest 路径]
+swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli resolve <url>
+swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli analyze <url>
+swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli download <url> --video-id <id> --format <formatID> [--subs en] [--auto-subs zh-Hans] [--dest 路径]
 ```
 
-## 字幕翻译 API
+## AI 设置（翻译与总结）
 
-设置页支持两种接口协议，模型名可以先留空；填好服务地址和凭证后，点「拉取模型」从服务端 `/v1/models` 取真实可用列表，再从「选择模型」里选（拉不到时也可手动填写）：
+设置页把翻译与总结统一为「AI 设置」：先配置一份默认 AI 引擎，翻译和总结默认跟随，也可各自单独配置。
+
+云端 API 引擎（模型名可先留空，填好地址和凭证后点「拉取模型」从服务端 `/v1/models` 取真实列表再选）：
 
 - `Anthropic-compatible`：用于 Anthropic 官方 API、公司 Claude 网关，以及公司网关把 Anthropic 协议映射到 DeepSeek 等模型的场景。
 - `OpenAI-compatible`：用于 OpenAI Responses API。服务地址填 `https://api.openai.com`，凭证填 OpenAI API key。
 
+Apple 引擎（按系统能力运行前检测，不需要填地址/凭证）：
+
+- Apple Translation（低延迟 / 高保真）：用系统翻译框架，仅翻译。
+- Apple Intelligence（本地 Foundation 模型）：可翻译，也可做总结。
+- Apple PCC / Cloud Pro：受系统版本与资格限制，当前展示为不可用并说明原因，不假装可用。
+
+> 总结需要「文本生成」能力：仅 Apple Translation 的引擎不能做总结，会在设置里提示改用云端 API 或本地 Apple Intelligence。
+
 CLI 也可以临时覆盖：
 
 ```sh
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli ping-llm --provider anthropic --base "$ANTHROPIC_BASE_URL" --model claude-haiku-4-5 --token "$ANTHROPIC_AUTH_TOKEN"
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli ping-llm --provider anthropic --base "$ANTHROPIC_BASE_URL" --model deepseek-v4-flash --token "$ANTHROPIC_AUTH_TOKEN"
-swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli ping-llm --provider openai --base https://api.openai.com --model gpt-5.4 --token "$OPENAI_API_KEY"
+swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm --provider anthropic --base "$ANTHROPIC_BASE_URL" --model claude-haiku-4-5 --token "$ANTHROPIC_AUTH_TOKEN"
+swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm --provider openai --base https://api.openai.com --model gpt-5.4 --token "$OPENAI_API_KEY"
 ```
+
+## 更新
+
+设置 → 更新可检查并安装新版：
+
+- 来源是本仓库的 GitHub Releases（公开，匿名访问）；选取含 macOS DMG 资产、版本号高于当前的最新发布。
+- 全自动：App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
+- 自下载的 DMG 不带隔离属性，ad-hoc 签名也能替换；失败时提供「去 GitHub 下载」兜底。
+- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.4.0.dmg`）。
 
 ## 性能与队列
 
@@ -57,15 +102,16 @@ swift run --scratch-path ~/Library/Caches/vdl-build vdl-cli ping-llm --provider 
 ## Windows
 
 Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 + NSIS 安装器），
-在 macOS 上执行 `./build-windows.sh` 即可产出 `视频下载器-Windows-Setup.exe`
+在 macOS 上执行 `./build-windows.sh` 即可产出 `月之门-Windows-Setup.exe`
 （双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
 详见 [docs/WINDOWS.md](docs/WINDOWS.md)。**GUI 尚未在真实 Windows 上运行验证。**
 
 ## 目录结构
 
-- `Sources/VDLCore/` — 核心：契约类型（`Models.swift`）、yt-dlp 封装（`Engine.swift`）、页面嗅探（`PageSniffer.swift`）
-- `Sources/VideoDownloader/` — SwiftUI 界面
-- `Sources/vdl-cli/` — 命令行测试工具
+- `Sources/MoongateCore/` — 核心：契约类型（`Models.swift`）、yt-dlp 封装（`Engine.swift`）、页面嗅探（`PageSniffer.swift`）、翻译/总结（`Translator.swift`）、字幕烧录（`Burner.swift`）、转码（`Transcoder.swift`）、更新检查（`UpdateChecker.swift`）
+- `Sources/Moongate/` — SwiftUI 界面（含 `SummaryView.swift` AI 总结卡片、`UpdateService.swift` 远程更新）
+- `Sources/moongate-cli/` — 命令行测试工具
+- `Sources/MoongateMobileCore/` — 共享纯契约核心，不依赖桌面 yt-dlp/ffmpeg/Process 实现
 - `windows/` — Windows 版（C# 核心库 + 单测、WPF 界面、NSIS 安装脚本）
 
 ## 已知限制

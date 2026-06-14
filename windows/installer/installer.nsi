@@ -1,4 +1,4 @@
-; 视频下载器 Windows 安装器（NSIS，在 macOS 上用 brew 的 makensis 交叉构建）
+; 月之门 Windows 安装器（NSIS，在 macOS 上用 brew 的 makensis 交叉构建）
 ; 设计目标：双击即装、无需管理员权限（装到当前用户目录）、开始菜单/桌面快捷方式、可卸载。
 ; 构建参数（由 build-windows.sh 传入）：
 ;   /DPUBLISH_DIR=<dotnet publish 输出目录>  /DOUTFILE=<安装器输出路径>  /DAPPVERSION=<版本>
@@ -8,12 +8,12 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "1.0.0"
+  !define APPVERSION "0.4.0"
 !endif
 
-!define APPNAME "视频下载器"
-!define EXENAME "VideoDownloader.exe"
-!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\VideoDownloader"
+!define APPNAME "月之门"
+!define EXENAME "Moongate.exe"
+!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Moongate"
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
@@ -64,6 +64,6 @@ Section "Uninstall"
   Delete "$DESKTOP\${APPNAME}.lnk"
   RMDir /r "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTKEY}"
-  ; 注意：刻意保留 %LOCALAPPDATA%\VideoDownloader（下载的 yt-dlp/ffmpeg 与设置），
+  ; 注意：刻意保留 %LOCALAPPDATA%\Moongate（下载的 yt-dlp/ffmpeg 与设置），
   ; 重装无需重新下载依赖；用户想彻底清理可手动删除该目录。
 SectionEnd

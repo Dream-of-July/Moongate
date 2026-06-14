@@ -6,9 +6,9 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
-PUBLISH_DIR="$HOME/Library/Caches/vdl-build/win-publish"
-OUT="${1:-$HOME/Downloads/视频下载器-Windows-Setup.exe}"
-VERSION="0.3.0"
+PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
+OUT="${1:-$HOME/Downloads/月之门-Windows-Setup.exe}"
+VERSION="0.4.0"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
@@ -17,7 +17,7 @@ dotnet test "$WIN_DIR" --nologo -v quiet
 
 echo "==> dotnet publish win-x64（自包含）"
 rm -rf "$PUBLISH_DIR"
-dotnet publish "$WIN_DIR/VdlApp/VdlApp.csproj" -c Release -r win-x64 \
+dotnet publish "$WIN_DIR/MoongateApp/MoongateApp.csproj" -c Release -r win-x64 \
     --self-contained true \
     -p:EnableWindowsTargeting=true \
     -p:Version="$VERSION" \
