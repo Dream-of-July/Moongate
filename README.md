@@ -91,7 +91,7 @@ swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --prov
 - 来源是本仓库的 GitHub Releases（公开，匿名访问）；选取含 macOS DMG 资产、版本号高于当前的最新发布。
 - 全自动：App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
 - 自下载的 DMG 不带隔离属性，ad-hoc 签名也能替换；失败时提供「去 GitHub 下载」兜底。
-- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.5.0.dmg`）。
+- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.6.0.dmg`）。
 
 ## 性能与队列
 
@@ -102,7 +102,7 @@ swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --prov
 ## Windows
 
 Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 + NSIS 安装器），
-在 macOS 上执行 `./build-windows.sh` 即可产出 `月之门-Windows-Setup-v0.5.0.exe`
+在 macOS 上执行 `./build-windows.sh` 即可产出 `月之门-Windows-Setup-v0.6.0.exe`
 （同时生成 `.sha256` 校验文件；
 双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
 详见 [docs/WINDOWS.md](docs/WINDOWS.md)。**GUI 尚未在真实 Windows 上运行验证。**

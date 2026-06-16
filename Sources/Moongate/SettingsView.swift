@@ -780,7 +780,7 @@ struct SettingsView: View {
                         .monospacedDigit()
                 }
             }
-            Text("超出上限的任务显示「排队中」自动等待；暂停一个任务会把空位让给下一个。压制很吃 CPU，并行过多会互相拖慢。保存后即对新开始的阶段生效。")
+            Text("超出上限的任务显示「排队中」自动等待；暂停一个任务会把空位让给下一个。遇到兼容性问题时，实际耗时可能比预计更长。保存后即对新开始的阶段生效。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -919,11 +919,11 @@ struct SettingsView: View {
     private var encodeBackendHint: String {
         switch draft.encodeBackend {
         case .auto:
-            return "优先用 Mac 的硬件媒体引擎编码：4K 快数倍、几乎不占 CPU、不发热；硬件不可用时自动回退软件。硬件编码时可同时压制更多任务。"
+            return "优先用 Mac 的硬件媒体引擎编码。遇到源文件或系统兼容性问题时，实际耗时可能比预计更长。"
         case .hardware:
-            return "强制使用硬件媒体引擎（VideoToolbox）。最快最省电；个别老机型不支持时仍会回退软件。"
+            return "优先使用硬件媒体引擎（VideoToolbox）。个别老机型或特殊格式可能需要兼容处理，实际耗时可能更长。"
         case .software:
-            return "强制软件编码（libx265/libx264）。同等体积画质最高，但 4K 明显更慢、吃满 CPU、发热明显。追求极致画质时选它。"
+            return "使用兼容性更稳定的编码路径。同等体积画质更稳，但 4K 和 HDR 任务通常更慢。"
         }
     }
 

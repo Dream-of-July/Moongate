@@ -115,7 +115,12 @@ public sealed class QueueItemViewModel : ObservableObject
         {
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             ItemStageKind.Queued => item.StatusText ?? Loc.S("L.Status.Queued"),
-            ItemStageKind.Downloading when item.IsPostDownloadProcessing => Loc.S("L.Status.Processing"),
+            ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Transcoding =>
+                item.Progress is { } p
+                    ? Loc.F("L.Status.TranscodingFmt", (int)(p * 100))
+                    : Loc.S("L.Status.Transcoding"),
+            ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Generic ||
+                                           item.IsPostDownloadProcessing => Loc.S("L.Status.Processing"),
             ItemStageKind.Downloading => item.Progress is { } p
                 ? Loc.F("L.Status.DownloadingFmt", (int)(p * 100))
                 : Loc.S("L.Status.Downloading"),

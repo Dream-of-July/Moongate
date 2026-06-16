@@ -83,6 +83,19 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertNil(UpdateChecker.latestMacUpdate(fromReleasesJSON: Data("not json".utf8), currentVersion: SemVer("0.4.0")!))
     }
 
+    func testUpdateErrorsUseUpdateSpecificCopy() throws {
+        let error = MoongateError.updateFailed("更新检查过于频繁（GitHub 限流），请稍后再试。")
+        XCTAssertEqual(error.errorDescription, "检查更新失败：更新检查过于频繁（GitHub 限流），请稍后再试。")
+        XCTAssertFalse(error.errorDescription?.contains("解析视频信息失败") == true)
+
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateCore")
+            .appendingPathComponent("UpdateChecker.swift"))
+        XCTAssertFalse(source.contains("MoongateError.analyzeFailed"))
+        XCTAssertTrue(source.contains("MoongateError.updateFailed"))
+    }
+
     func testInstallScriptWaitsForExitThenReplacesAndReopens() {
         let script = UpdateChecker.installScript(
             mountedAppPath: "/Volumes/月之门/月之门.app",

@@ -7,6 +7,7 @@ public enum MoongateError: LocalizedError, Sendable {
     case binaryNotFound(String)
     case sniffFailed(String)
     case analyzeFailed(String)
+    case updateFailed(String)
     case downloadFailed(String)
     /// 站点风控/会员限制，需要用户在 App 内登录该站点后重试。关联值为站点 host（如 "youtube.com"）。
     case loginRequired(String)
@@ -22,6 +23,8 @@ public enum MoongateError: LocalizedError, Sendable {
             return "没有在这个页面里找到可下载的视频。\(reason)"
         case .analyzeFailed(let reason):
             return "解析视频信息失败：\(reason)"
+        case .updateFailed(let reason):
+            return "检查更新失败：\(reason)"
         case .downloadFailed(let reason):
             return "下载失败：\(reason)"
         case .loginRequired(let site):

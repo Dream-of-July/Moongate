@@ -10,7 +10,28 @@ namespace Moongate.Core;
 public sealed class Transcoder
 {
     /// <summary>转码计划：决定用 remux 还是转码、目标容器、是否丢 HDR。</summary>
-    public sealed record Plan(IReadOnlyList<string> FfmpegArgs, string OutputExtension, bool IsRemux, bool DropsHdr);
+    public sealed record Plan
+    {
+        public IReadOnlyList<string> FfmpegArgs { get; }
+        public string OutputExtension { get; }
+        public bool IsRemux { get; }
+        public bool DropsHdr { get; }
+        public PipelineAccelerationReport AccelerationReport { get; }
+
+        public Plan(
+            IReadOnlyList<string> ffmpegArgs,
+            string outputExtension,
+            bool isRemux,
+            bool dropsHdr,
+            PipelineAccelerationReport? accelerationReport = null)
+        {
+            FfmpegArgs = ffmpegArgs;
+            OutputExtension = outputExtension;
+            IsRemux = isRemux;
+            DropsHdr = dropsHdr;
+            AccelerationReport = accelerationReport ?? PipelineAccelerationReport.None;
+        }
+    }
 
     /// <summary>是否需要处理：Original 一律跳过；其余按目标格式决定。</summary>
     public static bool NeedsProcessing(OutputFormat format) => format != OutputFormat.Original;
@@ -57,7 +78,11 @@ public sealed class Transcoder
                         "mp4", true, false);
                 }
                 // 转 H.264：8-bit SDR，HDR 源会丢 HDR（tonemap）。硬件可用时用 *_nvenc/qsv/amf。
-                var h264Args = new List<string> { "-y", "-i", inputPath };
+                var h264Family = HardwareAccelerationPlanner.FamilyForEncoder(hwH264);
+                var h264RequiresCpuVideoFilter = sourceIsHdr;
+                var h264Args = new List<string> { "-y" };
+                h264Args.AddRange(HardwareAccelerationPlanner.InputArgs(h264Family, h264RequiresCpuVideoFilter));
+                h264Args.AddRange(["-i", inputPath]);
                 if (sourceIsHdr)
                 {
                     h264Args.AddRange(["-vf",
@@ -65,7 +90,12 @@ public sealed class Transcoder
                 }
                 h264Args.AddRange(VideoCodecArgs(hwH264, software: ["-c:v", "libx264", "-crf", "20", "-preset", "medium"]));
                 h264Args.AddRange(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]);
-                return new Plan(h264Args, "mp4", false, sourceIsHdr);
+                return new Plan(
+                    h264Args, "mp4", false, sourceIsHdr,
+                    HardwareAccelerationPlanner.Report(
+                        h264Family,
+                        usesHardwareEncode: hwH264 is not null,
+                        requiresCpuVideoFilter: h264RequiresCpuVideoFilter));
 
             case OutputFormat.Mp4H265:
                 if (codec == "h265")
@@ -76,7 +106,11 @@ public sealed class Transcoder
                 }
                 // 转 H.265。硬件 HEVC 可用时优先（HDR 走 main10 + 色彩元数据透传，保 HDR）；
                 // 否则软件 libx265（HDR 用 10-bit hdr-opt）；两者都没有且 HDR 时 tonemap 降级。
-                var h265Args = new List<string> { "-y", "-i", inputPath };
+                var h265Family = HardwareAccelerationPlanner.FamilyForEncoder(hwHevc);
+                var h265RequiresCpuVideoFilter = false;
+                var h265Args = new List<string> { "-y" };
+                h265Args.AddRange(HardwareAccelerationPlanner.InputArgs(h265Family, h265RequiresCpuVideoFilter));
+                h265Args.AddRange(["-i", inputPath]);
                 bool keepsHdr;
                 if (hwHevc is { } hevcEnc)
                 {
@@ -113,7 +147,12 @@ public sealed class Transcoder
                 }
                 h265Args.AddRange(["-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]);
                 h265Args.Add(outputPath);
-                return new Plan(h265Args, "mp4", false, sourceIsHdr && !keepsHdr);
+                return new Plan(
+                    h265Args, "mp4", false, sourceIsHdr && !keepsHdr,
+                    HardwareAccelerationPlanner.Report(
+                        h265Family,
+                        usesHardwareEncode: hwHevc is not null,
+                        requiresCpuVideoFilter: h265RequiresCpuVideoFilter));
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(format));

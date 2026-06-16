@@ -264,6 +264,37 @@ final class HDRSupportTests: XCTestCase {
         XCTAssertFalse(plan.ffmpegArgs.contains("libx265"))
     }
 
+    func testTranscodeH265HardwareUsesVideotoolboxInputAccelerationWhenFilterless() {
+        let plan = Transcoder.plan(
+            format: .mp4H265, inputPath: "in.webm", outputPath: "out.mp4",
+            sourceVCodec: "vp9", sourceIsHDR: false, x265Available: true,
+            backend: .auto, hevcVTAvailable: true, h264VTAvailable: true
+        )
+        let joined = plan.ffmpegArgs.joined(separator: " ")
+        XCTAssertTrue(joined.contains("-hwaccel videotoolbox"))
+        XCTAssertEqual(plan.accelerationReport.family, .videoToolbox)
+        XCTAssertTrue(plan.accelerationReport.usesHardwareDecode)
+        XCTAssertTrue(plan.accelerationReport.usesHardwareEncode)
+        XCTAssertNil(plan.accelerationReport.compatibilityNotice)
+    }
+
+    func testTranscodeHDRToH264KeepsCpuTonemapFilterOnCompatibleInputPath() {
+        let plan = Transcoder.plan(
+            format: .mp4H264, inputPath: "in.webm", outputPath: "out.mp4",
+            sourceVCodec: "vp9", sourceIsHDR: true, x265Available: true,
+            backend: .auto, hevcVTAvailable: true, h264VTAvailable: true
+        )
+        let joined = plan.ffmpegArgs.joined(separator: " ")
+        XCTAssertFalse(joined.contains("-hwaccel videotoolbox"))
+        XCTAssertEqual(
+            plan.accelerationReport.compatibilityNotice,
+            PipelineAccelerationReport.compatibilityModeNotice
+        )
+        XCTAssertFalse(
+            PipelineAccelerationReport.compatibilityModeNotice.localizedCaseInsensitiveContains("CPU")
+        )
+    }
+
     func testTranscodeH265HardwareHDRKeepsHDRMain10() {
         let plan = Transcoder.plan(
             format: .mp4H265, inputPath: "in.webm", outputPath: "out.mp4",

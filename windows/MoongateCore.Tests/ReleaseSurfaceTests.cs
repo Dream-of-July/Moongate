@@ -20,18 +20,18 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse050()
+    public void ReleaseVersionSurfacesUse060()
     {
-        Assert.Contains("VERSION=\"0.5.0\"", Read("build-windows.sh"));
-        Assert.Contains("<string>0.5.0</string>", Read("build.sh"));
+        Assert.Contains("VERSION=\"0.6.0\"", Read("build-windows.sh"));
+        Assert.Contains("<string>0.6.0</string>", Read("build.sh"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.5.0", workflow);
-        Assert.Contains("default: 0.5.0", workflow);
+        Assert.Contains("default: v0.6.0", workflow);
+        Assert.Contains("default: 0.6.0", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.5.0\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.6.0\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -88,8 +88,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("月之门-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("月之门-Windows-Setup-v0.5.0.exe", docs);
-        Assert.Contains("月之门-Windows-Setup-v0.5.0.exe", readme);
+        Assert.Contains("月之门-Windows-Setup-v0.6.0.exe", docs);
+        Assert.Contains("月之门-Windows-Setup-v0.6.0.exe", readme);
     }
 
     [Fact]
@@ -107,7 +107,9 @@ public class ReleaseSurfaceTests
     {
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("232", docs);
+        Assert.Contains("241", docs);
+        Assert.DoesNotContain("240", docs);
+        Assert.DoesNotContain("232", docs);
         Assert.DoesNotContain("225", docs);
         Assert.DoesNotContain("217", docs);
         Assert.DoesNotContain("144", docs);

@@ -8,6 +8,7 @@ public enum MoongateErrorKind
     BinaryNotFound,
     SniffFailed,
     AnalyzeFailed,
+    UpdateFailed,
     DownloadFailed,
     /// <summary>站点风控/会员限制，需要用户在 App 内登录该站点后重试。Detail 为站点 host（如 "youtube.com"）。</summary>
     LoginRequired,
@@ -45,6 +46,10 @@ public sealed class MoongateException : Exception
     public static MoongateException AnalyzeFailed(string reason) => new(
         MoongateErrorKind.AnalyzeFailed, reason,
         L10n.T($"解析视频信息失败：{reason}", $"Failed to analyze the video: {reason}"));
+
+    public static MoongateException UpdateFailed(string reason) => new(
+        MoongateErrorKind.UpdateFailed, reason,
+        L10n.T($"检查更新失败：{reason}", $"Update check failed: {reason}"));
 
     public static MoongateException DownloadFailed(string reason) => new(
         MoongateErrorKind.DownloadFailed, reason,

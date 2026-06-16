@@ -67,7 +67,7 @@ struct QueueItemView: View {
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             return item.statusText ?? "排队中…"
         case .downloading:
-            if item.isPostDownloadProcessing { return (item.statusText ?? "处理中") + "…" }
+            if item.isPostDownloadProcessing { return postDownloadProcessingText }
             if let p = item.progress { return "下载中 \(Int(p * 100))%" }
             return "下载中…"
         case .translating:
@@ -82,6 +82,16 @@ struct QueueItemView: View {
             return item.statusText ?? "已取消"
         case .failed(let reason):
             return "失败：\(reason)"
+        }
+    }
+
+    private var postDownloadProcessingText: String {
+        switch item.postDownloadProcessingKind {
+        case .transcoding:
+            if let p = item.progress { return "转码中 \(Int(p * 100))%" }
+            return "转码中…"
+        case .generic, nil:
+            return (item.statusText ?? "处理中") + "…"
         }
     }
 
@@ -125,6 +135,7 @@ struct QueueItemView: View {
         case .queued:
             return "排队进度"
         case .downloading:
+            if item.postDownloadProcessingKind == .transcoding { return "转码进度" }
             return item.isPostDownloadProcessing ? "处理进度" : "下载进度"
         case .translating:
             return "字幕翻译进度"
@@ -149,6 +160,7 @@ struct QueueItemView: View {
         case .queued:
             return item.statusText ?? "排队中"
         case .downloading:
+            if item.postDownloadProcessingKind == .transcoding { return "转码中，进度不确定" }
             return item.isPostDownloadProcessing ? "下载完成，正在处理" : "下载中，进度不确定"
         case .translating:
             return "翻译字幕中，进度不确定"

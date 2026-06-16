@@ -2,11 +2,11 @@ import Foundation
 
 /// 视频编码后端。决定烧录 / 转码时用硬件媒体引擎还是软件编码器。
 public enum EncodeBackend: String, Codable, Sendable, Equatable, CaseIterable {
-    /// 自动：有硬件编码器（VideoToolbox）就用，否则回退软件。日常推荐。
+    /// 自动：优先使用可用的硬件媒体引擎；遇到兼容性问题时走兼容路径。日常推荐。
     case auto
-    /// 强制硬件（VideoToolbox）。最快、最省电、几乎不占 CPU；硬件不可用时回退软件。
+    /// 优先硬件媒体引擎（VideoToolbox）。最快、最省电；特殊格式可能需要兼容处理。
     case hardware
-    /// 强制软件（libx265/libx264）。同体积画质最高，但 4K 明显更慢、吃满 CPU。
+    /// 兼容性更稳定的编码路径。同体积画质更稳，但 4K/HDR 通常更慢。
     case software
 
     public var displayName: String {

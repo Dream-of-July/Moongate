@@ -63,6 +63,28 @@ public class WindowsSettingsSurfaceTests
     }
 
     [Fact]
+    public void WindowsQueueSurfaceShowsTranscodingPercentAndCompatibilityCopy()
+    {
+        var viewModel = Read("windows", "MoongateApp", "QueueItemViewModel.cs");
+        var queue = Read("windows", "MoongateCore", "Queue.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("PostDownloadProcessingKind", queue);
+        Assert.Contains("PostDownloadProcessingKind.Transcoding", queue);
+        Assert.Contains("PostDownloadProcessingKind.Generic", queue);
+        Assert.Contains("ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Transcoding", viewModel);
+        Assert.Contains("L.Status.TranscodingFmt", viewModel);
+        Assert.Contains("L.Status.Transcoding", viewModel);
+        Assert.Contains("x:Key=\"L.Status.TranscodingFmt\"", zh);
+        Assert.Contains("x:Key=\"L.Status.TranscodingFmt\"", en);
+        Assert.Contains("实际耗时可能比预计更长", zh);
+        Assert.Contains("may take longer than expected", en);
+        Assert.DoesNotContain("CPU fallback", zh, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CPU fallback", en, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void WindowsSettingsViewModelPersistsEncodingControls()
     {
         var source = Read("windows", "MoongateApp", "SettingsViewModel.cs");

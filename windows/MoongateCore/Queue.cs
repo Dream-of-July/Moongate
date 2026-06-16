@@ -127,6 +127,13 @@ public sealed record ItemStage(ItemStageKind Kind, string? FailureReason = null)
     public static ItemStage Failed(string reason) => new(ItemStageKind.Failed, reason);
 }
 
+public enum PostDownloadProcessingKind
+{
+    None,
+    Generic,
+    Transcoding,
+}
+
 /// <summary>
 /// 下载队列。每个 QueueItem 是一条「下载 →[翻译]→[烧录]」完整流水线，
 /// 持有独立的 TaskControlToken，可随时独立暂停 / 恢复 / 取消，并发执行互不阻塞；
@@ -160,6 +167,8 @@ public sealed class QueueManager
         /// UI 据此显示「处理中…」而非「下载中…」（避免像卡死）。
         /// </summary>
         public bool IsPostDownloadProcessing { get; internal set; }
+        public PostDownloadProcessingKind PostDownloadProcessingKind { get; internal set; } =
+            PostDownloadProcessingKind.None;
         /// <summary>部分成功：视频已下载但字幕处理失败（Done 态显示「重试字幕处理」按钮）。</summary>
         public bool PartialFailure { get; internal set; }
         /// <summary>本项流水线的控制令牌；Retry 时换新的（旧的已 Cancel）。</summary>
@@ -441,6 +450,7 @@ public sealed class QueueManager
                         item.Progress = null;
                         item.StatusText = null;
                         item.IsPostDownloadProcessing = false;
+                        item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
                     var result = await _engine.DownloadAsync(
                         current.Request, control,
@@ -465,8 +475,9 @@ public sealed class QueueManager
                             {
                                 item.Stage = ItemStage.Downloading;
                                 item.Progress = null;
-                                item.StatusText = L10n.T("正在转码为所选格式…", "Transcoding to chosen format…");
+                                item.StatusText = null;
                                 item.IsPostDownloadProcessing = true;
+                                item.PostDownloadProcessingKind = PostDownloadProcessingKind.Transcoding;
                             });
                             // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
                             var requestedHdrFallback = current.Request.PreferHdr;
@@ -495,6 +506,7 @@ public sealed class QueueManager
                                 item.Progress = null;
                                 item.StatusText = null;
                                 item.IsPostDownloadProcessing = false;
+                                item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                             });
                         }
                     }
@@ -515,6 +527,8 @@ public sealed class QueueManager
                         item.IsPaused = false;
                         item.Progress = null;
                         item.StatusText = L10n.T("已取消", "Cancelled");
+                        item.IsPostDownloadProcessing = false;
+                        item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
                 }
                 else
@@ -526,6 +540,8 @@ public sealed class QueueManager
                         item.IsPaused = false;
                         item.Progress = null;
                         item.StatusText = L10n.T($"失败：{reason}", $"Failed: {reason}");
+                        item.IsPostDownloadProcessing = false;
+                        item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
                 }
                 return;
@@ -572,6 +588,8 @@ public sealed class QueueManager
                         item.Stage = ItemStage.Burning;
                         item.Progress = null;
                         item.StatusText = L10n.T("直接烧录字幕（不翻译）", "Burning subtitle as-is (no translation)");
+                        item.IsPostDownloadProcessing = false;
+                        item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
@@ -641,6 +659,8 @@ public sealed class QueueManager
                         item.Progress = null;
                         item.StatusText = L10n.T("使用视频自带中文字幕，直接烧录（不翻译）",
                             "Built-in Chinese subtitle; burning directly (no translation)");
+                        item.IsPostDownloadProcessing = false;
+                        item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
@@ -690,6 +710,8 @@ public sealed class QueueManager
                     item.Stage = ItemStage.Translating;
                     item.Progress = null;
                     item.StatusText = null;
+                    item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                 });
                 var translationSettings = settings.ForTranslation();
                 var translator = _translatorFactory(translationSettings);
@@ -748,6 +770,8 @@ public sealed class QueueManager
                     item.Stage = ItemStage.Burning;
                     item.Progress = null;
                     item.StatusText = null;
+                    item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                 });
                 var burner = _burnerFactory();
                 var burned = await burner.BurnAsync(
@@ -802,16 +826,19 @@ public sealed class QueueManager
                     }
                     item.Progress = newValue;
                     item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     break;
                 case DownloadProgress.ProgressPhase.Preparing:
                 case DownloadProgress.ProgressPhase.Finished:
                     item.Progress = null;
                     item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     break;
                 case DownloadProgress.ProgressPhase.Processing:
                     // 下载 100% 后的合并/转码：进度不确定，标记为「处理中」避免像卡死。
                     item.Progress = null;
                     item.IsPostDownloadProcessing = true;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.Generic;
                     break;
             }
         });
@@ -833,6 +860,8 @@ public sealed class QueueManager
                 item.StatusText = files.Count == 0
                     ? L10n.T("已取消", "Cancelled")
                     : L10n.T("已取消，视频已保存", "Cancelled; downloaded video kept");
+                item.IsPostDownloadProcessing = false;
+                item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
             return;
         }
@@ -847,6 +876,8 @@ public sealed class QueueManager
                 item.PartialFailure = true;
                 item.StatusText = L10n.T($"视频已下载，字幕{phase}失败：{reason}",
                     $"Video saved; subtitle {phase} failed: {reason}");
+                item.IsPostDownloadProcessing = false;
+                item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
         }
         else
@@ -857,6 +888,8 @@ public sealed class QueueManager
                 item.IsPaused = false;
                 item.Progress = null;
                 item.StatusText = L10n.T($"失败：{reason}", $"Failed: {reason}");
+                item.IsPostDownloadProcessing = false;
+                item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
         }
     }
@@ -869,6 +902,8 @@ public sealed class QueueManager
             item.IsPaused = false;
             item.Progress = null;
             item.PartialFailure = false;
+            item.IsPostDownloadProcessing = false;
+            item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             item.ResultFiles = files.Count == 0 ? item.ResultFiles : files;
             item.StatusText = statusText;
         });
@@ -1017,6 +1052,7 @@ public sealed class QueueManager
             old.IsPaused = false;
             old.Progress = null;
             old.IsPostDownloadProcessing = false;
+            old.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             old.PartialFailure = false;
             old.StatusText = skipDownload ? null : L10n.T("重新下载并处理", "Re-downloading and processing");
             if (!skipDownload) old.ResultFiles = [];

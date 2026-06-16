@@ -237,7 +237,7 @@ public struct FFmpegBurner: SubtitleBurner {
         let aacAudio = ["-c:a", "aac", "-b:a", "192k"]
 
         // 编码器选择：按 后端 / 源编码 / HDR / 是否强制 H.264 决定用硬件还是软件、何种编码。
-        // 硬件（VideoToolbox）几乎不占 CPU、4K 快数倍且不发热；软件（libx265/libx264）同体积画质更高但慢。
+        // 硬件（VideoToolbox）通常更快、更省电；兼容路径同体积画质更稳但更慢。
         let x265Available = Self.encoderAvailable("libx265", ffmpeg: ffmpeg)
         let hevcVTAvailable = Self.encoderAvailable("hevc_videotoolbox", ffmpeg: ffmpeg)
         let h264VTAvailable = Self.encoderAvailable("h264_videotoolbox", ffmpeg: ffmpeg)

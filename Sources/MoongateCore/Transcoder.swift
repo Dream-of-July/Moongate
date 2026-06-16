@@ -15,6 +15,21 @@ public struct Transcoder: Sendable {
         public var outputExtension: String
         public var isRemux: Bool
         public var dropsHDR: Bool
+        public var accelerationReport: PipelineAccelerationReport
+
+        public init(
+            ffmpegArgs: [String],
+            outputExtension: String,
+            isRemux: Bool,
+            dropsHDR: Bool,
+            accelerationReport: PipelineAccelerationReport = .none
+        ) {
+            self.ffmpegArgs = ffmpegArgs
+            self.outputExtension = outputExtension
+            self.isRemux = isRemux
+            self.dropsHDR = dropsHDR
+            self.accelerationReport = accelerationReport
+        }
     }
 
     /// 是否需要处理：original 一律跳过；其余按目标格式决定。
@@ -63,17 +78,35 @@ public struct Transcoder: Sendable {
                 )
             }
             // 转 H.264：8-bit SDR，HDR 源会丢 HDR（tonemap）。硬件可用时用 h264_videotoolbox 恒定质量。
-            var args = ["-y", "-i", inputPath]
+            let usesHardwareEncode = wantHW && h264VTAvailable
+            let requiresCPUVideoFilter = sourceIsHDR
+            let family: HardwareAccelerationFamily = usesHardwareEncode ? .videoToolbox : .none
+            var args = ["-y"]
+                + HardwareAccelerationPlanner.inputArgs(
+                    family: family,
+                    requiresCPUVideoFilter: requiresCPUVideoFilter
+                )
+                + ["-i", inputPath]
             if sourceIsHDR {
                 args += ["-vf", "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"]
             }
-            if wantHW && h264VTAvailable {
+            if usesHardwareEncode {
                 args += ["-c:v", "h264_videotoolbox", "-q:v", "\(q)", "-pix_fmt", "yuv420p"]
             } else {
                 args += ["-c:v", "libx264", "-crf", "20", "-preset", "medium"]
             }
             args += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]
-            return Plan(ffmpegArgs: args, outputExtension: "mp4", isRemux: false, dropsHDR: sourceIsHDR)
+            return Plan(
+                ffmpegArgs: args,
+                outputExtension: "mp4",
+                isRemux: false,
+                dropsHDR: sourceIsHDR,
+                accelerationReport: HardwareAccelerationPlanner.report(
+                    family: family,
+                    usesHardwareEncode: usesHardwareEncode,
+                    requiresCPUVideoFilter: requiresCPUVideoFilter
+                )
+            )
         case .mp4H265:
             if codec == "h265" {
                 return Plan(
@@ -83,9 +116,17 @@ public struct Transcoder: Sendable {
             }
             // 转 H.265。硬件 HEVC 可用时优先（HDR 走 main10 + 色彩元数据透传，保 HDR）；
             // 否则软件 libx265（HDR 用 10-bit hdr-opt）。两者都不可用 HDR 时退回 libx265 8-bit（丢 HDR）。
-            var args = ["-y", "-i", inputPath]
+            let usesHardwareEncode = wantHW && hevcVTAvailable
+            let family: HardwareAccelerationFamily = usesHardwareEncode ? .videoToolbox : .none
+            let requiresCPUVideoFilter = false
+            var args = ["-y"]
+                + HardwareAccelerationPlanner.inputArgs(
+                    family: family,
+                    requiresCPUVideoFilter: requiresCPUVideoFilter
+                )
+                + ["-i", inputPath]
             let keepsHDR: Bool
-            if wantHW && hevcVTAvailable {
+            if usesHardwareEncode {
                 if sourceIsHDR {
                     args += ["-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-q:v", "\(q)", "-pix_fmt", "p010le"]
                     args += FFmpegBurner.hdrColorArgs(colorPrimaries: nil, colorTransfer: nil, colorSpace: nil)
@@ -105,7 +146,17 @@ public struct Transcoder: Sendable {
                 }
             }
             args += ["-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]
-            return Plan(ffmpegArgs: args, outputExtension: "mp4", isRemux: false, dropsHDR: sourceIsHDR && !keepsHDR)
+            return Plan(
+                ffmpegArgs: args,
+                outputExtension: "mp4",
+                isRemux: false,
+                dropsHDR: sourceIsHDR && !keepsHDR,
+                accelerationReport: HardwareAccelerationPlanner.report(
+                    family: family,
+                    usesHardwareEncode: usesHardwareEncode,
+                    requiresCPUVideoFilter: requiresCPUVideoFilter
+                )
+            )
         }
     }
 

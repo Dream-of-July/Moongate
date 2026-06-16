@@ -82,6 +82,31 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(pauseBody.contains("翻译请求不是本地可挂起进程"))
     }
 
+    func testPostDownloadTranscodingUsesTypedProgressState() throws {
+        let source = try queueManagerSource()
+
+        XCTAssertTrue(source.contains("enum PostDownloadProcessingKind"))
+        XCTAssertTrue(source.contains("postDownloadProcessingKind"))
+        XCTAssertTrue(source.contains("postDownloadProcessingKind = .generic"))
+        XCTAssertTrue(source.contains("postDownloadProcessingKind = .transcoding"))
+        XCTAssertTrue(source.contains("postDownloadProcessingKind = nil"))
+    }
+
+    func testQueueItemShowsTranscodingPercentInsteadOfGenericProcessing() throws {
+        let source = try queueItemSource()
+        let statusBody = try XCTUnwrap(functionBody(named: "statusText", in: source))
+        let helperBody = try XCTUnwrap(functionBody(named: "postDownloadProcessingText", in: source))
+        let accessibilityNameBody = try XCTUnwrap(functionBody(named: "progressStageAccessibilityName", in: source))
+        let accessibilityValueBody = try XCTUnwrap(functionBody(named: "progressAccessibilityValue", in: source))
+
+        XCTAssertTrue(statusBody.contains("postDownloadProcessingText"))
+        XCTAssertTrue(helperBody.contains("case .transcoding"))
+        XCTAssertTrue(helperBody.contains("转码中 \\(Int(p * 100))%"))
+        XCTAssertTrue(helperBody.contains("转码中…"))
+        XCTAssertTrue(accessibilityNameBody.contains("转码进度"))
+        XCTAssertTrue(accessibilityValueBody.contains("转码中，进度不确定"))
+    }
+
     private func queueManagerSource() throws -> String {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")

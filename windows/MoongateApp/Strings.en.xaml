@@ -103,6 +103,8 @@
     <sys:String x:Key="L.Status.Paused">Paused</sys:String>
     <sys:String x:Key="L.Status.Queued">Queued…</sys:String>
     <sys:String x:Key="L.Status.Processing">Processing…</sys:String>
+    <sys:String x:Key="L.Status.TranscodingFmt">Transcoding {0}%</sys:String>
+    <sys:String x:Key="L.Status.Transcoding">Transcoding…</sys:String>
     <sys:String x:Key="L.Status.DownloadingFmt">Downloading {0}%</sys:String>
     <sys:String x:Key="L.Status.Downloading">Downloading…</sys:String>
     <sys:String x:Key="L.Status.TranslatingFmt">Translating {0}%</sys:String>
@@ -161,7 +163,7 @@
     <sys:String x:Key="L.Settings.EncodeAuto">Auto</sys:String>
     <sys:String x:Key="L.Settings.EncodeHardware">Prefer hardware</sys:String>
     <sys:String x:Key="L.Settings.EncodeSoftware">Software</sys:String>
-    <sys:String x:Key="L.Settings.EncodeBackendHint">Auto prefers NVENC / QSV / AMF. Software encoding is slower but more predictable.</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackendHint">Auto prefers NVENC / QSV / AMF. Compatibility handling may take longer than expected.</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264">Always output H.264</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">Best for compatibility. When off, Moongate keeps the source codec when possible, such as HEVC input to HEVC output.</sys:String>
     <sys:String x:Key="L.Settings.Limit1080">Scale to 1080p when burning high-res video (faster and smaller, recommended)</sys:String>
@@ -169,7 +171,7 @@
     <sys:String x:Key="L.Settings.Performance">Performance</sys:String>
     <sys:String x:Key="L.Settings.MaxDownloads">Concurrent downloads</sys:String>
     <sys:String x:Key="L.Settings.MaxBurns">Concurrent encodes</sys:String>
-    <sys:String x:Key="L.Settings.PerfHint">Tasks over the limit wait as "Queued"; pausing one yields its slot to the next. Encoding is CPU-heavy — too many in parallel slow each other down. Changes apply immediately.</sys:String>
+    <sys:String x:Key="L.Settings.PerfHint">Tasks over the limit wait as "Queued"; pausing one yields its slot to the next. Compatibility handling may take longer than expected. Changes apply immediately.</sys:String>
     <sys:String x:Key="L.Settings.SiteLogin">Site sign-in</sys:String>
     <sys:String x:Key="L.Settings.LoginYouTube">Sign in to YouTube</sys:String>
     <sys:String x:Key="L.Settings.LoginBilibili">Sign in to Bilibili</sys:String>

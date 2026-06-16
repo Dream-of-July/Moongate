@@ -40,7 +40,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var maxBurnHeight: Int?
     /// 同时进行的下载任务数（1...5，默认 3）。
     public var maxConcurrentDownloads: Int
-    /// 同时进行的压制（烧录）任务数（1...3，默认 2）。压制吃满 CPU，并行多了互相拖慢。
+    /// 同时进行的压制（烧录）任务数（1...3，默认 2）。兼容路径并行多了会互相拖慢。
     public var maxConcurrentBurns: Int
 
     // MARK: 编码后端
@@ -381,7 +381,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     }
 
     /// 实际压制并发上限：硬件后端时编码不占 CPU（走媒体引擎），可比软件多放一路并行，
-    /// 提高整体吞吐（实测 2 路硬件 4K 有约 1.3× 增益）；软件后端维持设置值（libx265 已吃满 CPU）。
+    /// 提高整体吞吐（实测 2 路硬件 4K 有约 1.3× 增益）；兼容路径维持设置值，避免互相拖慢。
     /// 仍夹在 1...4。
     public var effectiveMaxConcurrentBurns: Int {
         guard encodeBackend.prefersHardware else { return maxConcurrentBurns }

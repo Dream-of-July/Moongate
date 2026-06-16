@@ -99,7 +99,7 @@ public sealed class UpdateChecker
         CancellationToken ct = default)
     {
         if (SemVer.Parse(currentVersion) is not { } current)
-            throw MoongateException.AnalyzeFailed($"无法解析当前版本号：{currentVersion}");
+            throw MoongateException.UpdateFailed($"无法解析当前版本号：{currentVersion}");
 
         using var client = new HttpClient(httpHandler ?? new HttpClientHandler(), disposeHandler: httpHandler is null)
         {
@@ -124,20 +124,20 @@ public sealed class UpdateChecker
         }
         catch (HttpRequestException)
         {
-            throw MoongateException.AnalyzeFailed("无法连接到更新服务器，请检查网络与代理设置。");
+            throw MoongateException.UpdateFailed("无法连接到更新服务器，请检查网络与代理设置。");
         }
         catch (TaskCanceledException)
         {
             // 非用户取消的 TaskCanceledException 多为超时。
-            throw MoongateException.AnalyzeFailed("连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。");
+            throw MoongateException.UpdateFailed("连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。");
         }
 
         using (response)
         {
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-                throw MoongateException.AnalyzeFailed("更新检查过于频繁（GitHub 限流），请稍后再试。");
+                throw MoongateException.UpdateFailed("更新检查过于频繁（GitHub 限流），请稍后再试。");
             if (!response.IsSuccessStatusCode)
-                throw MoongateException.AnalyzeFailed($"检查更新失败（HTTP {(int)response.StatusCode}）。");
+                throw MoongateException.UpdateFailed($"HTTP {(int)response.StatusCode}。");
             var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             return LatestWindowsUpdate(json, current);
         }

@@ -8,14 +8,14 @@ public enum TranslationProvider
     Openai,
 }
 
-/// <summary>视频编码后端。决定烧录/转码用硬件编码器（NVENC/QSV/AMF）还是软件（libx265/libx264）。</summary>
+/// <summary>视频编码后端。决定烧录/转码时优先走硬件媒体引擎还是兼容编码路径。</summary>
 public enum EncodeBackend
 {
-    /// <summary>自动：有硬件编码器就用，否则回退软件。日常推荐。</summary>
+    /// <summary>自动：优先使用可用的硬件媒体引擎；遇到兼容性问题时走兼容路径。日常推荐。</summary>
     Auto,
-    /// <summary>强制硬件（NVENC→QSV→AMF）。最快、最省电；硬件不可用时回退软件。</summary>
+    /// <summary>优先硬件媒体引擎（NVENC→QSV→AMF）。最快、最省电；特殊格式可能需要兼容处理。</summary>
     Hardware,
-    /// <summary>强制软件（libx265/libx264）。同体积画质最高，但 4K 明显更慢、吃满 CPU。</summary>
+    /// <summary>兼容性更稳定的编码路径。同体积画质更稳，但 4K/HDR 通常更慢。</summary>
     Software,
 }
 
@@ -108,7 +108,7 @@ public sealed record AppSettings
     public int? MaxBurnHeight { get; init; } = 1080;
     /// <summary>同时进行的下载任务数（1...5，默认 3）。</summary>
     public int MaxConcurrentDownloads { get; init; } = 3;
-    /// <summary>同时进行的压制（烧录）任务数（1...3，默认 2）。压制吃满 CPU，并行多了互相拖慢。</summary>
+    /// <summary>同时进行的压制（烧录）任务数（1...3，默认 2）。兼容路径并行多了会互相拖慢。</summary>
     public int MaxConcurrentBurns { get; init; } = 2;
     /// <summary>烧录/转码的视频编码后端：Auto（硬件优先）/ Hardware / Software。默认 Auto。</summary>
     public EncodeBackend EncodeBackend { get; init; } = EncodeBackend.Auto;
@@ -118,8 +118,8 @@ public sealed record AppSettings
     public string AppLanguage { get; init; } = "auto";
 
     /// <summary>
-    /// 实际压制并发上限：硬件后端编码不占 CPU（走专用编码器），可比软件多放一路并行提高吞吐；
-    /// 软件后端维持设置值（libx265 已吃满 CPU）。夹在 1...4。
+    /// 实际压制并发上限：硬件后端可比兼容路径多放一路并行提高吞吐；
+    /// 兼容路径维持设置值，避免互相拖慢。夹在 1...4。
     /// </summary>
     public int EffectiveMaxConcurrentBurns =>
         EncodeBackend.PrefersHardware() ? Math.Min(MaxConcurrentBurns + 1, 4) : MaxConcurrentBurns;

@@ -79,6 +79,11 @@ final class QueueManager: ObservableObject {
         case cancelled
     }
 
+    enum PostDownloadProcessingKind: Equatable {
+        case generic
+        case transcoding
+    }
+
     struct QueueItem: Identifiable {
         let id: UUID
         let title: String
@@ -99,6 +104,7 @@ final class QueueManager: ObservableObject {
         /// 下载已 100%、正在合并/转码/字幕转换（progress 为 nil 但仍处于 .downloading）。
         /// UI 据此显示「处理中…」而非「下载中…」（避免像卡死）。
         var isPostDownloadProcessing: Bool = false
+        var postDownloadProcessingKind: PostDownloadProcessingKind?
         /// 部分成功：视频已下载但字幕处理失败（done 态显示「重试字幕处理」按钮）。
         var partialFailure: Bool = false
         /// 本项流水线的控制令牌；retry 时换新的（旧的已 cancel）。
@@ -289,7 +295,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(downloadPool, id: id, generation: generation, control: control, waitingText: "排队中：等待下载空位")
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .downloading; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false }
+                update(id, generation: generation) { $0.stage = .downloading; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let result = try await engine.download(current.request, control: control) { [weak self] p in
                     Task { @MainActor in
                         self?.applyDownloadProgress(id: id, generation: generation, p)
@@ -307,8 +313,9 @@ final class QueueManager: ObservableObject {
                     update(id, generation: generation) {
                         $0.stage = .downloading
                         $0.progress = nil
-                        $0.statusText = "正在转码为所选格式…"
+                        $0.statusText = nil
                         $0.isPostDownloadProcessing = true
+                        $0.postDownloadProcessingKind = .transcoding
                     }
                     do {
                         // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
@@ -338,18 +345,21 @@ final class QueueManager: ObservableObject {
                             $0.progress = nil
                             $0.statusText = nil
                             $0.isPostDownloadProcessing = false
+                            $0.postDownloadProcessingKind = nil
                         }
                     } catch {
                         guard item(id)?.generation == generation else { return }
                         if isCancellation(error) {
                             update(id, generation: generation) {
                                 $0.stage = .cancelled; $0.isPaused = false; $0.progress = nil; $0.statusText = "已取消"
+                                $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
                         } else {
                             update(id, generation: generation) {
                                 $0.stage = .failed(Self.shortReason(of: error))
                                 $0.isPaused = false; $0.progress = nil
                                 $0.statusText = "转码失败：\(Self.shortReason(of: error))"
+                                $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
                         }
                         return
@@ -363,6 +373,8 @@ final class QueueManager: ObservableObject {
                         $0.isPaused = false
                         $0.progress = nil
                         $0.statusText = "已取消"
+                        $0.isPostDownloadProcessing = false
+                        $0.postDownloadProcessingKind = nil
                     }
                 } else {
                     update(id, generation: generation) {
@@ -370,6 +382,8 @@ final class QueueManager: ObservableObject {
                         $0.isPaused = false
                         $0.progress = nil
                         $0.statusText = "失败：\(Self.shortReason(of: error))"
+                        $0.isPostDownloadProcessing = false
+                        $0.postDownloadProcessingKind = nil
                     }
                 }
                 return
@@ -403,7 +417,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "直接烧录字幕（不翻译）" }
+                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "直接烧录字幕（不翻译）"; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -454,7 +468,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "使用视频自带中文字幕，直接烧录（不翻译）" }
+                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "使用视频自带中文字幕，直接烧录（不翻译）"; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -489,7 +503,7 @@ final class QueueManager: ObservableObject {
         do {
             try await acquireSlot(translatePool, id: id, generation: generation, control: control, waitingText: "排队中：等待翻译空位")
             defer { releaseSlot(id, generation: generation) }
-            update(id, generation: generation) { $0.stage = .translating; $0.progress = nil; $0.statusText = nil }
+            update(id, generation: generation) { $0.stage = .translating; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
             let translator = makeTranslator(settings: settings)
             zhSrt = try await translator.translate(
                 srtFile: srtFile,
@@ -530,7 +544,7 @@ final class QueueManager: ObservableObject {
         do {
             try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
             defer { releaseSlot(id, generation: generation) }
-            update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = nil }
+            update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
             let burner = makeBurner()
             let burned = try await burner.burn(
                 video: video,
@@ -573,13 +587,16 @@ final class QueueManager: ObservableObject {
                 }
                 $0.progress = newValue
                 $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
             case .preparing, .finished:
                 $0.progress = nil
                 $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
             case .processing:
                 // 下载 100% 后的合并/转码：进度不确定，标记为「处理中」避免像卡死。
                 $0.progress = nil
                 $0.isPostDownloadProcessing = true
+                $0.postDownloadProcessingKind = .generic
                 $0.statusText = p.detail
             }
         }
@@ -594,6 +611,8 @@ final class QueueManager: ObservableObject {
                 $0.isPaused = false
                 $0.progress = nil
                 $0.statusText = files.isEmpty ? "已取消" : "已取消，视频已保存"
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
             }
             return
         }
@@ -605,6 +624,8 @@ final class QueueManager: ObservableObject {
                 $0.progress = nil
                 $0.partialFailure = true
                 $0.statusText = "视频已下载，字幕\(phase)失败：\(reason)"
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
             }
         } else {
             update(id, generation: generation) {
@@ -612,6 +633,8 @@ final class QueueManager: ObservableObject {
                 $0.isPaused = false
                 $0.progress = nil
                 $0.statusText = "失败：\(reason)"
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
             }
         }
     }
@@ -622,6 +645,8 @@ final class QueueManager: ObservableObject {
             $0.isPaused = false
             $0.progress = nil
             $0.partialFailure = false
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
             $0.resultFiles = files.isEmpty ? $0.resultFiles : files
             $0.statusText = statusText
         }
@@ -715,6 +740,7 @@ final class QueueManager: ObservableObject {
             $0.isPaused = false
             $0.progress = nil
             $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
             $0.statusText = skipDownload ? nil : "重新下载并处理"
             if !skipDownload { $0.resultFiles = [] }

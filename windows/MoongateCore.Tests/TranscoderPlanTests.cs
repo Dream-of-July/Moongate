@@ -93,6 +93,34 @@ public class TranscoderPlanTests
     }
 
     [Fact]
+    public void TranscodeH265_NvencBackend_UsesSafeHardwareInputAccelerationWhenFilterless()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H265, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: false, x265Available: true,
+            backend: EncodeBackend.Auto, available: enc => enc is "hevc_nvenc" or "h264_nvenc");
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.Contains("-hwaccel cuda", joined);
+        Assert.Equal(HardwareAccelerationFamily.Nvidia, plan.AccelerationReport.Family);
+        Assert.True(plan.AccelerationReport.UsesHardwareDecode);
+        Assert.True(plan.AccelerationReport.UsesHardwareEncode);
+        Assert.Null(plan.AccelerationReport.CompatibilityNotice);
+    }
+
+    [Fact]
+    public void TranscodeHdrToH264_KeepsCpuTonemapFilterOnCompatibleInputPath()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H264, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: true, x265Available: true,
+            backend: EncodeBackend.Auto, available: enc => enc is "hevc_nvenc" or "h264_nvenc");
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.DoesNotContain("-hwaccel cuda", joined);
+        Assert.Equal(PipelineAccelerationReport.CompatibilityModeNotice, plan.AccelerationReport.CompatibilityNotice);
+        Assert.DoesNotContain("CPU", PipelineAccelerationReport.CompatibilityModeNotice, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void TranscodeH265_HardwareHdr_KeepsHdrMain10()
     {
         var plan = Transcoder.BuildPlan(

@@ -103,6 +103,8 @@
     <sys:String x:Key="L.Status.Paused">已暂停</sys:String>
     <sys:String x:Key="L.Status.Queued">排队中…</sys:String>
     <sys:String x:Key="L.Status.Processing">处理中…</sys:String>
+    <sys:String x:Key="L.Status.TranscodingFmt">转码中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.Transcoding">转码中…</sys:String>
     <sys:String x:Key="L.Status.DownloadingFmt">下载中 {0}%</sys:String>
     <sys:String x:Key="L.Status.Downloading">下载中…</sys:String>
     <sys:String x:Key="L.Status.TranslatingFmt">翻译字幕中 {0}%</sys:String>
@@ -161,7 +163,7 @@
     <sys:String x:Key="L.Settings.EncodeAuto">自动</sys:String>
     <sys:String x:Key="L.Settings.EncodeHardware">硬件优先</sys:String>
     <sys:String x:Key="L.Settings.EncodeSoftware">软件编码</sys:String>
-    <sys:String x:Key="L.Settings.EncodeBackendHint">自动会优先使用 NVENC / QSV / AMF；软件编码更慢但画质更稳。</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackendHint">自动会优先使用 NVENC / QSV / AMF；遇到兼容性问题时，实际耗时可能比预计更长。</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264">始终输出 H.264</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">开启后兼容性最好；关闭则尽量跟随源视频编码，例如 HEVC 源继续输出 HEVC。</sys:String>
     <sys:String x:Key="L.Settings.Limit1080">高清视频烧录时缩放到 1080p（更快更省空间，推荐）</sys:String>
@@ -169,7 +171,7 @@
     <sys:String x:Key="L.Settings.Performance">性能</sys:String>
     <sys:String x:Key="L.Settings.MaxDownloads">同时下载数</sys:String>
     <sys:String x:Key="L.Settings.MaxBurns">同时压制数</sys:String>
-    <sys:String x:Key="L.Settings.PerfHint">超出上限的任务显示「排队中」自动等待；暂停一个任务会把空位让给下一个。压制很吃 CPU，并行过多会互相拖慢。调整立即生效。</sys:String>
+    <sys:String x:Key="L.Settings.PerfHint">超出上限的任务显示「排队中」自动等待；暂停一个任务会把空位让给下一个。遇到兼容性问题时，实际耗时可能比预计更长。调整立即生效。</sys:String>
     <sys:String x:Key="L.Settings.SiteLogin">站点登录</sys:String>
     <sys:String x:Key="L.Settings.LoginYouTube">登录 YouTube</sys:String>
     <sys:String x:Key="L.Settings.LoginBilibili">登录哔哩哔哩</sys:String>

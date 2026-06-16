@@ -75,7 +75,7 @@ public struct UpdateChecker: Sendable {
     /// 公开仓库匿名访问即可；超时短、失败抛错由调用方决定是否静默。
     public func checkForUpdate(currentVersion: String) async throws -> UpdateInfo? {
         guard let current = SemVer(currentVersion) else {
-            throw MoongateError.analyzeFailed("无法解析当前版本号：\(currentVersion)")
+            throw MoongateError.updateFailed("无法解析当前版本号：\(currentVersion)")
         }
         var request = URLRequest(url: URL(string:
             "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=20")!)
@@ -92,18 +92,18 @@ public struct UpdateChecker: Sendable {
         } catch let error as URLError {
             if error.code == .cancelled { throw MoongateError.cancelled }
             if error.code == .timedOut {
-                throw MoongateError.analyzeFailed("连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。")
+                throw MoongateError.updateFailed("连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。")
             }
-            throw MoongateError.analyzeFailed("无法连接到更新服务器，请检查网络与代理设置。")
+            throw MoongateError.updateFailed("无法连接到更新服务器，请检查网络与代理设置。")
         }
         guard let http = response as? HTTPURLResponse else {
-            throw MoongateError.analyzeFailed("更新服务器返回了无效响应。")
+            throw MoongateError.updateFailed("更新服务器返回了无效响应。")
         }
         guard http.statusCode == 200 else {
             if http.statusCode == 403 {
-                throw MoongateError.analyzeFailed("更新检查过于频繁（GitHub 限流），请稍后再试。")
+                throw MoongateError.updateFailed("更新检查过于频繁（GitHub 限流），请稍后再试。")
             }
-            throw MoongateError.analyzeFailed("检查更新失败（HTTP \(http.statusCode)）。")
+            throw MoongateError.updateFailed("HTTP \(http.statusCode)。")
         }
         return Self.latestMacUpdate(fromReleasesJSON: data, currentVersion: current)
     }

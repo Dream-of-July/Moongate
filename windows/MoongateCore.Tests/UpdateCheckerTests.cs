@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net;
 using Moongate.Core;
 using Xunit;
 
@@ -114,6 +115,19 @@ public class UpdateCheckerTests
     }
 
     [Fact]
+    public async Task CheckForUpdateErrorsUseUpdateSpecificCopy()
+    {
+        var checker = new UpdateChecker();
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            checker.CheckForUpdateAsync("0.5.0", new StaticStatusHandler(HttpStatusCode.Forbidden)));
+
+        Assert.Equal(MoongateErrorKind.UpdateFailed, ex.Kind);
+        Assert.Contains("检查更新失败", ex.Message);
+        Assert.DoesNotContain("解析视频信息失败", ex.Message);
+        Assert.DoesNotContain("Failed to analyze the video", ex.Message);
+    }
+
+    [Fact]
     public void TrustedSetupUrlWhitelist()
     {
         const string owner = "Dream-of-July", repo = "moongate";
@@ -138,5 +152,25 @@ public class UpdateCheckerTests
         Assert.False(UpdateChecker.IsTrustedSetupChecksumUrl(
             "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/other.exe.sha256",
             "x.exe", owner, repo));
+    }
+
+    private sealed class StaticStatusHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _statusCode;
+
+        public StaticStatusHandler(HttpStatusCode statusCode)
+        {
+            _statusCode = statusCode;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(_statusCode)
+            {
+                Content = new StringContent("[]"),
+            });
+        }
     }
 }
