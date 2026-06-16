@@ -49,6 +49,16 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 烧录字幕时是否始终输出 H.264（兼容优先）。false=跟随源编码（HEVC 源保 HEVC）。默认 false。
     public var burnAlwaysH264: Bool
 
+    // MARK: 上次下载选项（记住用户最近一次在选档页的选择，下次下载沿用）
+    /// 上次的字幕处理方式（ChineseSubtitleMode 的 rawValue，跨模块只存字符串）。nil=无记录。
+    public var lastSubtitleMode: String?
+    /// 上次勾选的字幕语言代码（按语言记忆，下次在可用字幕里做匹配，而非死记 ID）。
+    public var lastSubtitleLangs: [String]
+    /// 上次的下载后输出格式。nil=无记录。
+    public var lastOutputFormat: OutputFormat?
+    /// 上次是否优先下载 HDR。
+    public var lastPreferHDR: Bool
+
     public init(
         translationProvider: TranslationProvider = .anthropic,
         translationEngine: TranslationEngine? = nil,
@@ -70,7 +80,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxConcurrentDownloads: Int = 3,
         maxConcurrentBurns: Int = 2,
         encodeBackend: EncodeBackend = .auto,
-        burnAlwaysH264: Bool = false
+        burnAlwaysH264: Bool = false,
+        lastSubtitleMode: String? = nil,
+        lastSubtitleLangs: [String] = [],
+        lastOutputFormat: OutputFormat? = nil,
+        lastPreferHDR: Bool = false
     ) {
         let resolvedEngine = translationEngine ?? TranslationEngine.compatible(with: translationProvider)
         self.translationProvider = resolvedEngine.legacyProvider ?? translationProvider
@@ -95,6 +109,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.maxConcurrentBurns = maxConcurrentBurns
         self.encodeBackend = encodeBackend
         self.burnAlwaysH264 = burnAlwaysH264
+        self.lastSubtitleMode = lastSubtitleMode
+        self.lastSubtitleLangs = lastSubtitleLangs
+        self.lastOutputFormat = lastOutputFormat
+        self.lastPreferHDR = lastPreferHDR
     }
 
     // MARK: 存储位置
@@ -126,6 +144,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case aiEngine, aiBaseURL, aiModel, aiAuthToken, translationFollowsDefault
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
+        case lastSubtitleMode, lastSubtitleLangs, lastOutputFormat, lastPreferHDR
     }
 
     public init(from decoder: Decoder) throws {
@@ -175,6 +194,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let rawBackend = try c.decodeIfPresent(String.self, forKey: .encodeBackend)
         encodeBackend = rawBackend.flatMap { EncodeBackend(rawValue: $0) } ?? .auto
         burnAlwaysH264 = try c.decodeIfPresent(Bool.self, forKey: .burnAlwaysH264) ?? false
+
+        // 上次下载选项：旧版本无键时为空记录（首启动等同无记忆，沿用各自默认）。
+        lastSubtitleMode = try c.decodeIfPresent(String.self, forKey: .lastSubtitleMode)
+        lastSubtitleLangs = try c.decodeIfPresent([String].self, forKey: .lastSubtitleLangs) ?? []
+        lastOutputFormat = try c.decodeIfPresent(OutputFormat.self, forKey: .lastOutputFormat)
+        lastPreferHDR = try c.decodeIfPresent(Bool.self, forKey: .lastPreferHDR) ?? false
     }
 
     /// 自定义编码：必须显式写出 maxBurnHeight。
@@ -208,6 +233,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(maxConcurrentBurns, forKey: .maxConcurrentBurns)
         try c.encode(encodeBackend.rawValue, forKey: .encodeBackend)
         try c.encode(burnAlwaysH264, forKey: .burnAlwaysH264)
+        try c.encodeIfPresent(lastSubtitleMode, forKey: .lastSubtitleMode)
+        try c.encode(lastSubtitleLangs, forKey: .lastSubtitleLangs)
+        try c.encodeIfPresent(lastOutputFormat, forKey: .lastOutputFormat)
+        try c.encode(lastPreferHDR, forKey: .lastPreferHDR)
     }
 
     public static func load() -> AppSettings {

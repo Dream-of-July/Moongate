@@ -6,7 +6,7 @@ import MoongateCore
 #endif
 
 /// 字幕处理方式（ready 页「字幕处理」分组的选项）
-enum ChineseSubtitleMode: String, CaseIterable {
+enum ChineseSubtitleMode: String, CaseIterable, Codable {
     case off
     case srtOnly
     case burnIn
@@ -456,9 +456,7 @@ final class ViewModel: ObservableObject {
                 }
                 guard token == self.session else { return }
                 self.selectedFormatID = info.formats.first?.id
-                self.preferHDR = false
-                self.selectedOutputFormat = .original
-                self.selectedSubtitleIDs = []
+                self.restoreDownloadOptions(for: info)
                 self.resetSummary()
                 self.stage = .ready(info)
             } catch {
@@ -521,6 +519,14 @@ final class ViewModel: ObservableObject {
         )
         queue.enqueue(info: info, request: request, chineseMode: mode, settings: currentSettings)
 
+        // 记住本次下载选项，下次选档页沿用（字幕按语言代码记忆，下个视频做匹配恢复）。
+        rememberDownloadOptions(
+            mode: mode,
+            subtitleLangs: chosen.map(\.id),
+            outputFormat: outputFormatSnapshot,
+            preferHDR: preferHDRSnapshot
+        )
+
         // 回到可输入态，方便粘贴下一条
         session += 1
         parseTask?.cancel()
@@ -539,6 +545,46 @@ final class ViewModel: ObservableObject {
         // 入队即铺满队列（新任务落位可见），重新聚焦输入框方便直接粘贴下一条。
         queueExpanded = true
         requestUrlFocus += 1
+    }
+
+    /// 记住本次下载选项到设置（持久化），供下次选档页恢复。
+    private func rememberDownloadOptions(
+        mode: ChineseSubtitleMode,
+        subtitleLangs: [String],
+        outputFormat: OutputFormat,
+        preferHDR: Bool
+    ) {
+        var updated = settings
+        updated.lastSubtitleMode = mode.rawValue
+        updated.lastSubtitleLangs = subtitleLangs
+        updated.lastOutputFormat = outputFormat
+        updated.lastPreferHDR = preferHDR
+        settings = updated
+        _ = saveSettings()
+    }
+
+    /// 选档页恢复上次的下载选项：输出格式 / HDR 直接套用；字幕按语言代码在本视频可用字幕里匹配，
+    /// 字幕处理方式在字幕恢复之后再设，避免 selectedSubtitleIDs 的 didSet 把它打回 .off。
+    private func restoreDownloadOptions(for info: VideoInfo) {
+        preferHDR = settings.lastPreferHDR
+        selectedOutputFormat = settings.lastOutputFormat ?? .original
+
+        let wantedLangs = settings.lastSubtitleLangs
+        // 按语言代码匹配本视频实际可用的字幕（真实字幕优先于自动字幕）。
+        let matchedIDs: Set<String> = wantedLangs.isEmpty ? [] : Set(
+            info.subtitles
+                .filter { wantedLangs.contains($0.id) }
+                .map(\.id)
+        )
+        selectedSubtitleIDs = matchedIDs
+
+        // 仅当字幕成功恢复、且记录的处理方式不是「不需要」时才恢复 mode（否则保持 didSet 设好的 .off）。
+        if !matchedIDs.isEmpty,
+           let raw = settings.lastSubtitleMode,
+           let mode = ChineseSubtitleMode(rawValue: raw),
+           mode != .off {
+            chineseMode = mode
+        }
     }
 
     /// ready 页提示用：勾选多条字幕时实际作为翻译源的那条（真实字幕优先、按解析顺序取第一条）。

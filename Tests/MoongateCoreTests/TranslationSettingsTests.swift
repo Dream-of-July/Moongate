@@ -501,6 +501,40 @@ final class TranslationSettingsTests: XCTestCase {
         }
     }
 
+    func testLastDownloadOptionsSurviveCodableRoundTrip() throws {
+        var original = AppSettings(translationModel: "")
+        original.lastSubtitleMode = "burnIn"
+        original.lastSubtitleLangs = ["en", "en-orig"]
+        original.lastOutputFormat = .mp4H264
+        original.lastPreferHDR = true
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        XCTAssertEqual(decoded.lastSubtitleMode, "burnIn")
+        XCTAssertEqual(decoded.lastSubtitleLangs, ["en", "en-orig"])
+        XCTAssertEqual(decoded.lastOutputFormat, .mp4H264)
+        XCTAssertTrue(decoded.lastPreferHDR)
+    }
+
+    func testLegacySettingsWithoutLastDownloadOptionsDecodeToEmptyDefaults() throws {
+        // 旧版本 settings.json 没有这些键，必须安全回退为「无记忆」默认，不抛错。
+        let legacyJSON = """
+        {
+          "translationProvider": "anthropic",
+          "translationEngine": "anthropicCompatible",
+          "translationBaseURL": "https://api.anthropic.com",
+          "translationModel": "claude-haiku-4-5",
+          "translationAuthToken": ""
+        }
+        """
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(decoded.lastSubtitleMode)
+        XCTAssertEqual(decoded.lastSubtitleLangs, [])
+        XCTAssertNil(decoded.lastOutputFormat)
+        XCTAssertFalse(decoded.lastPreferHDR)
+    }
+
     func testLegacySettingsSeedDefaultAIConfigSoTranslationBehaviorIsUnchanged() throws {
         // 旧 settings.json 只有 translation* 字段、没有 ai*/summary*/follow 标志。
         // 解码后「有效翻译配置」必须等于旧 translation 配置，行为零回归。
