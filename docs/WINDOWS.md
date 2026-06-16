@@ -4,7 +4,7 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 
 - **MoongateCore**（C#，.NET 10）— 从 Swift 版 `MoongateCore` + `QueueManager` 逐行为基准移植的核心库：
   yt-dlp 封装、字幕解析/清洗/翻译、ffmpeg 烧录、队列与并发槽位、暂停/取消、设置与 cookies。
-  附 241 个单元测试，在 macOS 上即可全量运行。
+  附 242 个单元测试，在 macOS 上即可全量运行。
 - **MoongateApp**（WPF）— 与 macOS 版同结构、同文案的图形界面：粘贴解析（含多链接批量入队）、
   画质/字幕选择、中文字幕翻译+烧录、队列（每任务独立暂停/取消/重试）、设置（协议选择、
   拉取模型、并发数、烧录上限）、WebView2 站点登录、首次启动自动下载依赖。

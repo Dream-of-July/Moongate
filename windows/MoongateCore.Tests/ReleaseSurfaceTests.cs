@@ -60,6 +60,30 @@ public class ReleaseSurfaceTests
     }
 
     [Fact]
+    public void WindowsStartupGuardsAgainstSilentWhiteScreen()
+    {
+        var app = Read("windows", "MoongateApp", "App.xaml.cs");
+
+        // 启动期建窗失败必须显式退出，而不是被吞成「进程活着但没有窗口」的白屏。
+        Assert.Contains("new MainWindow()", app);
+        Assert.Contains("Shutdown(1)", app);
+        Assert.True(
+            app.IndexOf("new MainWindow()", StringComparison.Ordinal)
+            < app.IndexOf("Shutdown(1)", StringComparison.Ordinal),
+            "建主窗口必须在 try 块内，失败走 Shutdown 兜底");
+
+        // 硬件渲染初始化失败（部分显卡/远程桌面/虚拟机）时回退软件渲染，规避白屏。
+        Assert.Contains("RenderCapability.Tier", app);
+        Assert.Contains("RenderMode.SoftwareOnly", app);
+        Assert.Contains("MOONGATE_SOFTWARE_RENDER", app);
+
+        // 启动诊断日志：让只在部分机器复现的白屏可被用户回传排查。
+        var diag = Read("windows", "MoongateApp", "StartupDiagnostics.cs");
+        Assert.Contains("startup.log", diag);
+        Assert.Contains("RecordException", diag);
+    }
+
+    [Fact]
     public void WindowsUpdaterValidatesDownloadedInstallerVersionBeforeLaunch()
     {
         var source = Read("windows", "MoongateApp", "UpdateService.cs");
@@ -107,7 +131,8 @@ public class ReleaseSurfaceTests
     {
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("241", docs);
+        Assert.Contains("242", docs);
+        Assert.DoesNotContain("241", docs);
         Assert.DoesNotContain("240", docs);
         Assert.DoesNotContain("232", docs);
         Assert.DoesNotContain("225", docs);
