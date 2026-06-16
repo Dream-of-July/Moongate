@@ -84,12 +84,12 @@ public class ReleaseSurfaceTests
         var docs = Read("docs", "WINDOWS.md");
         var readme = Read("README.md");
 
-        Assert.Contains("月之门-Windows-Setup-v$VERSION.exe", localScript);
-        Assert.Contains("月之门-Windows-Setup-v${{ inputs.version }}.exe", workflow);
+        Assert.Contains("Moongate-Windows-Setup-v$VERSION.exe", localScript);
+        Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("月之门-Windows-Setup-v0.6.1.exe", docs);
-        Assert.Contains("月之门-Windows-Setup-v0.6.1.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.6.1.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.6.1.exe", readme);
     }
 
     [Fact]

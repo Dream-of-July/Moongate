@@ -21,7 +21,7 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 依赖（一次性）：`brew install dotnet makensis`
 
 ```bash
-./build-windows.sh            # 输出 ~/Downloads/月之门-Windows-Setup-v0.6.1.exe 和 .sha256
+./build-windows.sh            # 输出 ~/Downloads/Moongate-Windows-Setup-v0.6.1.exe 和 .sha256
 ```
 
 脚本流程：核心库单测（必须全绿）→ `dotnet publish` win-x64 自包含（用户机器无需装
@@ -29,7 +29,7 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 
 ## Windows 用户侧体验
 
-1. 双击 `月之门-Windows-Setup-v0.6.1.exe` → 安装到默认用户目录（无 UAC 弹窗）。
+1. 双击 `Moongate-Windows-Setup-v0.6.1.exe` → 安装到默认用户目录（无 UAC 弹窗）。
 2. 首次启动自动从官方源下载 yt-dlp / ffmpeg（BtbN full 构建，含 libass）/ deno
    到 `%LOCALAPPDATA%\Moongate\bin`（需联网；设置里可重新下载、单独更新 yt-dlp）。
 3. 之后与 macOS 版一致：粘贴链接 → 选画质字幕 → 下载/翻译/烧录，多文件任务自动建文件夹。

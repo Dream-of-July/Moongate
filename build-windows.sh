@@ -8,7 +8,7 @@ PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
 VERSION="0.6.1"
-OUT="${1:-$HOME/Downloads/月之门-Windows-Setup-v$VERSION.exe}"
+OUT="${1:-$HOME/Downloads/Moongate-Windows-Setup-v$VERSION.exe}"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 

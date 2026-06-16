@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           $publishDir = Join-Path $env:RUNNER_TEMP "win-publish"
-          $outFile = Join-Path $env:RUNNER_TEMP "月之门-Windows-Setup-v${{ inputs.version }}.exe"
+          $outFile = Join-Path $env:RUNNER_TEMP "Moongate-Windows-Setup-v${{ inputs.version }}.exe"
           $iconPath = Join-Path $PWD "windows\assets\app-nsis.ico"
           $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
@@ -80,5 +80,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $outFile = Join-Path $env:RUNNER_TEMP "月之门-Windows-Setup-v${{ inputs.version }}.exe"
+          $outFile = Join-Path $env:RUNNER_TEMP "Moongate-Windows-Setup-v${{ inputs.version }}.exe"
           gh release upload "${{ inputs.tag }}" $outFile "$outFile.sha256" --repo "${{ github.repository }}" --clobber
