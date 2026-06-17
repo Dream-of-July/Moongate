@@ -116,17 +116,42 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(advice.terms.count, 2)
         let prompt = ConfiguredTranslator.systemPrompt(
             targetLanguageDisplayName: "简体中文",
+            sourceLanguageDisplayName: "日语",
             advice: advice
         )
         XCTAssertTrue(prompt.contains("这是一首关于告别的歌曲。"))
         XCTAssertTrue(prompt.contains("翻译前上下文"))
         XCTAssertTrue(prompt.contains("Ayase"))
         XCTAssertTrue(prompt.contains("Plusonica"))
-        XCTAssertTrue(prompt.contains("不要把上下文里没有对应原文的信息添加到某一行译文"))
+        XCTAssertTrue(prompt.contains("不要把上下文里没有对应原文的信息加进译文"))
         XCTAssertTrue(prompt.contains("歌词"))
         XCTAssertTrue(prompt.contains("画面感"))
         XCTAssertTrue(prompt.contains("呼吸感"))
         XCTAssertFalse(prompt.contains("不要擅自扩写"))
+        // 源语言点名 + 自然语序/防悬空规则：避免日语语序直接漏进中文。
+        XCTAssertTrue(prompt.contains("日语"))
+        XCTAssertTrue(prompt.contains("自然语序"))
+        XCTAssertTrue(prompt.contains("不要让某行停在"))
+        // 上下文尾句不再要求逐字贴原文，改为允许同句相邻行间重排。
+        XCTAssertFalse(prompt.contains("逐字逐句贴近原文"))
+    }
+
+    func testSystemPromptOmitsSourceLanguageWhenUnknown() {
+        let withSource = ConfiguredTranslator.systemPrompt(
+            targetLanguageDisplayName: "简体中文",
+            sourceLanguageDisplayName: "日语"
+        )
+        XCTAssertTrue(withSource.contains("正在把日语字幕翻译成简体中文"))
+
+        let withoutSource = ConfiguredTranslator.systemPrompt(
+            targetLanguageDisplayName: "简体中文",
+            sourceLanguageDisplayName: nil
+        )
+        // 不点名源语言（"正在把…字幕"句式消失）；"日语"作为规则1的通用举例仍会出现，不能据此断言。
+        XCTAssertFalse(withoutSource.contains("正在把"))
+        XCTAssertTrue(withoutSource.contains("把用户给出的字幕翻译成简体中文"))
+        // 自然语序规则与源语言无关，两种情况都应包含。
+        XCTAssertTrue(withoutSource.contains("自然语序"))
     }
 
     func testSmartTranslationAdviceKeepsLegacySummaryOnlyJSONCompatible() throws {

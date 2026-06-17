@@ -1268,12 +1268,20 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     /// 翻译系统提示词。目标语言由 context 决定（简体中文 / 繁體中文 / English），不再写死。
     internal static func systemPrompt(
         targetLanguageDisplayName: String,
+        sourceLanguageDisplayName: String? = nil,
         advice: TranslationPromptAdvice? = nil
     ) -> String {
+        // 点名源语言能让模型针对日语/韩语等谓语后置、修饰语前置的语言主动调整语序；未知源语言时退回不点名的措辞。
+        let sourceClause = sourceLanguageDisplayName.map { "正在把\($0)字幕翻译成\(targetLanguageDisplayName)" }
+            ?? "把用户给出的字幕翻译成\(targetLanguageDisplayName)"
         var prompt = """
-        你是专业字幕翻译。把用户给出的字幕逐条翻译成\(targetLanguageDisplayName)。\
-        输入每行格式为 编号|原文。输出必须严格逐行 编号|译文，\
-        行数与输入一致，不要输出任何其他内容。口语自然、简洁，保留专有名词。
+        你是专业字幕翻译，\(sourceClause)。\
+        输入每行格式为 编号|原文。请先通读整段，判断哪些相邻行其实属于同一句话。\
+        输出必须严格逐行 编号|译文，行数与输入完全一致、编号不变，不要输出任何其他内容。
+        要求：
+        1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。
+        2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。
+        3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
         """
         guard let advice else { return prompt }
         prompt += "\n\n翻译前上下文：\n内容摘要：\(advice.summary)"
@@ -1283,12 +1291,12 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         if !advice.terms.isEmpty {
             prompt += "\n专名参考：\n" + advice.terms.map { "- \($0)" }.joined(separator: "\n")
         }
-        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到某一行译文，仍按输入编号逐字逐句贴近原文翻译。"
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息加进译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。"
         switch advice.preset {
         case .general:
             prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
         case .songLyrics:
-            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。"
+            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。歌词里一句常被拆成多行短句，更要先把整句吃透再按自然语序重组分行；宁可让相邻几行整体顺畅，也不要逐行硬贴原文语序。"
         case .interviewConversation:
             prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
         case .tutorialHowTo:
@@ -1470,6 +1478,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             settings: settings,
             system: Self.systemPrompt(
                 targetLanguageDisplayName: context.targetLanguageDisplayName,
+                sourceLanguageDisplayName: TranslationLanguage.sourceDisplayName(for: context.sourceLanguage),
                 advice: advice
             ),
             userContent: userContent,
