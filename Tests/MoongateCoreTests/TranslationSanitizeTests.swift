@@ -35,4 +35,11 @@ final class TranslationSanitizeTests: XCTestCase {
         XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("太好了！"), "太好了！")
         XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("等等……"), "等等……")
     }
+
+    func testFlattenedNormalizesSubtitleEscapesBeforeTranslation() {
+        XCTAssertEqual(
+            ConfiguredTranslator.flattened("NVIDIA\\hCEO\\Nnext&nbsp;line\u{00A0}here"),
+            "NVIDIA CEO next line here"
+        )
+    }
 }

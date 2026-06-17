@@ -25,6 +25,7 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             ShowOnboardingIfNeeded();
+            App.RunFirstLaunchDependencyCheck(this);
             _vm.PrefillFromClipboardIfAppropriate();
             FocusUrlBox();
         };

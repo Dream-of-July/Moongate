@@ -269,10 +269,11 @@ public enum TranslationLanguage {
         }
     }
 
-    /// 源语言代码 → LLM 提示词里的人类可读名（中文叫法，便于在中文系统提示里点名"在翻日语/韩语…"）。
-    /// 未知码回退原始码；nil 或空返回 nil（提示词据此退回不点名源语言的措辞）。
+    /// 源语言代码 → LLM 中文提示词里的人类可读名；未知码回退原始码。
     public static func sourceDisplayName(for code: String?) -> String? {
-        guard let code, !code.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        guard let code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
         switch normalizedScript(code) {
         case "zh-Hans": return "简体中文"
         case "zh-Hant": return "繁体中文"
@@ -289,7 +290,7 @@ public enum TranslationLanguage {
         case "vi": return "越南语"
         case "id": return "印尼语"
         case "ar": return "阿拉伯语"
-        default: return code
+        default: return code.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

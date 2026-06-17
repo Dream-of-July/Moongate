@@ -96,12 +96,6 @@ private let nonSpeechMarkerRegex: NSRegularExpression? = try? NSRegularExpressio
     options: [.caseInsensitive]
 )
 
-/// 音乐音符（U+2669–U+266C）：自动字幕用它标音乐/歌唱，全语言通用，直接从行内移除（裸 ♪ 歌词 ♪ 去符号留词）。
-private let musicalNoteCharacters: Set<Character> = ["♩", "♪", "♫", "♬"]
-
-/// 非语音词表。**注意**：方括号 `[]` / 角括号 `【】` 已按括号样式无条件清除（见 stripNonSpeechMarkers），
-/// 不再依赖本表；本表如今只作**圆括号 `()（）` 行内**的已知词兜底（圆括号保守，避免误删对白插入语）。
-/// 因此无需再为新语言往这里加词——通用清除靠括号样式，不靠词义。
 private let nonSpeechMarkerTerms: Set<String> = [
     "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
     "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
@@ -127,10 +121,7 @@ private let nonSpeechMarkerTerms: Set<String> = [
     "dooropens", "doorcloses", "phonerings", "phoneringing", "ringing", "footsteps", "steps",
     "knocking", "knocks", "beep", "beeping", "bellrings", "alarm", "siren", "windblowing", "rainfalling",
     "门开", "門開", "开门", "開門", "关门", "關門", "门关", "門關", "脚步", "腳步", "脚步声", "腳步聲",
-    "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲",
-    // 日文写法（YouTube 日语自动字幕常见）：注意「音楽(楽)」与简体「音乐(乐)」、繁体「音樂(樂)」是不同的字，需单列。
-    "音楽", "演奏", "効果音", "歓声", "歓声と拍手", "拍手と歓声", "ため息", "溜め息", "吐息", "息",
-    "咳", "咳払い", "くしゃみ", "あくび", "鼻歌", "口笛", "物音", "足音", "ノイズ", "無音", "静寂", "沈黙"
+    "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲"
 ]
 
 private func normalizedNonSpeechMarker(_ raw: String) -> String {
@@ -139,36 +130,19 @@ private func normalizedNonSpeechMarker(_ raw: String) -> String {
     }
 }
 
-/// 清除自动字幕的非语音标记（音效/掌声/音乐等），全语言通用，不靠词义靠括号样式：
-/// - 音符 ♪♫♬♩：直接移除；
-/// - 方括号 `[…]` / 角括号 `【…】`：自动字幕里几乎只用于音效，**无条件剥除**（任何语言）；
-/// - 圆括号 `(…)（…）`：保守——整行就是一个圆括号才删；行内仅命中词表才剥，以保留对白插入语/译注；
-/// - 「」『』 引号、《》〈〉 等不在 regex 内，不受影响。
-/// 整行清空后丢弃该行。
 private func stripNonSpeechMarkers(_ text: String) -> String {
     text.components(separatedBy: .newlines).compactMap { rawLine in
-        // 先去音符（全语言通用）。
-        var line = rawLine
-        line.removeAll { musicalNoteCharacters.contains($0) }
         guard let regex = nonSpeechMarkerRegex else {
-            let fallback = collapseSubtitleWhitespace(line)
+            let fallback = collapseSubtitleWhitespace(rawLine)
             return fallback.isEmpty ? nil : fallback
         }
+        var line = rawLine
         let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
         for match in matches.reversed() {
             guard let contentRange = Range(match.range(at: 1), in: line),
                   let markerRange = Range(match.range(at: 0), in: line) else { continue }
-            // 方括号 / 角括号：无条件剥（regex 内容上限 48 字已防失控）。
-            let opener = line[markerRange].first
-            if opener == "[" || opener == "【" {
-                line.replaceSubrange(markerRange, with: " ")
-                continue
-            }
-            // 圆括号（含全角）：整行就是这一个圆括号则删整行；否则仅已知词兜底，保留 (插入语)。
-            let isWholeLine = String(line[markerRange]).trimmingCharacters(in: .whitespaces)
-                == line.trimmingCharacters(in: .whitespaces)
             let marker = normalizedNonSpeechMarker(String(line[contentRange]))
-            if isWholeLine || nonSpeechMarkerTerms.contains(marker) {
+            if nonSpeechMarkerTerms.contains(marker) {
                 line.replaceSubrange(markerRange, with: " ")
             }
         }
@@ -429,6 +403,14 @@ struct ModelReply {
     let text: String
     let reachedOutputLimit: Bool
 }
+
+typealias ConfiguredModelSender = @Sendable (
+    AppSettings,
+    String?,
+    String,
+    Int,
+    TranslationContext
+) async throws -> ModelReply
 
 func sendConfiguredMessage(
     settings: AppSettings,
@@ -1287,29 +1269,10 @@ public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
 public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     private let settings: AppSettings
     private let appleTranslationExecutor: any AppleTranslationExecuting
+    private let modelSender: ConfiguredModelSender
 
     /// 每次请求翻译的字幕条数
     private static let chunkSize = 30
-
-    /// 整条字幕不超过这个条数时，整段作为单块翻译，给模型全曲/全片上下文，
-    /// 避免一句（尤其歌词）被切在分块边界上——跨行合并、重排只能在同一块内发生。
-    /// 歌曲一般 40~60 条，足够覆盖；超出则回到 chunkSize 分块并行。
-    /// 单块若撞上输出上限，translateChunk 会自动减半重试兜底。
-    private static let singleChunkMaxCues = 80
-
-    /// 计算分块区间：短字幕整首单块，长字幕按 chunkSize 顺序切分。
-    static func chunkRanges(forCueCount count: Int) -> [Range<Int>] {
-        guard count > 0 else { return [] }
-        if count <= singleChunkMaxCues { return [0..<count] }
-        var ranges: [Range<Int>] = []
-        var start = 0
-        while start < count {
-            let upper = min(start + chunkSize, count)
-            ranges.append(start..<upper)
-            start = upper
-        }
-        return ranges
-    }
 
     /// 翻译系统提示词。目标语言由 context 决定（简体中文 / 繁體中文 / English），不再写死。
     internal static func systemPrompt(
@@ -1329,7 +1292,6 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。
         2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。
         3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
-        4) 圆括号 (…) 或全角（…）里如果是音效、音乐、掌声、笑声、环境声等非语音提示，删掉不译；若是说话人真正说出的话、语气补充或必要说明，则保留并照常翻译。删除后该行通常还有其它内容，照常输出，不要因此减少行数。
         """
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
         if TranslationLanguage.normalizedScript(sourceLanguageCode ?? "") == "ja" {
@@ -1353,7 +1315,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         case .general:
             prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
         case .songLyrics:
-            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 3 条「不增不减」的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
+            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 3 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
         case .interviewConversation:
             prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
         case .tutorialHowTo:
@@ -1402,12 +1364,22 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
 
     init(
         settings: AppSettings,
-        appleTranslationExecutor: any AppleTranslationExecuting
+        appleTranslationExecutor: any AppleTranslationExecuting,
+        modelSender: @escaping ConfiguredModelSender = { settings, system, userContent, maxTokens, context in
+            try await sendConfiguredMessage(
+                settings: settings,
+                system: system,
+                userContent: userContent,
+                maxTokens: maxTokens,
+                context: context
+            )
+        }
     ) {
         // 翻译统一走 translation* 字段，这里把「有效翻译配置」（可能跟随默认 AI 配置）固化进去，
         // 下游 sendConfiguredMessage 无需再关心跟随逻辑。
         self.settings = settings.applyingTranslationConfig(settings.effectiveTranslationConfig)
         self.appleTranslationExecutor = appleTranslationExecutor
+        self.modelSender = modelSender
     }
 
     public func translate(
@@ -1432,10 +1404,15 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
-        // 短字幕整段单块（见 chunkRanges），长字幕按 chunkSize 切分。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
         var output = cues
-        let chunkRanges = Self.chunkRanges(forCueCount: cues.count)
+        var chunkRanges: [Range<Int>] = []
+        var rangeStart = 0
+        while rangeStart < cues.count {
+            let upper = min(rangeStart + Self.chunkSize, cues.count)
+            chunkRanges.append(rangeStart..<upper)
+            rangeStart = upper
+        }
         let maxInFlight = 3
         var merged: [Int: String] = [:]
         var completedCues = 0
@@ -1526,7 +1503,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             "\(startNumber + offset)|\(Self.flattened(cue.text))"
         }.joined(separator: "\n")
 
-        let reply = try await sendConfiguredMessage(
+        let reply = try await sendModelMessage(
             settings: settings,
             system: Self.systemPrompt(
                 targetLanguageDisplayName: context.targetLanguageDisplayName,
@@ -1586,9 +1563,53 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
                 merged.merge(second) { _, new in new }
                 return merged
             }
-            throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
+            return try await repairMissingTranslations(
+                chunk: chunk,
+                startNumber: startNumber,
+                currentMap: map,
+                context: context,
+                advice: advice
+            )
         }
         return map
+    }
+
+    private func repairMissingTranslations(
+        chunk: ArraySlice<SubtitleCue>,
+        startNumber: Int,
+        currentMap: [Int: String],
+        context: TranslationContext,
+        advice: TranslationPromptAdvice?
+    ) async throws -> [Int: String] {
+        var repaired = currentMap
+        for (offset, cue) in chunk.enumerated() {
+            if Task.isCancelled { throw MoongateError.cancelled }
+            let number = startNumber + offset
+            guard (repaired[number] ?? "").isEmpty else { continue }
+            let original = Self.flattened(cue.text)
+            let userContent = "\(number)|\(original)"
+            let reply: ModelReply
+            do {
+                reply = try await sendModelMessage(
+                    settings: settings,
+                    system: Self.systemPrompt(
+                        targetLanguageDisplayName: context.targetLanguageDisplayName,
+                        sourceLanguageCode: context.sourceLanguage,
+                        advice: advice
+                    ),
+                    userContent: userContent,
+                    maxTokens: 1200,
+                    context: context
+                )
+            } catch {
+                repaired[number] = original
+                continue
+            }
+            let retryMap = Self.parseReply(reply.text)
+            let retryText = retryMap[number]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            repaired[number] = retryText.isEmpty ? original : retryText
+        }
+        return repaired
     }
 
     private func makeTranslationPromptAdvice(
@@ -1613,7 +1634,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         字幕内容分析样本：
         \(sample)
         """
-        let reply = try await sendConfiguredMessage(
+        let reply = try await sendModelMessage(
             settings: summarySettings,
             system: system,
             userContent: userContent,
@@ -1624,6 +1645,27 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             throw MoongateError.translateFailed(TranslatorL10n.smartAnalysisInvalid)
         }
         return advice
+    }
+
+    private func sendModelMessage(
+        settings: AppSettings,
+        system: String?,
+        userContent: String,
+        maxTokens: Int,
+        context: TranslationContext
+    ) async throws -> ModelReply {
+        do {
+            return try await modelSender(settings, system, userContent, maxTokens, context)
+        } catch {
+            guard !Task.isCancelled, Self.isTransientModelSendError(error) else { throw error }
+            return try await modelSender(settings, system, userContent, maxTokens, context)
+        }
+    }
+
+    private static func isTransientModelSendError(_ error: Error) -> Bool {
+        if error is URLError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
     }
 
     private static func subtitleAnalysisSample(_ cues: [SubtitleCue]) -> String {
@@ -1663,8 +1705,14 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
 
     /// 字幕条内部换行折叠成一行发给模型。用空格连接（旧版用 " / " 会被模型原样抄进译文，
     /// 出现「可你要真想玩 / 《马力欧赛车 世界》」这种把分隔符当正文的脏输出）。
-    private static func flattened(_ text: String) -> String {
-        text.components(separatedBy: .newlines)
+    static func flattened(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\N", with: "\n")
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .replacingOccurrences(of: "\\h", with: " ")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")

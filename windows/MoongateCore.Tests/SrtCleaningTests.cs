@@ -185,6 +185,41 @@ public class CleanCuesTests
     }
 
     [Fact]
+    public void CleanCues_DropsBracketMarkersWithoutDependingOnLanguageTerms()
+    {
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:01,000", "[음악]"),
+            Cue(2, "00:00:01,000", "00:00:02,000", "Open [dramatic orchestral music] now"),
+            Cue(3, "00:00:02,000", "00:00:03,000", "続けて【効果音】話す"),
+            Cue(4, "00:00:03,000", "00:00:04,000", "♪sing this line♪"),
+            Cue(5, "00:00:04,000", "00:00:05,000", "Keep (important note) here"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal([
+            "Open now",
+            "続けて話す",
+            "sing this line",
+            "Keep (important note) here",
+        ], cleaned.Select(c => c.Text).ToArray());
+    }
+
+    [Fact]
+    public void CleanCues_NormalizesSubtitleEscapesBeforeCleaning()
+    {
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:01,000", "NVIDIA\\hCEO\\Nnext&nbsp;line\u00A0here"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal("NVIDIA CEO\nnext line here", Assert.Single(cleaned).Text);
+    }
+
+    [Fact]
     public void CleanCues_AvoidsSoftBreakInsideAutoCaptionSentence()
     {
         var input = new List<SubtitleCue>

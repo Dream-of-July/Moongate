@@ -827,6 +827,10 @@ public sealed class QueueManager
             {
                 case DownloadProgress.ProgressPhase.Downloading:
                     double? newValue = p.Percent is { } percent ? Math.Min(Math.Max(percent / 100, 0), 1) : null;
+                    if (newValue is { } next && item.Progress is { } current && next < current)
+                    {
+                        return;
+                    }
                     if (newValue is { } nv && item.Progress is { } old && nv < 1 && Math.Abs(nv - old) < 0.01)
                     {
                         return;

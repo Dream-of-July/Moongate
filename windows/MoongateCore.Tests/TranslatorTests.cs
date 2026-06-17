@@ -361,6 +361,38 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Translate_JapaneseFilenamePassesSourceLanguageToChunkAndLineFallbackPrompts()
+    {
+        var srt = WriteSrt("video.ja.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "左隣、あなたの"),
+        ]);
+        var attempts = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                attempts++;
+                return attempts == 1
+                    ? FakeHttpHandler.Json(200, AnthropicReply("1|partial", "max_tokens"))
+                    : FakeHttpHandler.Json(200, AnthropicReply("1|你坐在我的左侧"));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        Assert.Equal("你坐在我的左侧", Assert.Single(SrtTools.ParseSrt(File.ReadAllText(output))).Text);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            var system = RequestSystem(request.Body);
+            Assert.Contains("正在把日语字幕翻译成简体中文", system);
+            Assert.Contains("日文→中文重排示例", system);
+        });
+    }
+
+    [Fact]
     public async Task Translate_WithSmartPrompts_AnalyzesSubtitleThenUsesLyricsPreset()
     {
         var srt = WriteSrt("song.srt",
@@ -455,6 +487,310 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal(TranslationPromptPreset.General, advice.Preset);
     }
 
+    [Fact]
+    public void SystemPrompt_IncludesNaturalOrderAndParentheticalSoundRules()
+    {
+        var prompt = ConfiguredTranslator.SystemPrompt("简体中文");
+
+        Assert.Contains("自然语序", prompt);
+        Assert.Contains("相邻行", prompt);
+        Assert.Contains("悬空成分", prompt);
+        Assert.Contains("圆括号", prompt);
+        Assert.Contains("音效", prompt);
+    }
+
+    [Fact]
+    public void SystemPrompt_JapaneseSourceNamesLanguageAndAddsReorderExamples()
+    {
+        var prompt = ConfiguredTranslator.SystemPrompt("简体中文", sourceLanguageCode: "ja");
+
+        Assert.Contains("正在把日语字幕翻译成简体中文", prompt);
+        Assert.Contains("日文→中文重排示例", prompt);
+        Assert.Contains("左隣、あなたの", prompt);
+        Assert.Contains("確かにほら救われたんだよ", prompt);
+    }
+
+    [Fact]
+    public void SystemPrompt_NonJapaneseSourceOmitsJapaneseFewShot()
+    {
+        var prompt = ConfiguredTranslator.SystemPrompt("简体中文", sourceLanguageCode: "en");
+
+        Assert.Contains("正在把英语字幕翻译成简体中文", prompt);
+        Assert.DoesNotContain("日文→中文重排示例", prompt);
+        Assert.DoesNotContain("左隣、あなたの", prompt);
+    }
+
+    [Fact]
+    public void SystemPrompt_LegacyAdviceOverloadStaysCompatible()
+    {
+        var advice = new TranslationPromptAdvice(
+            "测试摘要",
+            "",
+            [],
+            TranslationPromptPreset.General);
+
+        var prompt = ConfiguredTranslator.SystemPrompt("简体中文", advice);
+
+        Assert.Contains("把用户给出的字幕翻译成简体中文", prompt);
+        Assert.Contains("测试摘要", prompt);
+    }
+
+    [Fact]
+    public async Task Translate_WithSmartPromptsButNoSummaryModel_ThrowsActionableError()
+    {
+        var srt = WriteSrt("smart-missing.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "Hello."),
+        ]);
+        var settings = new AppSettings
+        {
+            TranslationProvider = TranslationProvider.Anthropic,
+            TranslationBaseUrl = "https://gateway.example.com",
+            TranslationModel = "test-model",
+            TranslationAuthToken = "tok",
+            AIProvider = TranslationProvider.Anthropic,
+            AIBaseUrl = "https://gateway.example.com",
+            AIModel = "",
+            AIAuthToken = "tok",
+            SmartTranslationPromptsEnabled = true,
+        };
+        var translator = new ConfiguredTranslator(settings, new FakeHttpHandler());
+
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
+
+        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
+        Assert.Contains("智能翻译提示词", ex.Detail);
+        Assert.Contains("模型", ex.Detail);
+    }
+
+    [Fact]
+    public void SplitTranslatedCueBySentence_SplitsLongMultiSentenceBilingualCue()
+    {
+        var pieces = ConfiguredTranslator.SplitTranslatedCueBySentence(
+            "这是第一句，长度足够触发拆分。这里是第二句，也应该保留。最后还有第三句。",
+            "This is the first sentence. This is the second sentence. Finally the third sentence.",
+            "00:00:00,000",
+            "00:00:09,000");
+
+        Assert.True(pieces.Count >= 2);
+        Assert.Equal("00:00:00,000", pieces[0].Start);
+        Assert.Equal("00:00:09,000", pieces[^1].End);
+        Assert.Equal(
+            "这是第一句，长度足够触发拆分。这里是第二句，也应该保留。最后还有第三句。",
+            string.Concat(pieces.Select(p => p.Text.Split('\n')[0])));
+        Assert.Equal(
+            "Thisisthefirstsentence.Thisisthesecondsentence.Finallythethirdsentence.",
+            string.Concat(pieces.Select(p => p.Text.Split('\n').ElementAtOrDefault(1) ?? ""))
+                .Replace(" ", ""));
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_UnpunctuatedAsr_UsesStrictAlignedSegments()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:01,000", "we know it"),
+            new(2, "00:00:01,000", "00:00:02,000", "what is the vision"),
+            new(3, "00:00:02,000", "00:00:03,000", "for what you see"),
+            new(4, "00:00:03,000", "00:00:04,000", "coming next"),
+            new(5, "00:00:04,000", "00:00:05,000", "we asked ourselves"),
+            new(6, "00:00:05,000", "00:00:06,000", "how far can it go"),
+        };
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|we know it what is the vision for what you see coming next.\n2|we asked ourselves how far can it go?")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.Equal(2, output.Count);
+        Assert.Equal("we know it what is the vision for what you see coming next.", output[0].Text);
+        Assert.Equal("we asked ourselves how far can it go?", output[1].Text);
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal("00:00:06,000", output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_UsesCueLocalTimeInterpolation()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:10,000", "alpha beta"),
+            new(2, "00:00:10,000", "00:00:11,000", "gamma delta epsilon zeta"),
+            new(3, "00:00:11,000", "00:00:12,000", "eta theta iota kappa"),
+            new(4, "00:00:12,000", "00:00:13,000", "lambda mu nu xi"),
+            new(5, "00:00:13,000", "00:00:14,000", "omicron pi rho sigma tau upsilon phi chi psi omega"),
+        };
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|alpha beta.\n2|gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega.")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.Equal(2, output.Count);
+        Assert.Equal("00:00:10,000", output[0].End);
+        Assert.Equal("00:00:10,000", output[1].Start);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_LongInputChunksAtCueBoundaries()
+    {
+        var cues = NumberedWordCues(cueCount: 35, tokensPerCue: 35);
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var transcript = SegmentationTranscript(captured.Body);
+                return FakeHttpHandler.Json(200, AnthropicReply($"1|{transcript}."));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.True(handler.Requests.Count >= 2);
+        Assert.True(output.Count >= 2);
+        Assert.True(output.Count < cues.Count);
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal(cues[^1].End, output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_OutputLimitHalvesChunkAndRetries()
+    {
+        var cues = NumberedWordCues(cueCount: 8, tokensPerCue: 4);
+        var attempts = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    return FakeHttpHandler.Json(200, AnthropicReply("1|partial", "max_tokens"));
+                }
+                var transcript = SegmentationTranscript(captured.Body);
+                return FakeHttpHandler.Json(200, AnthropicReply($"1|{transcript}."));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.Equal(3, attempts);
+        Assert.Equal(2, output.Count);
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal(cues[^1].End, output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_LongSegmentSafetySplitsAndClamps()
+    {
+        var cues = NumberedWordCues(cueCount: 10, tokensPerCue: 3);
+        var transcript = string.Join(' ', cues.Select(c => ConfiguredTranslator.Flattened(c.Text)));
+        var tokens = transcript.Split(' ');
+        var segment = string.Join(' ', tokens.Take(15)) + ", " + string.Join(' ', tokens.Skip(15));
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply($"1|{segment}.")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.Equal(2, output.Count);
+        Assert.Equal(1, output[0].Index);
+        Assert.Equal(2, output[1].Index);
+        Assert.True(SrtTools.SrtTimeToSeconds(output[0].End) <= SrtTools.SrtTimeToSeconds(output[1].Start));
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal(cues[^1].End, output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_ShortSegmentsMerge()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:01,000", "alpha"),
+            new(2, "00:00:01,000", "00:00:02,000", "beta"),
+            new(3, "00:00:02,000", "00:00:03,000", "gamma"),
+            new(4, "00:00:03,000", "00:00:04,000", "delta"),
+            new(5, "00:00:04,000", "00:00:05,000", "epsilon"),
+        };
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|alpha beta.\n2|gamma delta.\n3|epsilon.")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        var single = Assert.Single(output);
+        Assert.Equal("alpha beta. gamma delta. epsilon.", single.Text);
+        Assert.Equal("00:00:00,000", single.Start);
+        Assert.Equal("00:00:05,000", single.End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_AlignmentFailure_ReturnsOriginalCues()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:01,000", "we know it"),
+            new(2, "00:00:01,000", "00:00:02,000", "what is the vision"),
+            new(3, "00:00:02,000", "00:00:03,000", "for what you see"),
+            new(4, "00:00:03,000", "00:00:04,000", "coming next"),
+            new(5, "00:00:04,000", "00:00:05,000", "we asked ourselves"),
+            new(6, "00:00:05,000", "00:00:06,000", "how far can it go"),
+        };
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|we know completely different words.")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.Equal(cues.Select(c => c.Text), output.Select(c => c.Text));
+    }
+
+    private static List<SubtitleCue> NumberedWordCues(int cueCount, int tokensPerCue)
+    {
+        var token = 1;
+        var cues = new List<SubtitleCue>();
+        for (var cueIndex = 0; cueIndex < cueCount; cueIndex++)
+        {
+            var words = new List<string>();
+            for (var i = 0; i < tokensPerCue; i++)
+            {
+                words.Add($"word{token:D5}");
+                token++;
+            }
+            cues.Add(new SubtitleCue(
+                cueIndex + 1,
+                SrtTools.SecondsToSrtTime(cueIndex),
+                SrtTools.SecondsToSrtTime(cueIndex + 1),
+                string.Join(' ', words)));
+        }
+        return cues;
+    }
+
+    private static string SegmentationTranscript(string requestBody)
+    {
+        using var doc = JsonDocument.Parse(requestBody);
+        var content = doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+        var marker = "待断句文本：\n";
+        var idx = content.LastIndexOf(marker, StringComparison.Ordinal);
+        return idx < 0 ? content.Trim() : content[(idx + marker.Length)..].Trim();
+    }
+
     private static string RequestSystem(string requestBody)
     {
         using var doc = JsonDocument.Parse(requestBody);
@@ -530,23 +866,57 @@ public class ConfiguredTranslatorTests : IDisposable
         }
     }
 
-    /// <summary>译文缺失任意行 → 抛错而不是静默保留原文。</summary>
+    /// <summary>译文缺失任意行 → 对缺失行逐行补齐，仍失败则回退原文，整体不归零。</summary>
     [Fact]
-    public async Task Translate_MissingLines_Throws()
+    public async Task Translate_MissingLines_FallsBackWithoutFailingWholeTranslation()
     {
         var cues = Enumerable.Range(1, 3).Select(i => new SubtitleCue(
             i, SrtTools.SecondsToSrtTime(i * 10), SrtTools.SecondsToSrtTime(i * 10 + 2), $"Sentence {i}."));
         var srt = WriteSrt("missing.srt", cues);
         var handler = new FakeHttpHandler
         {
-            // 缺第 2 条（33%）也必须失败，避免产物混入未翻译原文。
-            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|一\n3|三")),
+            Responder = captured =>
+            {
+                using var doc = JsonDocument.Parse(captured.Body);
+                var content = doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+                return content == "2|Sentence 2."
+                    ? FakeHttpHandler.Json(200, AnthropicReply(""))
+                    : FakeHttpHandler.Json(200, AnthropicReply("1|一\n3|三"));
+            },
         };
         var translator = new ConfiguredTranslator(Settings, handler);
-        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
-            translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
-        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
-        Assert.Equal("模型返回格式异常，缺失译文行", ex.Detail);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(["一", "Sentence 2.", "三"], result.Select(c => c.Text).ToArray());
+    }
+
+    [Fact]
+    public async Task Translate_TransientNetworkError_RetriesInsideChunk()
+    {
+        var srt = WriteSrt("retry.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "Hello."),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "Bye."),
+        ]);
+        var attempts = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                attempts++;
+                if (attempts == 1) throw new HttpRequestException("timeout");
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(["中1", "中2"], result.Select(c => c.Text).ToArray());
+        Assert.Equal(2, attempts);
     }
 
     [Fact]
@@ -563,6 +933,13 @@ public class ConfiguredTranslatorTests : IDisposable
     public void Flattened_JoinsLinesWithSpace()
     {
         Assert.Equal("a b", ConfiguredTranslator.Flattened(" a \n\n b "));
+    }
+
+    [Fact]
+    public void Flattened_NormalizesSubtitleEscapesBeforeTranslation()
+    {
+        Assert.Equal("NVIDIA CEO next line here",
+            ConfiguredTranslator.Flattened("NVIDIA\\hCEO\\Nnext&nbsp;line\u00A0here"));
     }
 
     [Fact]

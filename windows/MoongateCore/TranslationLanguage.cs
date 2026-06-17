@@ -23,6 +23,31 @@ public static class TranslationLanguage
         _ => code,
     };
 
+    /// <summary>源语言代码 → LLM 中文提示词里的人类可读名；未知码回退原始码。</summary>
+    public static string? SourceDisplayName(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        return NormalizedScript(code) switch
+        {
+            "zh-Hans" => "简体中文",
+            "zh-Hant" => "繁体中文",
+            "ja" => "日语",
+            "ko" => "韩语",
+            "en" => "英语",
+            "fr" => "法语",
+            "de" => "德语",
+            "es" => "西班牙语",
+            "ru" => "俄语",
+            "it" => "意大利语",
+            "pt" => "葡萄牙语",
+            "th" => "泰语",
+            "vi" => "越南语",
+            "id" => "印尼语",
+            "ar" => "阿拉伯语",
+            _ => code.Trim(),
+        };
+    }
+
     /// <summary>
     /// 把任意 BCP-47 风格代码归一到"脚本级"标识，区分简繁。
     /// zh / zh-CN / zh-Hans → "zh-Hans"；zh-Hant / zh-TW / zh-HK / zh-MO → "zh-Hant"；其余取主语言子标签。
@@ -41,6 +66,16 @@ public static class TranslationLanguage
     }
 
     public static string TranslatedSubtitleFileSuffix(string code) => $".{NormalizedScript(code)}.srt";
+
+    public static string? SourceLanguageIdentifierFromSubtitleFile(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(stem)) return null;
+        var dot = stem.LastIndexOf('.');
+        if (dot < 0 || dot == stem.Length - 1) return null;
+        var identifier = stem[(dot + 1)..].Trim().ToLowerInvariant();
+        return identifier.Length == 0 ? null : identifier;
+    }
 
     public static bool IsTranslatedSubtitleFileName(string name)
     {

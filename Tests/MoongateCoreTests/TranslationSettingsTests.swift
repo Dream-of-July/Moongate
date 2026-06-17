@@ -161,8 +161,6 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(unknown.contains("把用户给出的字幕翻译成简体中文"))
         XCTAssertFalse(unknown.contains("日文→中文重排示例"))
         XCTAssertTrue(unknown.contains("自然语序"))
-        // 圆括号交给 LLM 判断删不删（音效删、对白保留），与源语言无关，基础提示词恒含。
-        XCTAssertTrue(unknown.contains("非语音提示，删掉不译"))
 
         // 非日语源语言（英语）：点名但不加日语范例。
         let en = ConfiguredTranslator.systemPrompt(
@@ -171,21 +169,6 @@ final class TranslationSettingsTests: XCTestCase {
         )
         XCTAssertTrue(en.contains("正在把英语字幕翻译成简体中文"))
         XCTAssertFalse(en.contains("日文→中文重排示例"))
-    }
-
-    func testChunkRangesKeepShortSubtitlesWhole() {
-        // 空字幕不产生任何块。
-        XCTAssertEqual(ConfiguredTranslator.chunkRanges(forCueCount: 0), [])
-        // 单条 / 典型歌曲长度（48）/ 阈值（80）都整段单块，避免句子被切在分块边界。
-        XCTAssertEqual(ConfiguredTranslator.chunkRanges(forCueCount: 1), [0..<1])
-        XCTAssertEqual(ConfiguredTranslator.chunkRanges(forCueCount: 48), [0..<48])
-        XCTAssertEqual(ConfiguredTranslator.chunkRanges(forCueCount: 80), [0..<80])
-        // 超过阈值回到 30 条切分，并覆盖全部条数、不重叠。
-        let long = ConfiguredTranslator.chunkRanges(forCueCount: 81)
-        XCTAssertEqual(long, [0..<30, 30..<60, 60..<81])
-        let veryLong = ConfiguredTranslator.chunkRanges(forCueCount: 100)
-        XCTAssertEqual(veryLong, [0..<30, 30..<60, 60..<90, 90..<100])
-        XCTAssertEqual(veryLong.reduce(0) { $0 + $1.count }, 100)
     }
 
     func testSmartTranslationAdviceKeepsLegacySummaryOnlyJSONCompatible() throws {
@@ -971,60 +954,6 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertEqual(cleaned.map(\.text), ["Welcome back."])
         XCTAssertFalse(cleaned.contains { $0.text.contains("[") || $0.text.contains("Music") || $0.text.contains("音乐") })
-    }
-
-    func testCleanCuesDropsJapaneseNonSpeechMarkers() {
-        // 日文自动字幕常见标记：「音楽(楽)」既不是简体「乐」也不是繁体「樂」，曾因词表只有中文形而漏删。
-        let input = [
-            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[音楽]"),
-            // 行内带实际发声 + 标记（截图里的「ハァ [音楽]」），应只剥标记、保留发声。
-            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "ハァ [音楽]"),
-            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "（拍手）こんにちは"),
-            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "【効果音】")
-        ]
-
-        let cleaned = cleanCues(input)
-
-        XCTAssertEqual(cleaned.map(\.text), ["ハァ", "こんにちは"])
-        XCTAssertFalse(cleaned.contains { $0.text.contains("音楽") || $0.text.contains("効果音") || $0.text.contains("[") })
-    }
-
-    func testCleanCuesStripsBracketTagsInAnyLanguageWithoutWordlist() {
-        // 方括号/角括号按"括号样式"无条件剥——这些词都不在 nonSpeechMarkerTerms 里，仍应清掉。
-        let input = [
-            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[음악]"),            // 韩：音乐
-            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "안녕하세요 [박수]"),    // 韩：你好 [掌声]
-            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "Hola [Música]"),      // 西：音乐
-            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "Intro [dramatic orchestral music] here"),
-            SubtitleCue(index: 5, start: "00:00:04,000", end: "00:00:05,000", text: "【効果音】テスト")
-        ]
-
-        let cleaned = cleanCues(input)
-
-        XCTAssertEqual(cleaned.map(\.text), [
-            "안녕하세요",
-            "Hola",
-            "Intro here",
-            "テスト"
-        ])
-        XCTAssertFalse(cleaned.contains { $0.text.contains("[") || $0.text.contains("【") })
-    }
-
-    func testCleanCuesRoundParensConservativeAndMusicalNotes() {
-        let input = [
-            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "(Applause)"),          // 整行圆括号 → 删
-            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "（拍手喝采）"),          // 整行全角圆括号 → 删
-            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "Keep (important note) here"), // 行内圆括号、非音效 → 保留
-            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "♪ la la la ♪")          // 音符 → 去符号留词
-        ]
-
-        let cleaned = cleanCues(input)
-
-        XCTAssertEqual(cleaned.map(\.text), [
-            "Keep (important note) here",
-            "la la la"
-        ])
-        XCTAssertFalse(cleaned.contains { $0.text.contains("♪") })
     }
 
     func testCleanCuesDropsBroaderNonSpeechMarkersWithoutRemovingDialogueParentheses() {

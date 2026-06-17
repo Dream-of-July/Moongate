@@ -617,6 +617,9 @@ final class QueueManager: ObservableObject {
             switch p.phase {
             case .downloading:
                 let newValue = p.percent.map { min(max($0 / 100, 0), 1) }
+                if let new = newValue, let old = $0.progress, new < old {
+                    return
+                }
                 if let new = newValue, let old = $0.progress, new < 1, abs(new - old) < 0.01 {
                     return
                 }

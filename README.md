@@ -48,6 +48,8 @@ Windows 安装包：
 ./build-windows.sh
 ```
 
+移动端脚本和工程只用于当前开发验证，不代表发布构建；状态见下方「移动端状态」。
+
 ## 命令行测试工具
 
 不开 GUI 也能验证全流程：
@@ -105,12 +107,22 @@ Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 
 双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
 详见 [docs/WINDOWS.md](docs/WINDOWS.md)。**GUI 尚未在真实 Windows 上运行验证。**
 
+## 移动端状态
+
+iOS 和 Android 仍是 **no-ship** 的开发面，不属于当前可发布支持矩阵。
+
+- iOS WIP 位于 `Sources/MoongateMobileCore/`、`Sources/MoongateiOS/`、`Sources/MoongateiOSApp/` 和 `ios/`。`Scripts/build-ios-swiftpm.sh` 只验证 SwiftPM host/shared code，不等于真实 Xcode iOS app host；`Scripts/build-ios-xcode.sh` 与 `Scripts/run-ios-simulator-smoke.sh` 只能证明本地源码、无签名 bundle 或模拟器 smoke 的一部分。涉及 iOS 26 SDK 的 adapter 需要 Xcode/iPhoneOS 26 SDK 或真实 Xcode/device gate；这些脚本都不等于签名安装、TestFlight/App Store、真机后台下载/渲染、Apple Translation/Apple Intelligence 真实执行或完整视觉/无障碍 QA。
+- Android WIP 位于 `android/`。`Scripts/build-android-local.sh` 只使用现有 `android/gradlew` 或 PATH 中已有的 `Gradle`，并强制以 `--offline` 执行；当前没有 wrapper/本机 Gradle，或离线缓存/Android SDK 组件缺失时会安全退出，不下载依赖、安装工具或访问外部服务。因此 Android APK、Gradle 单测、Compose runtime、WorkManager/通知、后台下载/渲染和真机 QA 仍未证明。
+- 详细移动端门槛见 `docs/exec-plans/2026-06-12-mobile-native.md`、`docs/exec-plans/2026-06-13-ios-native-architecture.md` 和 `docs/exec-plans/2026-06-13-android-native-architecture.md`。
+
 ## 目录结构
 
 - `Sources/MoongateCore/` — 核心：契约类型（`Models.swift`）、yt-dlp 封装（`Engine.swift`）、页面嗅探（`PageSniffer.swift`）、翻译/总结（`Translator.swift`）、字幕烧录（`Burner.swift`）、转码（`Transcoder.swift`）、更新检查（`UpdateChecker.swift`）
 - `Sources/Moongate/` — SwiftUI 界面（含 `SummaryView.swift` AI 总结卡片、`UpdateService.swift` 远程更新）
 - `Sources/moongate-cli/` — 命令行测试工具
-- `Sources/MoongateMobileCore/` — 纯契约层（数据模型、渲染请求规划、字幕文档），被 `MoongateCore` 复用，不依赖桌面 yt-dlp/ffmpeg/Process 实现
+- `Sources/MoongateMobileCore/` — 移动端纯契约，不依赖桌面 yt-dlp/ffmpeg/Process 实现
+- `Sources/MoongateiOS/`、`Sources/MoongateiOSApp/`、`ios/` — iOS WIP shell、SwiftPM host 与本地 Xcode wrapper
+- `android/` — Android WIP Gradle/Kotlin/Compose 工程
 - `windows/` — Windows 版（C# 核心库 + 单测、WPF 界面、NSIS 安装脚本）
 
 ## 已知限制
@@ -118,6 +130,7 @@ Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 
 - 首次写入 `~/Downloads` 时 macOS 会弹一次系统授权询问，允许即可。
 - 仅下载你有权访问的公开视频；不绕过任何 DRM 或付费墙。
 - 任天堂 `assets.nintendo.com` 直链视频只有原画一档（其 CDN 已禁用转码变体）。
+- 移动端仍未完成发布级验证；不要把源码边界测试或本地 bundle/smoke 结果解读为移动端发布就绪。
 
 ## License
 

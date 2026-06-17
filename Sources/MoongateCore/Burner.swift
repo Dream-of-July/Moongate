@@ -738,16 +738,19 @@ public struct FFmpegBurner: SubtitleBurner {
 
     // MARK: ASS 生成（双语两级字号，按视频长宽比自适应）
 
-    private static let chineseFontSize = 15
+    private static let chineseFontSize = 13
     /// 原文字号相对译文字号的比例（不分语言，永远 80%）。
     private static let originalSizeRatio = 0.8
     /// 原文不透明度（80%）对应的 ASS alpha 十六进制（00=不透明，FF=全透明）。
     /// round((1-0.8)*255)=51=0x33。作用于 PrimaryColour 与描边/阴影（\alpha 整体变淡）。
     static let originalAlphaHex = "33"
+    /// 中文译文不透明度（96%）对应的 ASS alpha 十六进制。round((1-0.96)*255)=10=0x0A。
+    /// 只作用于译文字体填充（PrimaryColour）；黑色描边保持不透明以保可读性。
+    static let chineseAlphaHex = "0A"
 
     /// 按视频长宽比推导的 ASS 布局参数。
-    /// 字号按「高度的固定比例」调校（横屏 16:9 下译文 15/288≈5.2% 视频高，原文为其 80%）。
-    /// 换行采用自动布局：左右只留最小边距（约画面 4%），只有真的放不下才换行。
+    /// 字号按「高度的固定比例」调校（横屏 16:9 下译文 13/288≈4.5% 视频高，原文为其 80%）。
+    /// 换行采用自动布局：左右只留最小边距（约画面 2.5%），只有真的放不下才换行。
     struct ASSLayout: Equatable {
         let playResX: Int
         let playResY = 288
@@ -774,10 +777,10 @@ public struct FFmpegBurner: SubtitleBurner {
             }
             // 原文字号永远是译文的 80%（不分语言）。
             originalSize = max(6, Int((Double(chineseSize) * Self.originalSizeRatio).rounded()))
-            // 自动布局：左右只留一个最小边距（约画面 4%），不再按「舒适阅读宽度」强行收窄。
+            // 自动布局：左右只留一个最小边距（约画面 2.5%），不再按「舒适阅读宽度」强行收窄。
             // 只有真的放不下时才换行（容量按可用宽度 / 字宽推算）。
             marginV = 20
-            marginH = max(5, Int((Double(playResX) * 0.04).rounded()))
+            marginH = max(5, Int((Double(playResX) * 0.025).rounded()))
             let usableWidth = Double(playResX - marginH * 2)
             // 中文（含日韩等 CJK 文字）按字宽≈1em：容量 = 可用宽度 / 字号。
             let cjkCapacity = Int(usableWidth / Double(max(chineseSize, 1)))
@@ -848,7 +851,7 @@ public struct FFmpegBurner: SubtitleBurner {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H00FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,2,\(layout.marginH),\(layout.marginH),\(layout.marginV),1
+        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H\(chineseAlphaHex)FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,2,\(layout.marginH),\(layout.marginH),\(layout.marginV),1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

@@ -279,6 +279,20 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     private var hlsSubtitleCache: [String: [String: String]] = [:]
     private var hlsCacheOrder: [String] = []
 
+    final class DownloadProgressTracker: @unchecked Sendable {
+        private let lock = NSLock()
+        private var highestPercent: Double = 0
+
+        func normalizedPercent(_ percent: Double?) -> Double? {
+            guard let percent else { return nil }
+            let clamped = min(max(percent, 0), 100)
+            lock.lock()
+            defer { lock.unlock() }
+            highestPercent = max(highestPercent, clamped)
+            return highestPercent
+        }
+    }
+
     public init() {}
 
     // MARK: 二进制定位
@@ -1111,6 +1125,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
         let destPrefix = destDir.path.hasSuffix("/") ? destDir.path : destDir.path + "/"
         let printedPaths = PathCollector()
+        let progressTracker = DownloadProgressTracker()
         var status: Int32 = -1
         var stderrTail = ""
         // 首次下载偶发 "Requested format is not available"（YouTube n-challenge 冷启动 /
@@ -1131,7 +1146,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                         control?.setActivePID(pid)
                     }
                 ) { line in
-                    Self.handleOutputLine(line, progress: progress)
+                    Self.handleOutputLine(line, state: progressTracker, progress: progress)
                     if line.hasPrefix(destPrefix) { printedPaths.append(line) }
                 }
                 control?.setActivePID(0)
@@ -1296,8 +1311,9 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         }
     }
 
-    private static func handleOutputLine(
+    static func handleOutputLine(
         _ line: String,
+        state: DownloadProgressTracker,
         progress: @Sendable (DownloadProgress) -> Void
     ) {
         if line.hasPrefix("MGP|") {
@@ -1311,7 +1327,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             let eta = parts.count > 3 ? normalizeField(parts[3]) : nil
             progress(DownloadProgress(
                 phase: .downloading,
-                percent: percent.map { min(max($0, 0), 100) },
+                percent: state.normalizedPercent(percent),
                 speedText: speed,
                 etaText: eta
             ))
