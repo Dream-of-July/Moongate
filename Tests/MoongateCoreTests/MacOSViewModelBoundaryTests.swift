@@ -20,7 +20,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
 
         XCTAssertTrue(source.contains("shouldRequireTranslationReadiness(for mode: ChineseSubtitleMode, info: VideoInfo) -> Bool"))
-        XCTAssertTrue(source.contains("mode.requiresTranslation && !translationSourceIsChinese(in: info)"))
+        XCTAssertTrue(source.contains("mode.requiresTranslation && !translationSourceMatchesTarget(in: info)"))
         XCTAssertTrue(startDownloadBody.contains("shouldRequireTranslationReadiness(for: mode, info: info)"))
         XCTAssertFalse(startDownloadBody.contains("if chineseMode.requiresTranslation"))
 
@@ -48,9 +48,8 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(startDownloadBody.contains("let selectedSubtitleIDsSnapshot = selectedSubtitleIDs"))
         XCTAssertTrue(startDownloadBody.contains("let currentSettings = settings"))
         XCTAssertTrue(startDownloadBody.contains("shouldRequireTranslationReadiness(for: mode, info: info)"))
-        XCTAssertTrue(startDownloadBody.contains("TranslationContext("))
+        XCTAssertTrue(startDownloadBody.contains("currentSettings.makeTranslationContext("))
         XCTAssertTrue(startDownloadBody.contains("sourceLanguage: translationSourceSubtitle(in: info)?.id"))
-        XCTAssertTrue(startDownloadBody.contains("targetLanguage: \"zh-Hans\""))
         XCTAssertTrue(startDownloadBody.contains("await blockIfTranslationNotReady("))
         XCTAssertTrue(startDownloadBody.contains("settings: currentSettings"))
         XCTAssertTrue(startDownloadBody.contains("guard startSession == session else { return }"))
@@ -91,8 +90,8 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertLessThan(translationContext.upperBound, contextAwareBlock.lowerBound)
         XCTAssertLessThan(contextAwareBlock.upperBound, requestConstruction.lowerBound)
         XCTAssertTrue(compactBatchBody.contains("shouldRequireTranslationReadiness( for: mode, info: info,"))
+        XCTAssertTrue(processBatchBody.contains("currentSettings.makeTranslationContext("))
         XCTAssertTrue(processBatchBody.contains("sourceLanguage: subtitleLangs.first ?? autoSubtitleLangs.first"))
-        XCTAssertTrue(processBatchBody.contains("targetLanguage: \"zh-Hans\""))
         XCTAssertTrue(processBatchBody.contains("await blockIfTranslationNotReady("))
         XCTAssertTrue(processBatchBody.contains("settings: currentSettings"))
         XCTAssertTrue(source.contains(

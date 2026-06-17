@@ -36,40 +36,43 @@ public sealed class MoongateException : Exception
     public static MoongateException BinaryNotFound(string name) => new(
         MoongateErrorKind.BinaryNotFound, name,
         L10n.T($"找不到 {name}。请在「设置」里重新下载依赖组件后重试。",
+            $"找不到 {name}。請在「設定」裡重新下載依賴元件後重試。",
             $"Could not find {name}. Re-download the components in Settings and try again."));
 
     public static MoongateException SniffFailed(string reason) => new(
         MoongateErrorKind.SniffFailed, reason,
         L10n.T($"没有在这个页面里找到可下载的视频。{reason}",
+            $"沒有在這個頁面裡找到可下載的影片。{reason}",
             $"No downloadable video was found on this page. {reason}"));
 
     public static MoongateException AnalyzeFailed(string reason) => new(
         MoongateErrorKind.AnalyzeFailed, reason,
-        L10n.T($"解析视频信息失败：{reason}", $"Failed to analyze the video: {reason}"));
+        L10n.T($"解析视频信息失败：{reason}", $"解析影片資訊失敗：{reason}", $"Failed to analyze the video: {reason}"));
 
     public static MoongateException UpdateFailed(string reason) => new(
         MoongateErrorKind.UpdateFailed, reason,
-        L10n.T($"检查更新失败：{reason}", $"Update check failed: {reason}"));
+        L10n.T($"检查更新失败：{reason}", $"檢查更新失敗：{reason}", $"Update check failed: {reason}"));
 
     public static MoongateException DownloadFailed(string reason) => new(
         MoongateErrorKind.DownloadFailed, reason,
-        L10n.T($"下载失败：{reason}", $"Download failed: {reason}"));
+        L10n.T($"下载失败：{reason}", $"下載失敗：{reason}", $"Download failed: {reason}"));
 
     public static MoongateException LoginRequired(string site) => new(
         MoongateErrorKind.LoginRequired, site,
         L10n.T($"{site} 需要登录后才能下载。点击「去登录」，在弹出的页面里登录账号后重试。",
+            $"{site} 需要登入後才能下載。點擊「去登入」，在彈出的頁面裡登入帳號後重試。",
             $"{site} requires sign-in before downloading. Click \"Sign in\", log in on the page that opens, then retry."));
 
     public static MoongateException TranslateFailed(string reason) => new(
         MoongateErrorKind.TranslateFailed, reason,
-        L10n.T($"字幕翻译失败：{reason}", $"Subtitle translation failed: {reason}"));
+        L10n.T($"字幕翻译失败：{reason}", $"字幕翻譯失敗：{reason}", $"Subtitle translation failed: {reason}"));
 
     public static MoongateException BurnFailed(string reason) => new(
         MoongateErrorKind.BurnFailed, reason,
-        L10n.T($"字幕烧录失败：{reason}", $"Subtitle burn-in failed: {reason}"));
+        L10n.T($"字幕烧录失败：{reason}", $"字幕燒錄失敗：{reason}", $"Subtitle burn-in failed: {reason}"));
 
     public static MoongateException Cancelled() => new(
-        MoongateErrorKind.Cancelled, "", L10n.T("已取消", "Cancelled"));
+        MoongateErrorKind.Cancelled, "", L10n.T("已取消", "已取消", "Cancelled"));
 }
 
 // MARK: - 链接解析候选
@@ -134,7 +137,7 @@ public static class DynamicRangeExtensions
     public static string? Badge(this DynamicRange r) => r switch
     {
         DynamicRange.Hdr10 => "HDR",
-        DynamicRange.DolbyVision => "杜比视界",
+        DynamicRange.DolbyVision => L10n.T("杜比视界", "杜比視界", "Dolby Vision"),
         _ => null,
     };
 }
@@ -235,7 +238,7 @@ public sealed record DownloadResult
     public required IReadOnlyList<string> Files { get; init; }
 }
 
-// MARK: - 中文字幕（翻译与烧录）
+// MARK: - 字幕翻译与烧录
 
 /// <summary>烧录/输出字幕的样式。JSON 序列化值与 Swift 版一致（bilingual / chineseOnly）。</summary>
 public enum SubtitleStyle
@@ -326,8 +329,8 @@ public interface ISubtitleTranslator
 public interface ISubtitleBurner
 {
     /// <summary>
-    /// 把 subtitle 烧录进 video，输出 "&lt;原名&gt;（中文字幕）.mp4" 风格的新文件（不覆盖原片）；
-    /// outputTag 自定义文件名后缀标签（null 用默认「（中文字幕）」；直压原文字幕模式传「（字幕版）」）；
+    /// 把 subtitle 烧录进 video，输出 "&lt;原名&gt;（字幕版）.mp4" 风格的新文件（不覆盖原片）；
+    /// outputTag 自定义文件名后缀标签（null 用默认「（字幕版）」）。
     /// maxHeight 非空且源更高时缩放到该高度；progress 为 0...1。
     /// backend 决定用硬件（NVENC/QSV/AMF）还是软件编码器；alwaysH264=true 时无视源编码强制 H.264（兼容优先）。
     /// control 非空时支持暂停/取消（挂起/终止 ffmpeg 进程树）。失败抛 BurnFailed。返回输出文件路径。

@@ -8,7 +8,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.6.1"
+  !define APPVERSION "0.7.0"
 !endif
 !ifndef ICON_PATH
   !define ICON_PATH "windows/assets/app-nsis.ico"

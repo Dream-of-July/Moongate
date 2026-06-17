@@ -13,6 +13,7 @@ struct QueueItemView: View {
     let onRetry: () -> Void
     let onRemove: () -> Void
     let onReveal: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -61,37 +62,37 @@ struct QueueItemView: View {
     }
 
     private var statusText: String {
-        if item.isPaused { return "已暂停" }
+        if item.isPaused { return localizer.t(L.Queue.paused) }
         switch item.stage {
         case .queued:
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
-            return item.statusText ?? "排队中…"
+            return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
         case .downloading:
             if item.isPostDownloadProcessing { return postDownloadProcessingText }
-            if let p = item.progress { return "下载中 \(Int(p * 100))%" }
-            return "下载中…"
+            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.downloading)
         case .translating:
-            if let p = item.progress { return "翻译字幕中 \(Int(p * 100))%" }
-            return "翻译字幕中…"
+            if let p = item.progress { return localizer.t(L.Queue.translatingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.translating)
         case .burning:
-            if let p = item.progress { return "烧录中 \(Int(p * 100))%" }
-            return "烧录中…"
+            if let p = item.progress { return localizer.t(L.Queue.burningPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.burning)
         case .done:
-            return item.statusText ?? "已完成"
+            return item.statusText ?? localizer.t(L.Queue.done)
         case .cancelled:
-            return item.statusText ?? "已取消"
+            return item.statusText ?? localizer.t(L.Queue.cancelled)
         case .failed(let reason):
-            return "失败：\(reason)"
+            return localizer.t(L.Queue.failedWithReason, reason)
         }
     }
 
     private var postDownloadProcessingText: String {
         switch item.postDownloadProcessingKind {
         case .transcoding:
-            if let p = item.progress { return "转码中 \(Int(p * 100))%" }
-            return "转码中…"
+            if let p = item.progress { return localizer.t(L.Queue.transcodingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.transcoding)
         case .generic, nil:
-            return (item.statusText ?? "处理中") + "…"
+            return (item.statusText ?? localizer.t(L.Queue.processing)) + "…"
         }
     }
 
@@ -133,45 +134,45 @@ struct QueueItemView: View {
     private var progressStageAccessibilityName: String {
         switch item.stage {
         case .queued:
-            return "排队进度"
+            return localizer.t(L.Queue.queueProgress)
         case .downloading:
-            if item.postDownloadProcessingKind == .transcoding { return "转码进度" }
-            return item.isPostDownloadProcessing ? "处理进度" : "下载进度"
+            if item.postDownloadProcessingKind == .transcoding { return localizer.t(L.Queue.transcodeProgress) }
+            return item.isPostDownloadProcessing ? localizer.t(L.Queue.processingProgress) : localizer.t(L.Queue.downloadProgress)
         case .translating:
-            return "字幕翻译进度"
+            return localizer.t(L.Queue.translationProgress)
         case .burning:
-            return "字幕烧录进度"
+            return localizer.t(L.Queue.burnProgress)
         case .done:
-            return "完成进度"
+            return localizer.t(L.Queue.doneProgress)
         case .failed:
-            return "失败进度"
+            return localizer.t(L.Queue.failedProgress)
         case .cancelled:
-            return "取消进度"
+            return localizer.t(L.Queue.cancelledProgress)
         }
     }
 
     private var progressAccessibilityValue: String {
-        if item.isPaused { return "已暂停" }
+        if item.isPaused { return localizer.t(L.Queue.paused) }
         if let p = item.progress {
             let percent = Int((min(max(p, 0), 1) * 100).rounded())
             return "\(percent)%"
         }
         switch item.stage {
         case .queued:
-            return item.statusText ?? "排队中"
+            return item.statusText ?? localizer.t(L.Queue.queued)
         case .downloading:
-            if item.postDownloadProcessingKind == .transcoding { return "转码中，进度不确定" }
-            return item.isPostDownloadProcessing ? "下载完成，正在处理" : "下载中，进度不确定"
+            if item.postDownloadProcessingKind == .transcoding { return localizer.t(L.Queue.progressIndeterminateTranscoding) }
+            return item.isPostDownloadProcessing ? localizer.t(L.Queue.progressDownloadProcessing) : localizer.t(L.Queue.progressIndeterminateDownloading)
         case .translating:
-            return "翻译字幕中，进度不确定"
+            return localizer.t(L.Queue.progressIndeterminateTranslating)
         case .burning:
-            return "烧录中，进度不确定"
+            return localizer.t(L.Queue.progressIndeterminateBurning)
         case .done:
-            return item.statusText ?? "已完成"
+            return item.statusText ?? localizer.t(L.Queue.done)
         case .failed(let reason):
-            return "失败：\(reason)"
+            return localizer.t(L.Queue.failedWithReason, reason)
         case .cancelled:
-            return item.statusText ?? "已取消"
+            return item.statusText ?? localizer.t(L.Queue.cancelled)
         }
     }
 
@@ -183,35 +184,35 @@ struct QueueItemView: View {
         case .queued, .downloading, .translating, .burning:
             HStack(spacing: 6) {
                 if item.isPaused {
-                    iconButton("play.fill", help: "继续", hint: "继续这个任务的下载或处理", action: onResume)
+                    iconButton("play.fill", help: localizer.t(L.Queue.resume), hint: localizer.t(L.Queue.resumeHint), action: onResume)
                 } else {
-                    iconButton("pause.fill", help: "暂停", hint: "暂停这个任务，稍后可继续", action: onPause)
+                    iconButton("pause.fill", help: localizer.t(L.Queue.pause), hint: localizer.t(L.Queue.pauseHint), action: onPause)
                 }
-                iconButton("xmark", help: "取消", hint: "停止这个任务的后续下载或处理", action: onCancel)
+                iconButton("xmark", help: localizer.t(L.Queue.cancelAction), hint: localizer.t(L.Queue.cancelHint), action: onCancel)
             }
         case .done:
             HStack(spacing: 6) {
                 if item.partialFailure {
                     // 部分成功（视频已下载、字幕处理失败）：只重跑字幕处理，不重新下载
-                    iconButton("arrow.clockwise", help: "重试字幕处理", hint: "只重新执行字幕翻译或烧录，不重新下载视频", action: onRetry)
+                    iconButton("arrow.clockwise", help: localizer.t(L.Queue.retrySubtitle), hint: localizer.t(L.Queue.retrySubtitleHint), action: onRetry)
                 }
                 if !item.resultFiles.isEmpty {
-                    iconButton("folder", help: "在访达中显示", hint: "打开包含结果文件的位置", action: onReveal)
+                    iconButton("folder", help: localizer.t(L.Queue.revealInFinder), hint: localizer.t(L.Queue.revealInFinderHint), action: onReveal)
                 }
-                iconButton("trash", help: "移除", hint: "只从队列移除这个任务，不删除已下载文件", action: onRemove)
+                iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
         case .failed:
             HStack(spacing: 6) {
-                iconButton("arrow.clockwise", help: "重试", hint: "重新执行这个任务", action: onRetry)
-                iconButton("trash", help: "移除", hint: "只从队列移除这个任务，不删除已下载文件", action: onRemove)
+                iconButton("arrow.clockwise", help: localizer.t(L.Queue.retryTask), hint: localizer.t(L.Queue.retryTaskHint), action: onRetry)
+                iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
         case .cancelled:
             HStack(spacing: 6) {
-                iconButton("arrow.clockwise", help: "重试", hint: "重新执行这个任务", action: onRetry)
+                iconButton("arrow.clockwise", help: localizer.t(L.Queue.retryTask), hint: localizer.t(L.Queue.retryTaskHint), action: onRetry)
                 if !item.resultFiles.isEmpty {
-                    iconButton("folder", help: "在访达中显示", hint: "打开包含结果文件的位置", action: onReveal)
+                    iconButton("folder", help: localizer.t(L.Queue.revealInFinder), hint: localizer.t(L.Queue.revealInFinderHint), action: onReveal)
                 }
-                iconButton("trash", help: "移除", hint: "只从队列移除这个任务，不删除已下载文件", action: onRemove)
+                iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
         }
     }

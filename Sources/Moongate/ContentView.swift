@@ -7,6 +7,7 @@ import MoongateCore
 struct ContentView: View {
     @ObservedObject var model: ViewModel
     @ObservedObject private var updater: UpdateService
+    @EnvironmentObject private var localizer: Localizer
     @FocusState private var urlFieldFocused: Bool
 
     init(model: ViewModel) {
@@ -42,6 +43,10 @@ struct ContentView: View {
         .sheet(isPresented: $model.showSettings, onDismiss: { model.consumePendingSettingsActions() }) {
             SettingsView(model: model)
         }
+        .sheet(isPresented: $model.showOnboarding) {
+            OnboardingView(model: model)
+                .environmentObject(localizer)
+        }
         .sheet(isPresented: $model.showDependencySetup) {
             DependencySetupSheet(model: model)
         }
@@ -69,13 +74,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             // 解析栏放大：输入框可多行（一次粘贴多条链接逐行可见），按钮与输入框中心对齐。
             HStack(alignment: .center, spacing: 8) {
-                TextField("粘贴视频链接，可一次粘贴多条", text: $model.urlText, axis: .vertical)
+                TextField(localizer.t(L.Main.urlPlaceholderMultiline), text: $model.urlText, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.large)
                     .lineLimit(1...4)
                     .focused($urlFieldFocused)
                     .onSubmit { model.parse() }
-                    .accessibilityLabel("视频链接输入框")
+                    .accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))
                 Button {
                     model.pasteAndParse()
                 } label: {
@@ -87,9 +92,9 @@ struct ContentView: View {
                 .controlSize(.large)
                 .frame(height: 34)
                 .disabled(model.isParsing)
-                .help("粘贴并解析剪贴板链接")
-                .accessibilityLabel("粘贴并解析")
-                .accessibilityHint("粘贴剪贴板里的链接并开始解析")
+                .help(localizer.t(L.Main.pasteAndParseHelp))
+                .accessibilityLabel(localizer.t(L.Main.pasteAndParseAccessibility))
+                .accessibilityHint(localizer.t(L.Main.pasteAndParseHint))
                 parseButton
                     .controlSize(.large)
                     .disabled(
@@ -110,8 +115,12 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .frame(height: 34)
-                .help("设置")
-                .accessibilityLabel(updater.hasAvailableUpdate ? "打开设置，有可用更新" : "打开设置")
+                .help(localizer.t(L.Main.settingsHelp))
+                .accessibilityLabel(
+                    updater.hasAvailableUpdate
+                    ? localizer.t(L.Main.settingsWithUpdateAccessibility)
+                    : localizer.t(L.Main.settingsAccessibility)
+                )
             }
             // 轻提示固定在解析栏下方：队列铺满时也不会被盖住
             // （ready 页有自己的就地提示，避免双显）
@@ -151,15 +160,15 @@ struct ContentView: View {
                 if model.isParsing {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel("正在解析")
+                        .accessibilityLabel(localizer.t(L.Main.parsingAccessibility))
                 } else {
-                    Text("解析链接")
+                    Text(localizer.t(L.Main.parse))
                 }
             }
             .frame(minWidth: 36)
         }
-        .help("解析当前输入框中的视频链接")
-        .accessibilityHint("解析当前输入框中的视频链接")
+        .help(localizer.t(L.Main.parseCurrentHelp))
+        .accessibilityHint(localizer.t(L.Main.parseCurrentHint))
         .frame(height: 34)
         if parseButtonIsProminent {
             button.buttonStyle(.borderedProminent)
@@ -200,10 +209,10 @@ struct ContentView: View {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 52, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("粘贴链接，下载网页里的视频")
+            Text(localizer.t(L.Main.idleTitle))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Text("一次粘贴多条链接会自动逐个解析并加入队列")
+            Text(localizer.t(L.Main.idleSubtitle))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
@@ -214,15 +223,15 @@ struct ContentView: View {
         VStack(spacing: 14) {
             ProgressView()
                 .controlSize(.large)
-                .accessibilityLabel(model.batchStatusText ?? "正在解析")
-            Text(model.batchStatusText ?? "正在解析…")
+                .accessibilityLabel(model.batchStatusText ?? localizer.t(L.Main.loadingAccessibility))
+            Text(model.batchStatusText ?? localizer.t(L.Main.loading))
                 .foregroundStyle(.secondary)
             if model.batchStatusText != nil {
-                Text("解析完成的视频会按最高画质自动加入队列")
+                Text(localizer.t(L.Main.batchAutoQueueHint))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-            Button("取消") {
+            Button(localizer.t(L.Common.cancel)) {
                 model.cancelParse()
             }
             .buttonStyle(.bordered)
@@ -233,7 +242,7 @@ struct ContentView: View {
     private func choosingState(_ candidates: [VideoCandidate]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("这个页面里有 \(candidates.count) 个视频")
+                Text(localizer.t(L.Main.videoCount, candidates.count))
                     .font(.headline)
                 VStack(spacing: 0) {
                     ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
@@ -283,7 +292,7 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(candidate.title)
-        .accessibilityHint("选择这个视频")
+        .accessibilityHint(localizer.t(L.Main.chooseVideoHint))
     }
 
     private func icon(for kind: VideoCandidate.Kind) -> String {
@@ -303,7 +312,7 @@ struct ContentView: View {
                         Button {
                             model.backToList()
                         } label: {
-                            Label("返回列表", systemImage: "chevron.left")
+                            Label(localizer.t(L.Main.backToList), systemImage: "chevron.left")
                                 .font(.callout)
                         }
                         .buttonStyle(.plain)
@@ -311,14 +320,14 @@ struct ContentView: View {
                     }
                     infoCard(info)
                     summarySection(info)
-                    section("格式") {
+                    section(localizer.t(L.Ready.formatSection)) {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
-                    section("字幕") {
+                    section(localizer.t(L.Ready.subtitlesSection)) {
                         subtitleRows(info)
                     }
-                    section("字幕处理") {
+                    section(localizer.t(L.Ready.subtitleProcessingSection)) {
                         chineseSubtitleRows(info)
                     }
                 }
@@ -333,7 +342,7 @@ struct ContentView: View {
                         await model.startDownload()
                     }
                 } label: {
-                    Text("加入队列")
+                    Text(localizer.t(L.Main.enqueue))
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
@@ -360,9 +369,9 @@ struct ContentView: View {
     private func readyFooterCopy(for info: VideoInfo) -> String {
         if readyFooterUsesVideoFolder(for: info) {
             let folderName = ViewModel.sanitizedFolderName(info.title)
-            return "保存到 Downloads/\(folderName) 文件夹 · 加入后可继续粘贴下一条"
+            return localizer.t(L.Main.saveToVideoFolder, folderName)
         }
-        return "保存到 Downloads · 加入后可继续粘贴下一条"
+        return localizer.t(L.Main.saveToDownloads)
     }
 
     private func readyFooterUsesVideoFolder(for info: VideoInfo) -> Bool {
@@ -397,8 +406,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(format.label)
-        .accessibilityHint("选择这个下载格式")
-        .accessibilityValue(model.selectedFormatID == format.id ? "已选择" : "未选择")
+        .accessibilityHint(localizer.t(L.Ready.chooseFormatHint))
+        .accessibilityValue(model.selectedFormatID == format.id ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
     }
 
     /// 输出选项：HDR 开关（仅所选档有 HDR 源时显示）+ 输出格式（转码/remux）。
@@ -413,22 +422,22 @@ struct ContentView: View {
             let parts = [codec, container].filter { !$0.isEmpty }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }()
-        section("输出选项") {
+        section(localizer.t(L.Ready.outputOptionsSection)) {
             VStack(alignment: .leading, spacing: 10) {
                 if hdrAvailable {
                     Toggle(isOn: $model.preferHDR) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("HDR")
-                            Text("该清晰度提供 HDR 片源。开启后下载 HDR 版本。")
+                            Text(localizer.t(L.Ready.hdrHint))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
                 HStack {
-                    Text("输出格式")
+                    Text(localizer.t(L.Ready.outputFormat))
                     Spacer(minLength: 8)
-                    Picker("输出格式", selection: $model.selectedOutputFormat) {
+                    Picker(localizer.t(L.Ready.outputFormat), selection: $model.selectedOutputFormat) {
                         ForEach(OutputFormat.allCases, id: \.rawValue) { fmt in
                             Text(fmt == .original ? originalFormatLabel(sourceLabel) : fmt.displayName).tag(fmt)
                         }
@@ -449,8 +458,8 @@ struct ContentView: View {
     }
 
     private func originalFormatLabel(_ sourceLabel: String?) -> String {
-        if let s = sourceLabel { return "保持源格式（\(s)）" }
-        return "保持源格式"
+        if let s = sourceLabel { return localizer.t(L.Ready.keepSourceFormatWithSource, s) }
+        return localizer.t(L.Ready.keepSourceFormat)
     }
 
     /// 转码提示：选了会丢 HDR 或较慢的组合时提示。
@@ -459,9 +468,9 @@ struct ContentView: View {
         case .original, .mkv:
             return nil
         case .mp4H264:
-            return model.preferHDR ? "转 H.264 会把 HDR 转成 SDR（丢失 HDR），且需重新编码、较慢。" : "跨编码转 H.264 需重新编码，较慢。"
+            return model.preferHDR ? localizer.t(L.Ready.h264HdrWarning) : localizer.t(L.Ready.h264ReencodeWarning)
         case .mp4H265:
-            return "转 H.265 需重新编码，较慢；HDR 源会尽量保留 HDR。"
+            return localizer.t(L.Ready.h265ReencodeWarning)
         }
     }
 
@@ -478,7 +487,7 @@ struct ContentView: View {
         }
         if !videoFormats.isEmpty && !audioFormats.isEmpty {
             Divider()
-            Text("音频")
+            Text(localizer.t(L.Ready.audioSection))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
@@ -496,7 +505,7 @@ struct ContentView: View {
     @ViewBuilder
     private func subtitleRows(_ info: VideoInfo) -> some View {
         if info.subtitles.isEmpty {
-            Text("这个视频没有字幕")
+            Text(localizer.t(L.Ready.noSubtitles))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
@@ -508,7 +517,7 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Text(subtitle.label)
                         if subtitle.isAuto {
-                            Text("自动生成")
+                            Text(localizer.t(L.Ready.autoGenerated))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)
@@ -522,8 +531,8 @@ struct ContentView: View {
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel(subtitleAccessibilityLabel(subtitle))
-                .accessibilityHint("勾选后可下载字幕，或用于中文字幕处理")
-                .accessibilityValue(model.selectedSubtitleIDs.contains(subtitle.id) ? "已选择" : "未选择")
+                .accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))
+                .accessibilityValue(model.selectedSubtitleIDs.contains(subtitle.id) ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
                 if index < info.subtitles.count - 1 {
                     Divider().padding(.leading, 12)
                 }
@@ -533,7 +542,7 @@ struct ContentView: View {
 
     private func subtitleAccessibilityLabel(_ subtitle: SubtitleChoice) -> String {
         if subtitle.isAuto {
-            return "\(subtitle.label)，自动生成字幕"
+            return localizer.t(L.Ready.autoGeneratedSubtitleLabel, subtitle.label)
         }
         return subtitle.label
     }
@@ -556,25 +565,27 @@ struct ContentView: View {
         let hasSubtitleSelected = !model.selectedSubtitleIDs.isEmpty
         let readiness = model.translationReadinessForCurrentSettings()
         return VStack(alignment: .leading, spacing: 8) {
-            Picker("字幕处理", selection: $model.chineseMode) {
+            Picker(localizer.t(L.Ready.subtitleProcessingSection), selection: $model.chineseMode) {
                 ForEach(ChineseSubtitleMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
+                    Text(localizer.t(mode.localizationKey)).tag(mode)
                 }
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
             .disabled(!hasSubtitleSelected)
-            .accessibilityLabel("字幕处理方式")
-            .accessibilityHint(hasSubtitleSelected ? "选择是否生成、翻译或烧录中文字幕" : "先在上面勾选一条字幕")
-            .accessibilityValue(model.chineseMode.label)
+            .accessibilityLabel(localizer.t(L.Ready.subtitleProcessingAccessibility))
+            .accessibilityHint(hasSubtitleSelected
+                               ? localizer.t(L.Ready.subtitleProcessingHint)
+                               : localizer.t(L.Ready.subtitleProcessingHintSelectFirst))
+            .accessibilityValue(localizer.t(model.chineseMode.localizationKey))
             if !hasSubtitleSelected {
-                Text("先在上面勾选一条字幕")
+                Text(localizer.t(L.Ready.noSubtitleSelected))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if model.chineseMode.requiresTranslation, model.translationSourceIsChinese(in: info) {
+            } else if model.chineseMode.requiresTranslation, model.translationSourceMatchesTarget(in: info) {
                 Text(model.chineseMode == .burnIn
-                     ? "该字幕已是中文，将直接烧录（不翻译）"
-                     : "该字幕已是中文，将直接使用（不翻译）")
+                     ? localizer.t(L.Ready.sourceAlreadyTargetBurn)
+                     : localizer.t(L.Ready.sourceAlreadyTargetUse))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if model.chineseMode.requiresTranslation, !readiness.isReady {
@@ -586,8 +597,8 @@ struct ContentView: View {
             } else if model.chineseMode != .off, model.selectedSubtitleIDs.count > 1,
                       let source = model.translationSourceSubtitle(in: info) {
                 Text(model.chineseMode == .burnOriginal
-                     ? "将烧录：\(source.label)"
-                     : "将翻译：\(source.label)")
+                     ? localizer.t(L.Ready.willBurnSubtitle, source.label)
+                     : localizer.t(L.Ready.willTranslateSubtitle, source.label))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -614,7 +625,7 @@ struct ContentView: View {
             Text(model.translationReadinessMessageForCurrentSettings())
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button("去设置") {
+            Button(localizer.t(L.Ready.openSettings)) {
                 model.showSettings = true
             }
             .buttonStyle(.link)
@@ -648,62 +659,62 @@ struct ContentView: View {
             }
             Text(appleTranslationSetupFallbackText)
                 .foregroundStyle(.secondary)
-                .accessibilityHint("如果本机 Apple 能力暂不可用，可以先切换到 API 兼容引擎")
-            Button("去设置") {
+                .accessibilityHint(localizer.t(L.Ready.appleTranslationFallbackHint))
+            Button(localizer.t(L.Ready.openSettings)) {
                 model.showSettings = true
             }
             .buttonStyle(.link)
-            .help("只打开 App 设置查看系统侧步骤；不会直接打开系统设置、下载语言包、保存配置或切换引擎。")
-            .accessibilityHint("只打开 App 设置查看系统侧步骤；不会直接打开系统设置、下载语言包、保存配置或切换引擎。")
+            .help(localizer.t(L.Ready.appleTranslationOpenSettingsHelp))
+            .accessibilityHint(localizer.t(L.Ready.appleTranslationOpenSettingsHelp))
         }
         .font(.caption)
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private func appleTranslationSetupReadinessSummary(_ readiness: TranslationReadiness) -> some View {
-        let statusText = readiness.isReady ? "当前可运行" : "需要处理"
+        let statusText = readiness.isReady ? localizer.t(L.Ready.statusReady) : localizer.t(L.Ready.statusNeedsAction)
         let reasonText = appleTranslationSetupReadinessReason(readiness)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("当前引擎")
+                Text(localizer.t(L.Ready.currentEngine))
                     .foregroundStyle(.secondary)
                 Text(effectiveTranslationEngine.displayName)
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("状态")
+                Text(localizer.t(L.Ready.status))
                     .foregroundStyle(.secondary)
                 Text(statusText)
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("首要原因")
+                Text(localizer.t(L.Ready.primaryReason))
                     .foregroundStyle(.secondary)
                 Text(reasonText)
                     .foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Apple 翻译引擎状态")
+        .accessibilityLabel(localizer.t(L.Ready.appleTranslationStatus))
         .accessibilityValue("\(effectiveTranslationEngine.displayName)，\(statusText)：\(reasonText)")
     }
 
     private func appleTranslationSetupReadinessReason(_ readiness: TranslationReadiness) -> String {
-        readiness.isReady ? "已满足当前翻译条件" : model.translationReadinessMessageForCurrentSettings()
+        readiness.isReady ? localizer.t(L.Ready.appleTranslationReadyReason) : model.translationReadinessMessageForCurrentSettings()
     }
 
     private var appleTranslationSetupFallbackText: String {
-        "也可以先在设置里改用 Anthropic-compatible 或 OpenAI-compatible 翻译引擎继续处理。"
+        localizer.t(L.Ready.appleTranslationFallback)
     }
 
     private func appleTranslationSetupActionSummary(_ guidance: AppleTranslationSetupGuidance) -> String? {
         let actionKinds = guidance.actions.map(\.kind)
         if actionKinds.contains(.openLanguageSettings) || actionKinds.contains(.openAppleIntelligenceSettings) {
-            return "建议动作：打开 App 设置查看系统侧配置步骤。"
+            return localizer.t(L.Ready.appleTranslationActionOpenSettings)
         }
         if actionKinds.contains(.refreshReadiness) {
-            return "建议动作：去设置后重新检测。"
+            return localizer.t(L.Ready.appleTranslationActionRefresh)
         }
         if actionKinds.contains(.chooseDifferentEngine) {
-            return "建议动作：去设置选择其他翻译引擎。"
+            return localizer.t(L.Ready.appleTranslationActionChooseDifferentEngine)
         }
         return nil
     }
@@ -727,7 +738,7 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 420)
                 if !detail.isEmpty {
-                    DisclosureGroup("显示技术详情") {
+                    DisclosureGroup(localizer.t(L.Failed.technicalDetails)) {
                         Text(detail)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
@@ -740,36 +751,36 @@ struct ContentView: View {
                 }
                 HStack(spacing: 10) {
                     if model.failedNeedsDependency {
-                        Button("查看/安装缺失组件") {
+                        Button(localizer.t(L.Dependency.setupMissing)) {
                             model.showDependencySetup = true
                         }
                         .buttonStyle(.borderedProminent)
-                        Button("重试") {
+                        Button(localizer.t(L.Common.retry)) {
                             model.retry()
                         }
                         .buttonStyle(.bordered)
                     } else if model.failedNeedsLogin != nil {
-                        Button("去登录") {
+                        Button(localizer.t(L.Failed.login)) {
                             model.openLoginForFailure()
                         }
                         .buttonStyle(.borderedProminent)
-                        Button("重试") {
+                        Button(localizer.t(L.Common.retry)) {
                             model.retry()
                         }
                         .buttonStyle(.bordered)
                     } else {
-                        Button("重试") {
+                        Button(localizer.t(L.Common.retry)) {
                             model.retry()
                         }
                         .buttonStyle(.borderedProminent)
                     }
-                    Button("重新开始") {
+                    Button(localizer.t(L.Failed.restart)) {
                         model.reset()
                         urlFieldFocused = true
                     }
                     .buttonStyle(.bordered)
                     if model.canReturnToList {
-                        Button("返回列表") {
+                        Button(localizer.t(L.Main.backToList)) {
                             model.backToList()
                         }
                         .buttonStyle(.bordered)
@@ -799,7 +810,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func summarySection(_ info: VideoInfo) -> some View {
-        section("AI 总结") {
+        section(localizer.t(L.Summary.title)) {
             SummaryCard(
                 state: model.summaryState,
                 unavailableReason: model.summaryUnavailableReason,
@@ -852,5 +863,88 @@ struct ContentView: View {
     private var cardBackground: some View {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(.quaternary.opacity(0.55))
+    }
+}
+
+private struct OnboardingView: View {
+    @ObservedObject var model: ViewModel
+    @EnvironmentObject private var localizer: Localizer
+    @State private var appLanguage: AppLanguage
+    @State private var translationTargetLanguage: String
+    @State private var useLocalTranslation = true
+
+    private let targetLanguages = ["zh-Hans", "zh-Hant", "en"]
+
+    init(model: ViewModel) {
+        self.model = model
+        _appLanguage = State(initialValue: AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+        _translationTargetLanguage = State(initialValue: model.settings.translationTargetLanguage)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(localizer.t(L.Onboarding.title))
+                    .font(.title2.weight(.semibold))
+                Text(localizer.t(L.Onboarding.subtitle))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Form {
+                Picker(localizer.t(L.Onboarding.appLanguage), selection: $appLanguage) {
+                    Text(localizer.t(L.Settings.followSystem)).tag(AppLanguage.auto)
+                    Text(localizer.t(L.Settings.langHans)).tag(AppLanguage.zhHans)
+                    Text(localizer.t(L.Settings.langHant)).tag(AppLanguage.zhHant)
+                    Text(localizer.t(L.Settings.langEn)).tag(AppLanguage.en)
+                }
+                .onChange(of: appLanguage) { _, next in
+                    localizer.setLanguage(next)
+                }
+
+                Picker(localizer.t(L.Onboarding.translationTarget), selection: $translationTargetLanguage) {
+                    ForEach(targetLanguages, id: \.self) { code in
+                        Text(TranslationLanguage.displayName(for: code)).tag(code)
+                    }
+                }
+
+                Toggle(localizer.t(L.Onboarding.useLocalTranslation), isOn: $useLocalTranslation)
+                Text(localizer.t(L.Onboarding.localTranslationHint))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .formStyle(.grouped)
+
+            Text(localizer.t(L.Onboarding.aiOptional))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let notice = model.settingsNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Spacer()
+                Button(localizer.t(L.Onboarding.start)) {
+                    if model.completeOnboarding(
+                        appLanguage: appLanguage,
+                        translationTargetLanguage: translationTargetLanguage,
+                        useLocalTranslation: useLocalTranslation
+                    ) {
+                        localizer.setLanguage(appLanguage)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
+        .onDisappear {
+            localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+        }
     }
 }

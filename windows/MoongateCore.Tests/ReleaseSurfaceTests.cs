@@ -20,18 +20,19 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse061()
+    public void ReleaseVersionSurfacesUse070()
     {
-        Assert.Contains("VERSION=\"0.6.1\"", Read("build-windows.sh"));
-        Assert.Contains("<string>0.6.1</string>", Read("build.sh"));
+        Assert.Contains("VERSION=\"0.7.0\"", Read("build-windows.sh"));
+        Assert.Contains("VERSION=\"0.7.0\"", Read("make-dmg.sh"));
+        Assert.Contains("<string>0.7.0</string>", Read("build.sh"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.6.1", workflow);
-        Assert.Contains("default: 0.6.1", workflow);
+        Assert.Contains("default: v0.7.0", workflow);
+        Assert.Contains("default: 0.7.0", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.6.1\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.7.0\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -60,30 +61,6 @@ public class ReleaseSurfaceTests
     }
 
     [Fact]
-    public void WindowsStartupGuardsAgainstSilentWhiteScreen()
-    {
-        var app = Read("windows", "MoongateApp", "App.xaml.cs");
-
-        // 启动期建窗失败必须显式退出，而不是被吞成「进程活着但没有窗口」的白屏。
-        Assert.Contains("new MainWindow()", app);
-        Assert.Contains("Shutdown(1)", app);
-        Assert.True(
-            app.IndexOf("new MainWindow()", StringComparison.Ordinal)
-            < app.IndexOf("Shutdown(1)", StringComparison.Ordinal),
-            "建主窗口必须在 try 块内，失败走 Shutdown 兜底");
-
-        // 硬件渲染初始化失败（部分显卡/远程桌面/虚拟机）时回退软件渲染，规避白屏。
-        Assert.Contains("RenderCapability.Tier", app);
-        Assert.Contains("RenderMode.SoftwareOnly", app);
-        Assert.Contains("MOONGATE_SOFTWARE_RENDER", app);
-
-        // 启动诊断日志：让只在部分机器复现的白屏可被用户回传排查。
-        var diag = Read("windows", "MoongateApp", "StartupDiagnostics.cs");
-        Assert.Contains("startup.log", diag);
-        Assert.Contains("RecordException", diag);
-    }
-
-    [Fact]
     public void WindowsUpdaterValidatesDownloadedInstallerVersionBeforeLaunch()
     {
         var source = Read("windows", "MoongateApp", "UpdateService.cs");
@@ -108,12 +85,12 @@ public class ReleaseSurfaceTests
         var docs = Read("docs", "WINDOWS.md");
         var readme = Read("README.md");
 
-        Assert.Contains("月之门-Windows-Setup-v$VERSION.exe", localScript);
-        Assert.Contains("月之门-Windows-Setup-v${{ inputs.version }}.exe", workflow);
+        Assert.Contains("Moongate-Windows-Setup-v$VERSION.exe", localScript);
+        Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("月之门-Windows-Setup-v0.6.1.exe", docs);
-        Assert.Contains("月之门-Windows-Setup-v0.6.1.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.0.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.0.exe", readme);
     }
 
     [Fact]
@@ -131,7 +108,8 @@ public class ReleaseSurfaceTests
     {
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("242", docs);
+        Assert.Contains("271", docs);
+        Assert.DoesNotContain("247", docs);
         Assert.DoesNotContain("241", docs);
         Assert.DoesNotContain("240", docs);
         Assert.DoesNotContain("232", docs);

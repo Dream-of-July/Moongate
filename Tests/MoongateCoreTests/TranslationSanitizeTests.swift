@@ -25,8 +25,14 @@ final class TranslationSanitizeTests: XCTestCase {
     }
 
     func testLeavesCleanTranslationUntouched() {
-        XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("这样你就能坐在沙发上，连电视玩。"), "这样你就能坐在沙发上，连电视玩。")
         // 句中连字符（如 well-known）不在行首，不应被动到
         XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("这是 well-known 的事"), "这是 well-known 的事")
+    }
+
+    func testRemovesChineseTerminalPeriodButKeepsExpressivePunctuation() {
+        XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("这样你就能坐在沙发上，连电视玩。"), "这样你就能坐在沙发上，连电视玩")
+        XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("真的吗？"), "真的吗？")
+        XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("太好了！"), "太好了！")
+        XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("等等……"), "等等……")
     }
 }

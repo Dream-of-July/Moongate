@@ -155,6 +155,23 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertLessThan(writeCheck.lowerBound, terminate.lowerBound)
     }
 
+    func testMacUpdateServiceLocalizesInstallerFailures() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("UpdateService.swift"))
+
+        XCTAssertTrue(source.contains("private func t(_ key: String"))
+        XCTAssertTrue(source.contains("LocalizedStrings.format(key, language: language"))
+        XCTAssertTrue(source.contains("t(L.Update.untrustedPackageURL)"))
+        XCTAssertTrue(source.contains("t(L.Update.downloadPackageFailed)"))
+        XCTAssertTrue(source.contains("t(L.Update.installDirectoryNotWritable, installParent.path)"))
+        XCTAssertTrue(source.contains("t(L.Update.packageMissingApp)"))
+        XCTAssertTrue(source.contains("t(L.Update.packageMismatch)"))
+        XCTAssertTrue(source.contains("t(L.Update.versionMismatch)"))
+        XCTAssertTrue(source.contains("t(L.Update.mountFailed)"))
+    }
+
     func testTrustedDMGURLWhitelist() {
         let owner = "Dream-of-July", repo = "moongate"
         XCTAssertTrue(UpdateChecker.isTrustedDMGURL(

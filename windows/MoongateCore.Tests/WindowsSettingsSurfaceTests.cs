@@ -20,6 +20,80 @@ public class WindowsSettingsSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
+    public void WindowsFirstRunOnboardingPersistsLanguagesWithoutApiSetup()
+    {
+        var mainWindowCode = Read("windows", "MoongateApp", "MainWindow.xaml.cs");
+        var onboardingXaml = Read("windows", "MoongateApp", "OnboardingWindow.xaml");
+        var onboardingCode = Read("windows", "MoongateApp", "OnboardingWindow.xaml.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+
+        Assert.Contains("ShowOnboardingIfNeeded();", mainWindowCode);
+        Assert.Contains("if (_vm.Settings.OnboardingCompleted) return;", mainWindowCode);
+        Assert.Contains("new OnboardingWindow(_vm) { Owner = this }", mainWindowCode);
+
+        Assert.Contains("L.Onboarding.AppLanguage", onboardingXaml);
+        Assert.Contains("L.Onboarding.TargetLanguage", onboardingXaml);
+        Assert.Contains("L.Onboarding.AIOptional", onboardingXaml);
+        Assert.Contains("AppLanguageBox", onboardingXaml);
+        Assert.Contains("TargetLanguageBox", onboardingXaml);
+        Assert.Contains("Content=\"繁體中文\"", onboardingXaml);
+        Assert.DoesNotContain("TokenBox", onboardingXaml);
+        Assert.DoesNotContain("AuthToken", onboardingXaml, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("OnboardingCompleted = true", onboardingCode);
+        Assert.Contains("AppLanguage = SelectedAppLanguage", onboardingCode);
+        Assert.Contains("TranslationTargetLanguage = SelectedTargetLanguage", onboardingCode);
+        Assert.Contains("settings.Save()", onboardingCode);
+        Assert.Contains("LocalizationManager.Apply(settings.AppLanguage)", onboardingCode);
+        Assert.DoesNotContain("TranslationAuthToken", onboardingCode);
+        Assert.DoesNotContain("AIAuthToken", onboardingCode);
+
+        foreach (var resource in new[] { zh, en, zhHant })
+        {
+            Assert.Contains("x:Key=\"L.Onboarding.Title\"", resource);
+            Assert.Contains("x:Key=\"L.Onboarding.AppLanguage\"", resource);
+            Assert.Contains("x:Key=\"L.Onboarding.TargetLanguage\"", resource);
+            Assert.Contains("x:Key=\"L.Onboarding.AIOptional\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsSettingsExposeAppAndTargetLanguageControls()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "SettingsViewModel.cs");
+        var loc = Read("windows", "MoongateApp", "Loc.cs");
+
+        Assert.Contains("L.Settings.TargetLanguage", xaml);
+        Assert.Contains("TargetLanguageIndex", xaml);
+        Assert.Contains("Content=\"繁體中文\"", xaml);
+        Assert.Contains("_targetLanguageIndex = current.TranslationTargetLanguage", viewModel);
+        Assert.Contains("public int TargetLanguageIndex", viewModel);
+        Assert.Contains("TranslationTargetLanguage = TargetLanguageIndex switch", viewModel);
+        Assert.Contains("OnboardingCompleted = _onboardingCompleted", viewModel);
+        Assert.Contains("\"zh-Hant\" => \"Strings.zh-Hant.xaml\"", loc);
+    }
+
+    [Fact]
+    public void WindowsMainBatchErrorsUseLocalizedResources()
+    {
+        var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+
+        Assert.Contains("Loc.T(\"L.Error.NoAvailableFormat\")", viewModel);
+        Assert.DoesNotContain("AnalyzeFailed(\"没有可用格式\")", viewModel);
+
+        foreach (var resource in new[] { zh, en, zhHant })
+        {
+            Assert.Contains("x:Key=\"L.Error.NoAvailableFormat\"", resource);
+        }
+    }
+
+    [Fact]
     public void WindowsSettingsExposeEncodingControls()
     {
         var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");

@@ -4,6 +4,7 @@ namespace Moongate.Core;
 public enum CoreLanguage
 {
     Chinese,
+    TraditionalChinese,
     English,
 }
 
@@ -20,7 +21,23 @@ public static class L10n
     /// <summary>按当前语言取文案。</summary>
     public static string T(string zh, string en) => Language == CoreLanguage.English ? en : zh;
 
+    /// <summary>按当前语言取文案。未接繁中第三参数的旧调用会自动回退简中。</summary>
+    public static string T(string zhHans, string zhHant, string en) => Language switch
+    {
+        CoreLanguage.English => en,
+        CoreLanguage.TraditionalChinese => zhHant,
+        _ => zhHans,
+    };
+
     /// <summary>显式指定语言取文案（测试用，避免改全局状态影响并行用例）。</summary>
     public static string Pick(CoreLanguage language, string zh, string en) =>
         language == CoreLanguage.English ? en : zh;
+
+    /// <summary>显式指定语言取文案（测试用，避免改全局状态影响并行用例）。</summary>
+    public static string Pick(CoreLanguage language, string zhHans, string zhHant, string en) => language switch
+    {
+        CoreLanguage.English => en,
+        CoreLanguage.TraditionalChinese => zhHant,
+        _ => zhHans,
+    };
 }

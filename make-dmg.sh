@@ -5,7 +5,7 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
-VERSION="0.6.1"
+VERSION="0.7.0"
 # build.sh 把 App 装到 /Applications，这里必须从同一位置取，否则 cp 找不到文件。
 APP="/Applications/$APP_NAME.app"
 OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.dmg}"

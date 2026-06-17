@@ -293,7 +293,13 @@ final class QueueManager: ObservableObject {
             downloadFiles = current.resultFiles
         } else {
             do {
-                try await acquireSlot(downloadPool, id: id, generation: generation, control: control, waitingText: "排队中：等待下载空位")
+                try await acquireSlot(
+                    downloadPool,
+                    id: id,
+                    generation: generation,
+                    control: control,
+                    waitingText: CoreL10n.t(L.Queue.waitingForDownloadSlot)
+                )
                 defer { releaseSlot(id, generation: generation) }
                 update(id, generation: generation) { $0.stage = .downloading; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let result = try await engine.download(current.request, control: control) { [weak self] p in
@@ -351,14 +357,14 @@ final class QueueManager: ObservableObject {
                         guard item(id)?.generation == generation else { return }
                         if isCancellation(error) {
                             update(id, generation: generation) {
-                                $0.stage = .cancelled; $0.isPaused = false; $0.progress = nil; $0.statusText = "已取消"
+                                $0.stage = .cancelled; $0.isPaused = false; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.cancelled)
                                 $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
                         } else {
                             update(id, generation: generation) {
                                 $0.stage = .failed(Self.shortReason(of: error))
                                 $0.isPaused = false; $0.progress = nil
-                                $0.statusText = "转码失败：\(Self.shortReason(of: error))"
+                                $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
                                 $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
                         }
@@ -372,7 +378,7 @@ final class QueueManager: ObservableObject {
                         $0.stage = .cancelled
                         $0.isPaused = false
                         $0.progress = nil
-                        $0.statusText = "已取消"
+                        $0.statusText = CoreL10n.t(L.Queue.cancelled)
                         $0.isPostDownloadProcessing = false
                         $0.postDownloadProcessingKind = nil
                     }
@@ -381,7 +387,7 @@ final class QueueManager: ObservableObject {
                         $0.stage = .failed(Self.shortReason(of: error))
                         $0.isPaused = false
                         $0.progress = nil
-                        $0.statusText = "失败：\(Self.shortReason(of: error))"
+                        $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
                         $0.isPostDownloadProcessing = false
                         $0.postDownloadProcessingKind = nil
                     }
@@ -390,7 +396,7 @@ final class QueueManager: ObservableObject {
             }
         }
 
-        // 下载完成，无需中文字幕：直接完成
+        // 下载完成，无需字幕处理：直接完成
         guard mode != .off else {
             finishDone(id, generation: generation, files: downloadFiles, statusText: nil)
             return
@@ -401,7 +407,9 @@ final class QueueManager: ObservableObject {
         guard let srtFile = Self.pickSourceSubtitle(from: downloadFiles, preferredLang: preferredLang) else {
             finishDone(
                 id, generation: generation, files: downloadFiles,
-                statusText: mode == .burnOriginal ? "没有字幕文件，已跳过烧录" : "没有字幕文件，已跳过翻译"
+                statusText: mode == .burnOriginal
+                    ? CoreL10n.t(L.Queue.noSubtitleFileSkippedBurn)
+                    : CoreL10n.t(L.Queue.noSubtitleFileSkippedTranslation)
             )
             return
         }
@@ -411,13 +419,19 @@ final class QueueManager: ObservableObject {
             guard let video = downloadFiles.first(where: {
                 Self.videoExtensions.contains($0.pathExtension.lowercased())
             }) else {
-                finishDone(id, generation: generation, files: downloadFiles, statusText: "没有找到视频文件，已跳过烧录")
+                finishDone(id, generation: generation, files: downloadFiles, statusText: CoreL10n.t(L.Queue.noVideoFileSkippedBurn))
                 return
             }
             do {
-                try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
+                try await acquireSlot(
+                    burnPool,
+                    id: id,
+                    generation: generation,
+                    control: control,
+                    waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
+                )
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "直接烧录字幕（不翻译）"; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.burnOriginalSubtitle); $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -426,7 +440,7 @@ final class QueueManager: ObservableObject {
                     backend: settings.encodeBackend,
                     alwaysH264: settings.burnAlwaysH264,
                     control: control,
-                    outputTag: "（字幕版）"
+                    outputTag: CoreL10n.t(L.Queue.subtitleVersionTag)
                 ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -440,35 +454,44 @@ final class QueueManager: ObservableObject {
                     $0.resultFiles.removeAll { $0 == burned }
                     $0.resultFiles.insert(burned, at: 0)
                 }
-                finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: "已烧录字幕（未翻译）")
+                finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: CoreL10n.t(L.Queue.burnedOriginalSubtitle))
             } catch {
                 guard item(id)?.generation == generation else { return }
-                settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: "烧录")
+                settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
             }
             return
         }
 
-        // 成熟的中文软字幕：源字幕本身就是中文时直接当中文字幕用，跳过 LLM 翻译。
+        // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
         // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt" 解析。
-        let sourceIsChinese = Self.isChineseLang(preferredLang)
-            || Self.isChineseLang(Self.langCode(of: srtFile))
-        if sourceIsChinese {
-            // srtOnly：原中文 srt 即结果（已在 downloadFiles 里），不再生成 .zh.srt。
+        let sourceLang = preferredLang ?? Self.langCode(of: srtFile)
+        let sourceMatchesTarget = TranslationLanguage.matches(
+            source: sourceLang,
+            target: settings.translationTargetLanguage
+        )
+        if sourceMatchesTarget {
+            // srtOnly：原目标语言 srt 即结果（已在 downloadFiles 里），不再生成译文副本。
             guard mode == .burnIn else {
-                finishDone(id, generation: generation, files: downloadFiles, statusText: "使用视频自带中文字幕，已跳过翻译")
+                finishDone(id, generation: generation, files: downloadFiles, statusText: CoreL10n.t(L.Queue.sourceTargetSubtitleSkippedTranslation))
                 return
             }
             // burnIn：直接拿原中文 srt 去烧录。
             guard let video = downloadFiles.first(where: {
                 Self.videoExtensions.contains($0.pathExtension.lowercased())
             }) else {
-                finishDone(id, generation: generation, files: downloadFiles, statusText: "没有找到视频文件，已跳过烧录")
+                finishDone(id, generation: generation, files: downloadFiles, statusText: CoreL10n.t(L.Queue.noVideoFileSkippedBurn))
                 return
             }
             do {
-                try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
+                try await acquireSlot(
+                    burnPool,
+                    id: id,
+                    generation: generation,
+                    control: control,
+                    waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
+                )
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = "使用视频自带中文字幕，直接烧录（不翻译）"; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.sourceTargetSubtitleBurn); $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -490,10 +513,10 @@ final class QueueManager: ObservableObject {
                     $0.resultFiles.removeAll { $0 == burned }
                     $0.resultFiles.insert(burned, at: 0)
                 }
-                finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: "已烧录视频自带中文字幕")
+                finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: CoreL10n.t(L.Queue.burnedSourceTargetSubtitle))
             } catch {
                 guard item(id)?.generation == generation else { return }
-                settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: "烧录")
+                settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
             }
             return
         }
@@ -501,14 +524,20 @@ final class QueueManager: ObservableObject {
         // 2. 翻译
         let zhSrt: URL
         do {
-            try await acquireSlot(translatePool, id: id, generation: generation, control: control, waitingText: "排队中：等待翻译空位")
+            try await acquireSlot(
+                translatePool,
+                id: id,
+                generation: generation,
+                control: control,
+                waitingText: CoreL10n.t(L.Queue.waitingForTranslationSlot)
+            )
             defer { releaseSlot(id, generation: generation) }
             update(id, generation: generation) { $0.stage = .translating; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
             let translator = makeTranslator(settings: settings)
             zhSrt = try await translator.translate(
                 srtFile: srtFile,
                 style: settings.subtitleStyle,
-                context: TranslationContext(sourceLanguage: preferredLang, targetLanguage: "zh-Hans"),
+                context: settings.makeTranslationContext(sourceLanguage: preferredLang),
                 control: control
             ) { [weak self] p in
                 Task { @MainActor in
@@ -525,7 +554,7 @@ final class QueueManager: ObservableObject {
             }
         } catch {
             guard item(id)?.generation == generation else { return }
-            settlePartial(id, generation: generation, files: downloadFiles, error: error, phase: "翻译")
+            settlePartial(id, generation: generation, files: downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseTranslation))
             return
         }
 
@@ -537,12 +566,18 @@ final class QueueManager: ObservableObject {
         guard let video = downloadFiles.first(where: {
             Self.videoExtensions.contains($0.pathExtension.lowercased())
         }) else {
-            finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: "没有找到视频文件，已跳过烧录")
+            finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: CoreL10n.t(L.Queue.noVideoFileSkippedBurn))
             return
         }
 
         do {
-            try await acquireSlot(burnPool, id: id, generation: generation, control: control, waitingText: "排队中：等待压制空位")
+            try await acquireSlot(
+                burnPool,
+                id: id,
+                generation: generation,
+                control: control,
+                waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
+            )
             defer { releaseSlot(id, generation: generation) }
             update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
             let burner = makeBurner()
@@ -569,7 +604,7 @@ final class QueueManager: ObservableObject {
             finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: nil)
         } catch {
             guard item(id)?.generation == generation else { return }
-            settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: "烧录")
+            settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
         }
     }
 
@@ -610,7 +645,7 @@ final class QueueManager: ObservableObject {
                 $0.stage = .cancelled
                 $0.isPaused = false
                 $0.progress = nil
-                $0.statusText = files.isEmpty ? "已取消" : "已取消，视频已保存"
+                $0.statusText = files.isEmpty ? CoreL10n.t(L.Queue.cancelled) : CoreL10n.t(L.Queue.cancelledSaved)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
@@ -623,7 +658,7 @@ final class QueueManager: ObservableObject {
                 $0.isPaused = false
                 $0.progress = nil
                 $0.partialFailure = true
-                $0.statusText = "视频已下载，字幕\(phase)失败：\(reason)"
+                $0.statusText = CoreL10n.t(L.Queue.partialSubtitleFailed, phase, reason)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
@@ -632,7 +667,7 @@ final class QueueManager: ObservableObject {
                 $0.stage = .failed(reason)
                 $0.isPaused = false
                 $0.progress = nil
-                $0.statusText = "失败：\(reason)"
+                $0.statusText = CoreL10n.t(L.Queue.failedWithReason, reason)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
@@ -681,7 +716,7 @@ final class QueueManager: ObservableObject {
         // 让过位的：先重新领到槽位再 SIGCONT，避免恢复瞬间超出并发上限。
         let control = target.control
         let generation = target.generation
-        update(id, generation: generation) { $0.statusText = "等待空位恢复…" }
+        update(id, generation: generation) { $0.statusText = CoreL10n.t(L.Queue.waitingSlotResume) }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -692,7 +727,7 @@ final class QueueManager: ObservableObject {
                 }
                 self.holdingPool[id] = (generation, parked.pool)
                 self.update(id, generation: generation) {
-                    if $0.statusText == "等待空位恢复…" { $0.statusText = nil }
+                    if $0.statusText == CoreL10n.t(L.Queue.waitingSlotResume) { $0.statusText = nil }
                 }
                 control.resume()
             } catch {
@@ -742,7 +777,7 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
-            $0.statusText = skipDownload ? nil : "重新下载并处理"
+            $0.statusText = skipDownload ? nil : CoreL10n.t(L.Queue.retryDownloadAndProcess)
             if !skipDownload { $0.resultFiles = [] }
         }
         let task = Task { [weak self] in
@@ -800,13 +835,6 @@ final class QueueManager: ObservableObject {
         }
     }
 
-    /// lang code 以 zh 开头视为中文（zh / zh-Hans / zh-Hant / zh-CN / zh-TW 等）。
-    private static func isChineseLang(_ lang: String?) -> Bool {
-        guard let lang = lang?.lowercased(), !lang.isEmpty else { return false }
-        let prefix = lang.split(separator: "-").first.map(String.init) ?? lang
-        return prefix == "zh"
-    }
-
     /// 从字幕文件名 "<名>.<lang>.srt" 解析出 lang code（无法解析返回 nil）。
     private static func langCode(of file: URL) -> String? {
         let stem = file.deletingPathExtension().lastPathComponent
@@ -815,8 +843,8 @@ final class QueueManager: ObservableObject {
     }
 
     /// 按勾选语言挑翻译源字幕（与 ViewModel 旧逻辑一致）：大小写不敏感、允许前缀匹配。
-    /// preferredLang 命中时直接返回该文件（含 ".zh.srt"，以支持视频自带中文字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文（不以 ".zh.srt" 结尾）的 .srt，避免把上次译文当源二次翻译。
+    /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
+    /// 没有 preferredLang 时回退第一个非译文 .srt，避免把上次译文当源二次翻译。
     private static func pickSourceSubtitle(from files: [URL], preferredLang: String?) -> URL? {
         let srtFiles = files.filter { $0.pathExtension.lowercased() == "srt" }
         if let lang = preferredLang?.lowercased(), !lang.isEmpty,
@@ -826,7 +854,9 @@ final class QueueManager: ObservableObject {
            }) {
             return matched
         }
-        let nonTranslated = srtFiles.filter { !$0.lastPathComponent.lowercased().hasSuffix(".zh.srt") }
+        let nonTranslated = srtFiles.filter { file in
+            !TranslationLanguage.isTranslatedSubtitleFileName(file.lastPathComponent)
+        }
         return nonTranslated.first ?? srtFiles.first
     }
 }

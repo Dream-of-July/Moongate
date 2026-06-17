@@ -36,6 +36,11 @@ final class UpdateService: ObservableObject {
 
     var releasesPageURL: URL { checker.releasesPageURL }
 
+    private func t(_ key: String, _ args: CVarArg...) -> String {
+        let language = (AppLanguage(rawValue: AppSettings.load().appLanguage) ?? .auto).resolved()
+        return LocalizedStrings.format(key, language: language, args)
+    }
+
     /// 检查更新。silent=true 时失败不改状态（启动静默检查用）。
     func check(silent: Bool = false) {
         if case .downloading = state { return }
@@ -65,7 +70,7 @@ final class UpdateService: ObservableObject {
     /// 下载并安装给定更新。
     func downloadAndInstall(_ info: UpdateInfo) {
         guard UpdateChecker.isTrustedDMGURL(info.dmgURL, owner: checker.owner, repo: checker.repo) else {
-            state = .failed("更新包地址不可信，已阻止。请到 GitHub 手动下载。")
+            state = .failed(t(L.Update.untrustedPackageURL))
             return
         }
         downloadTask?.cancel()
@@ -110,7 +115,7 @@ final class UpdateService: ObservableObject {
         let (tempFile, response) = try await session.download(from: url)
         if Task.isCancelled { throw MoongateError.cancelled }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw MoongateError.downloadFailed("下载更新包失败。")
+            throw MoongateError.downloadFailed(t(L.Update.downloadPackageFailed))
         }
         try? FileManager.default.removeItem(at: dmgPath)
         try FileManager.default.moveItem(at: tempFile, to: dmgPath)
@@ -127,10 +132,10 @@ final class UpdateService: ObservableObject {
         // 给出明确指引，而不是静默失败。
         let installParent = appURL.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: installParent.path) else {
-            throw MoongateError.updateFailed("没有写入「\(installParent.path)」的权限，无法自动安装更新。请用管理员账户运行，或到 GitHub 手动下载安装。")
+            throw MoongateError.updateFailed(t(L.Update.installDirectoryNotWritable, installParent.path))
         }
         // 必须在 /Applications 或可写位置；校验是同一个 App。
-        let mountPoint = try await Self.attachDMG(dmgPath)
+        let mountPoint = try await Self.attachDMG(dmgPath, mountFailedMessage: t(L.Update.mountFailed))
         // 默认任何提前返回/抛错都由本进程卸载 DMG；一旦把卸载职责交给替换脚本（成功路径），置 false。
         // 关键：成功路径绝不能由本进程卸载——脚本是先等本进程退出再从挂载点 ditto，
         // 若 NSApp.terminate 期间触发卸载会让源消失，ditto 失败、静默装不上。
@@ -140,17 +145,17 @@ final class UpdateService: ObservableObject {
         // 找挂载点里的 .app。
         let mounted = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: mountPoint), includingPropertiesForKeys: nil)) ?? []
         guard let newApp = mounted.first(where: { $0.pathExtension == "app" }) else {
-            throw MoongateError.downloadFailed("更新包里没有找到应用程序。")
+            throw MoongateError.downloadFailed(t(L.Update.packageMissingApp))
         }
         // 校验 bundle id 一致，避免替换错对象。
         guard let newPlist = NSDictionary(contentsOf: newApp.appendingPathComponent("Contents/Info.plist")),
               let newID = newPlist["CFBundleIdentifier"] as? String,
               newID == (Bundle.main.bundleIdentifier ?? "") else {
-            throw MoongateError.downloadFailed("更新包与当前应用不匹配，已停止安装。")
+            throw MoongateError.downloadFailed(t(L.Update.packageMismatch))
         }
         guard let newVersionRaw = newPlist["CFBundleShortVersionString"] as? String,
               SemVer(newVersionRaw) == expectedVersion else {
-            throw MoongateError.downloadFailed("更新包版本与目标版本不一致，已停止安装。")
+            throw MoongateError.downloadFailed(t(L.Update.versionMismatch))
         }
 
         // 写替换脚本：等本进程退出 → 从挂载点复制新 App → 卸载 DMG → 备份交换 → 去隔离 → 重开。
@@ -174,7 +179,7 @@ final class UpdateService: ObservableObject {
         NSApp.terminate(nil)
     }
 
-    private static func attachDMG(_ dmg: URL) async throws -> String {
+    private static func attachDMG(_ dmg: URL, mountFailedMessage: String) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         process.arguments = ["attach", "-nobrowse", "-readonly", "-plist", dmg.path]
@@ -188,7 +193,7 @@ final class UpdateService: ObservableObject {
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let entities = plist["system-entities"] as? [[String: Any]],
               let mount = entities.compactMap({ $0["mount-point"] as? String }).first else {
-            throw MoongateError.downloadFailed("无法挂载更新包。")
+            throw MoongateError.downloadFailed(mountFailedMessage)
         }
         return mount
     }

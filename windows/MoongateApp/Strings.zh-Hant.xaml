@@ -1,0 +1,243 @@
+<!-- 繁體中文介面文案。鍵名與 Strings.en.xaml 必須一一對應（build 後用腳本核對）。 -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+    <!-- 通用 -->
+    <sys:String x:Key="L.App.Title">月之門</sys:String>
+    <sys:String x:Key="L.App.FatalFmt">程式遇到意外錯誤，即將退出：{0}</sys:String>
+    <sys:String x:Key="L.Common.Cancel">取消</sys:String>
+    <sys:String x:Key="L.Common.Done">完成</sys:String>
+    <sys:String x:Key="L.Common.Retry">重試</sys:String>
+    <sys:String x:Key="L.Common.Close">關閉</sys:String>
+    <sys:String x:Key="L.Common.OperationFailedFmt">操作失敗：{0}</sys:String>
+
+    <!-- 首啟引導 -->
+    <sys:String x:Key="L.Onboarding.Title">歡迎使用月之門</sys:String>
+    <sys:String x:Key="L.Onboarding.Subtitle">先選好介面和譯文語言。AI 設定可以之後再做，也可以只把它當作影片下載器使用。</sys:String>
+    <sys:String x:Key="L.Onboarding.AppLanguage">介面語言</sys:String>
+    <sys:String x:Key="L.Onboarding.TargetLanguage">翻譯目標語言</sys:String>
+    <sys:String x:Key="L.Onboarding.AIOptional">不填寫 API 也可以繼續下載影片；需要字幕翻譯或摘要時再到設定配置。</sys:String>
+    <sys:String x:Key="L.Onboarding.Start">開始使用</sys:String>
+
+    <!-- 主視窗 -->
+    <sys:String x:Key="L.Main.Settings">設定</sys:String>
+    <sys:String x:Key="L.Main.Parse">解析</sys:String>
+    <sys:String x:Key="L.Main.Paste">貼上</sys:String>
+    <sys:String x:Key="L.Main.PasteTooltip">貼上剪貼簿裡的連結並解析</sys:String>
+    <sys:String x:Key="L.Main.UrlPlaceholder">貼上影片連結</sys:String>
+    <sys:String x:Key="L.Idle.Headline">貼上連結，下載網頁裡的影片</sys:String>
+    <sys:String x:Key="L.Idle.Sub">一次貼上多條連結會自動逐一解析並加入佇列</sys:String>
+    <sys:String x:Key="L.Loading.Default">正在解析…</sys:String>
+    <sys:String x:Key="L.Loading.BatchHint">解析完成的影片會以最高畫質自動加入佇列</sys:String>
+    <sys:String x:Key="L.Loading.BatchFmt">批次解析中（{0}/{1}）</sys:String>
+    <sys:String x:Key="L.Choosing.TitleFmt">這個頁面裡有 {0} 個影片</sys:String>
+    <sys:String x:Key="L.Error.NotAUrl">這不是一個網址。請貼上以 http 或 https 開頭的影片連結。</sys:String>
+    <sys:String x:Key="L.Error.NoAvailableFormat">這個影片沒有可下載的格式。</sys:String>
+
+    <!-- ready 頁 -->
+    <sys:String x:Key="L.Ready.Enqueue">加入佇列</sys:String>
+    <sys:String x:Key="L.Ready.SaveHint">儲存到「下載」資料夾 · 加入後可繼續貼上下一條</sys:String>
+    <sys:String x:Key="L.Ready.BackToList">‹ 返回列表</sys:String>
+    <sys:String x:Key="L.Ready.FormatSection">格式</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleSection">字幕</sys:String>
+    <sys:String x:Key="L.Ready.NoSubtitles">這個影片沒有字幕</sys:String>
+    <sys:String x:Key="L.Ready.AutoTag">自動產生</sys:String>
+    <sys:String x:Key="L.Ready.ProcessSection">字幕處理</sys:String>
+    <sys:String x:Key="L.Mode.Off">不需要</sys:String>
+    <sys:String x:Key="L.Mode.SrtOnly">只產生譯文字幕檔</sys:String>
+    <sys:String x:Key="L.Mode.BurnIn">翻譯並燒錄進影片</sys:String>
+    <sys:String x:Key="L.Mode.BurnOriginal">直接燒錄字幕（不翻譯）</sys:String>
+    <sys:String x:Key="L.Ready.NotConfigured">未設定翻譯服務</sys:String>
+    <sys:String x:Key="L.Ready.GoSettings">前往設定</sys:String>
+
+    <!-- AI 摘要 -->
+    <sys:String x:Key="L.Summary.Section">AI 摘要</sys:String>
+    <sys:String x:Key="L.Summary.Button">✦ 摘要影片內容</sys:String>
+    <sys:String x:Key="L.Summary.Hint">下載前先用 AI 看一眼這是什麼影片。</sys:String>
+    <sys:String x:Key="L.Summary.Running">正在理解影片內容…</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">↻ 重新摘要</sys:String>
+    <sys:String x:Key="L.Summary.Unconfigured">摘要需要先在設定裡配置可用的 AI 服務：填寫服務位址、模型和憑證。</sys:String>
+
+    <!-- 輸出選項 -->
+    <sys:String x:Key="L.Output.Section">輸出選項</sys:String>
+    <sys:String x:Key="L.Output.HdrHint">該清晰度提供 HDR 片源。開啟後下載 HDR 版本。</sys:String>
+    <sys:String x:Key="L.Output.Format">輸出格式</sys:String>
+    <sys:String x:Key="L.Output.Original">保持來源格式</sys:String>
+    <sys:String x:Key="L.Output.Mp4H264">MP4（H.264，相容性最好）</sys:String>
+    <sys:String x:Key="L.Output.Mp4H265">MP4（H.265/HEVC，保 HDR）</sys:String>
+    <sys:String x:Key="L.Output.Mkv">MKV（原編碼換封裝）</sys:String>
+    <sys:String x:Key="L.Output.HintH264">跨編碼轉 H.264 需重新編碼，較慢。</sys:String>
+    <sys:String x:Key="L.Output.HintH264Hdr">轉 H.264 會把 HDR 轉成 SDR（遺失 HDR），且需重新編碼、較慢。</sys:String>
+    <sys:String x:Key="L.Output.HintH265">轉 H.265 需重新編碼，較慢；HDR 源會盡量保留 HDR。</sys:String>
+    <sys:String x:Key="L.Hint.SelectSubtitleFirst">先在上面勾選一條字幕</sys:String>
+    <sys:String x:Key="L.Hint.WillTranslateFmt">將翻譯：{0}</sys:String>
+    <sys:String x:Key="L.Hint.WillBurnFmt">將燒錄：{0}</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceBurn">該字幕已是目標語言，將直接燒錄（不翻譯）</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceUse">該字幕已是目標語言，將直接使用（不翻譯）</sys:String>
+
+    <!-- 失敗頁 -->
+    <sys:String x:Key="L.Failed.GoLogin">前往登入</sys:String>
+    <sys:String x:Key="L.Failed.Restart">重新開始</sys:String>
+    <sys:String x:Key="L.Failed.BackToList">返回列表</sys:String>
+
+    <!-- 輕提示 -->
+    <sys:String x:Key="L.Notice.EnqueuedFmt">已加入佇列：{0}</sys:String>
+    <sys:String x:Key="L.Notice.Duplicate">該影片已在佇列中</sys:String>
+    <sys:String x:Key="L.Notice.ConfigureTranslationFirst">請先設定翻譯服務</sys:String>
+    <sys:String x:Key="L.Notice.BatchAddedFmt">已加入 {0} 個任務</sys:String>
+    <sys:String x:Key="L.Notice.BatchDupFmt">{0} 個已在佇列</sys:String>
+    <sys:String x:Key="L.Notice.BatchFailedFmt">{0} 個解析失敗：{1}</sys:String>
+    <sys:String x:Key="L.Notice.BatchFailedEtc"> 等</sys:String>
+    <sys:String x:Key="L.Notice.JoinSep">；</sys:String>
+    <sys:String x:Key="L.Notice.ListSep">、</sys:String>
+
+    <!-- 下載佇列 -->
+    <sys:String x:Key="L.Queue.Header">下載佇列</sys:String>
+    <sys:String x:Key="L.Queue.ClearFinished">清除已完成</sys:String>
+    <sys:String x:Key="L.Queue.ExpandTooltip">展開佇列</sys:String>
+    <sys:String x:Key="L.Queue.CollapseTooltip">收起佇列</sys:String>
+    <sys:String x:Key="L.Queue.ActiveFmt">{0} 個進行中</sys:String>
+    <sys:String x:Key="L.Queue.FinishedFmt">{0} 個已完成</sys:String>
+    <sys:String x:Key="L.Queue.AllDone">全部完成</sys:String>
+    <sys:String x:Key="L.Queue.SummarySep"> · </sys:String>
+    <sys:String x:Key="L.Row.Pause">暫停</sys:String>
+    <sys:String x:Key="L.Row.Resume">繼續</sys:String>
+    <sys:String x:Key="L.Row.Cancel">取消</sys:String>
+    <sys:String x:Key="L.Row.RetrySubtitle">重試字幕處理</sys:String>
+    <sys:String x:Key="L.Row.Retry">重試</sys:String>
+    <sys:String x:Key="L.Row.Reveal">開啟資料夾</sys:String>
+    <sys:String x:Key="L.Row.RevealTooltip">開啟所在資料夾</sys:String>
+    <sys:String x:Key="L.Row.Remove">移除</sys:String>
+    <sys:String x:Key="L.Status.Paused">已暫停</sys:String>
+    <sys:String x:Key="L.Status.Queued">佇列中…</sys:String>
+    <sys:String x:Key="L.Status.Processing">處理中…</sys:String>
+    <sys:String x:Key="L.Status.TranscodingFmt">轉碼中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.Transcoding">轉碼中…</sys:String>
+    <sys:String x:Key="L.Status.DownloadingFmt">下載中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.Downloading">下載中…</sys:String>
+    <sys:String x:Key="L.Status.TranslatingFmt">翻譯字幕中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.Translating">翻譯字幕中…</sys:String>
+    <sys:String x:Key="L.Status.BurningFmt">燒錄中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.Burning">燒錄中…</sys:String>
+    <sys:String x:Key="L.Status.Done">已完成</sys:String>
+    <sys:String x:Key="L.Status.Cancelled">已取消</sys:String>
+    <sys:String x:Key="L.Status.FailedFmt">失敗：{0}</sys:String>
+    <sys:String x:Key="L.Status.Unknown">未知錯誤</sys:String>
+
+    <!-- 關窗確認 -->
+    <sys:String x:Key="L.Confirm.CloseFmt">佇列中還有 {0} 個任務在進行，關閉會全部中止。</sys:String>
+    <sys:String x:Key="L.Confirm.ClosePausedFmt">佇列中還有 {0} 個任務（含 {1} 個已暫停），關閉會全部中止。</sys:String>
+    <sys:String x:Key="L.Confirm.AbortAndClose">全部中止並關閉</sys:String>
+    <sys:String x:Key="L.Confirm.KeepRunning">繼續</sys:String>
+
+    <!-- 設定窗 -->
+    <sys:String x:Key="L.Settings.Title">設定</sys:String>
+    <sys:String x:Key="L.Settings.General">一般</sys:String>
+    <sys:String x:Key="L.Settings.Language">介面語言</sys:String>
+    <sys:String x:Key="L.Settings.TargetLanguage">翻譯目標語言</sys:String>
+    <sys:String x:Key="L.Settings.LangAuto">跟隨系統</sys:String>
+    <sys:String x:Key="L.Settings.LangHint">切換語言會立即生效；進行中任務的狀態文案會在下次重新整理時切換。</sys:String>
+    <sys:String x:Key="L.Settings.AIService">AI 服務</sys:String>
+    <sys:String x:Key="L.Settings.AIServiceHint">預設 AI 服務會被翻譯和摘要共用；需要不同模型時可在下方單獨覆寫。</sys:String>
+    <sys:String x:Key="L.Settings.Translation">翻譯服務</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">智慧翻譯提示詞</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">開啟後，翻譯前會先用摘要模型分析字幕內容，並依內容類型選擇更合適的翻譯風格。</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻譯跟隨預設 AI 服務</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">預設共用上方服務。關閉後可給翻譯單獨指定模型或閘道。</sys:String>
+    <sys:String x:Key="L.Settings.Protocol">介面協定</sys:String>
+    <sys:String x:Key="L.Settings.BaseUrl">服務位址</sys:String>
+    <sys:String x:Key="L.Settings.Credential">API 憑證</sys:String>
+    <sys:String x:Key="L.Settings.CredHelpAnthropic">公司閘道按 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 填寫；DeepSeek 映射也選這個協定。</sys:String>
+    <sys:String x:Key="L.Settings.CredHelpOpenAi">OpenAI 使用 Responses API。服務位址填 https://api.openai.com；憑證填 OpenAI API key，不要帶 Bearer 前綴。</sys:String>
+    <sys:String x:Key="L.Settings.FetchModels">拉取模型</sys:String>
+    <sys:String x:Key="L.Settings.SelectModel">選擇模型</sys:String>
+    <sys:String x:Key="L.Settings.ModelName">模型名</sys:String>
+    <sys:String x:Key="L.Settings.ModelHint">可先留空，填完位址和憑證後選擇；也可手動填寫。</sys:String>
+    <sys:String x:Key="L.Settings.ModelPlaceholder">請選擇</sys:String>
+    <sys:String x:Key="L.Settings.Fetching">正在拉取…</sys:String>
+    <sys:String x:Key="L.Settings.FetchedFmt">已拉取 {0} 個模型</sys:String>
+    <sys:String x:Key="L.Settings.FetchFailedFmt">拉取失敗：{0}</sys:String>
+    <sys:String x:Key="L.Settings.TestConnection">測試連線</sys:String>
+    <sys:String x:Key="L.Settings.Testing">正在測試…</sys:String>
+    <sys:String x:Key="L.Settings.TestOk">連線正常</sys:String>
+    <sys:String x:Key="L.Settings.TestFailedFmt">連線失敗：{0}</sys:String>
+    <sys:String x:Key="L.Settings.SummaryConfig">AI 摘要</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefault">摘要跟隨預設 AI 服務</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefaultHint">預設使用上方服務。關閉後可給摘要單獨指定模型或閘道。</sys:String>
+    <sys:String x:Key="L.Settings.SummaryModelHint">摘要會使用這裡的模型；留空時摘要按鈕會顯示未設定。</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleStyle">字幕樣式</sys:String>
+    <sys:String x:Key="L.Settings.StyleLabel">譯文字幕樣式</sys:String>
+    <sys:String x:Key="L.Settings.StyleBilingual">雙語（原文 + 譯文）</sys:String>
+    <sys:String x:Key="L.Settings.StyleChineseOnly">僅譯文</sys:String>
+    <sys:String x:Key="L.Settings.BurnQuality">燒錄畫質</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackend">編碼方式</sys:String>
+    <sys:String x:Key="L.Settings.EncodeAuto">自動</sys:String>
+    <sys:String x:Key="L.Settings.EncodeHardware">硬體優先</sys:String>
+    <sys:String x:Key="L.Settings.EncodeSoftware">軟體編碼</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackendHint">自動會優先使用 NVENC / QSV / AMF；遇到相容性問題時，實際耗時可能比預期更長。</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264">始終輸出 H.264</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">開啟後相容性最好；關閉則盡量跟隨來源影片編碼，例如 HEVC 源繼續輸出 HEVC。</sys:String>
+    <sys:String x:Key="L.Settings.Limit1080">高清影片燒錄時縮放到 1080p（更快更省空間，推薦）</sys:String>
+    <sys:String x:Key="L.Settings.Limit1080Hint">關閉則按來源解析度燒錄（4K 會明顯更慢、檔案更大）。此設定只影響燒錄字幕，不影響普通下載。</sys:String>
+    <sys:String x:Key="L.Settings.Performance">效能</sys:String>
+    <sys:String x:Key="L.Settings.MaxDownloads">同時下載數</sys:String>
+    <sys:String x:Key="L.Settings.MaxBurns">同時壓制數</sys:String>
+    <sys:String x:Key="L.Settings.PerfHint">超出上限的任務顯示「佇列中」並自動等待；暫停一個任務會把空位讓給下一個。遇到相容性問題時，實際耗時可能比預期更長。調整立即生效。</sys:String>
+    <sys:String x:Key="L.Settings.SiteLogin">站點登入</sys:String>
+    <sys:String x:Key="L.Settings.LoginYouTube">登入 YouTube</sys:String>
+    <sys:String x:Key="L.Settings.LoginBilibili">登入嗶哩嗶哩</sys:String>
+    <sys:String x:Key="L.Settings.ClearLogins">清除所有登入</sys:String>
+    <sys:String x:Key="L.Settings.Cleared">已清除</sys:String>
+    <sys:String x:Key="L.Settings.LoginStatusNone">尚未登入任何站點</sys:String>
+    <sys:String x:Key="L.Settings.LoginStatusFmt">已儲存登入資訊（{0} 匯出）</sys:String>
+    <sys:String x:Key="L.Settings.Dependencies">依賴元件</sys:String>
+    <sys:String x:Key="L.Settings.Redownload">重新下載</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlp">更新 yt-dlp</sys:String>
+    <sys:String x:Key="L.Settings.DepHint">站點規則變化頻繁，下載經常失敗時可先試試更新 yt-dlp。</sys:String>
+    <sys:String x:Key="L.Settings.Installed">已安裝</sys:String>
+    <sys:String x:Key="L.Settings.Missing">缺失</sys:String>
+    <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp：{0} · ffmpeg：{1} · deno：{2}</sys:String>
+    <sys:String x:Key="L.Settings.SaveFailedFmt">設定儲存失敗：{0}</sys:String>
+    <sys:String x:Key="L.Settings.ClearLoginsConfirm">確定要清除所有登入嗎？</sys:String>
+    <sys:String x:Key="L.Settings.ClearLoginsDetail">清除後需要重新登入才能下載會員/受限影片。</sys:String>
+    <sys:String x:Key="L.Settings.RedownloadTitle">重新下載依賴元件</sys:String>
+    <sys:String x:Key="L.Settings.RedownloadCaption">正在重新下載 yt-dlp、ffmpeg、deno 元件，請保持網路連線。</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlpCaption">正在下載最新版 yt-dlp，請保持網路連線。</sys:String>
+
+    <!-- 更新 -->
+    <sys:String x:Key="L.Update.Section">更新</sys:String>
+    <sys:String x:Key="L.Update.CurrentVersion">目前版本</sys:String>
+    <sys:String x:Key="L.Update.Check">檢查更新</sys:String>
+    <sys:String x:Key="L.Update.Checking">正在檢查更新…</sys:String>
+    <sys:String x:Key="L.Update.UpToDate">已是最新版本</sys:String>
+    <sys:String x:Key="L.Update.FoundPrefix">發現新版本 </sys:String>
+    <sys:String x:Key="L.Update.DownloadInstall">下載並更新</sys:String>
+    <sys:String x:Key="L.Update.OpenReleases">開啟發布頁</sys:String>
+    <sys:String x:Key="L.Update.Downloading">正在下載更新… </sys:String>
+    <sys:String x:Key="L.Update.Installing">正在啟動安裝程式，應用程式將退出以完成更新…</sys:String>
+    <sys:String x:Key="L.Update.Untrusted">更新包位址不可信，已阻止。請到 GitHub 手動下載。</sys:String>
+    <sys:String x:Key="L.Update.DownloadFailed">下載更新包失敗。</sys:String>
+
+    <!-- 站點登入窗 -->
+    <sys:String x:Key="L.Login.Title">站點登入</sys:String>
+    <sys:String x:Key="L.Login.HeadlineFmt">登入 {0}</sys:String>
+    <sys:String x:Key="L.Login.Instruction">在下方頁面完成登入，然後點右上角「完成登入」</sys:String>
+    <sys:String x:Key="L.Login.Finish">完成登入</sys:String>
+    <sys:String x:Key="L.Login.LoadingPage">正在載入登入頁…</sys:String>
+    <sys:String x:Key="L.Login.PageLoadFailed">頁面載入失敗，請檢查網路後重試</sys:String>
+    <sys:String x:Key="L.Login.NotReady">登入頁尚未載入完成</sys:String>
+    <sys:String x:Key="L.Login.SaveFailedFmt">儲存登入資訊失敗：{0}</sys:String>
+    <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 執行階段</sys:String>
+    <sys:String x:Key="L.Login.WebView2MissingBody">這台電腦還沒有安裝 WebView2 執行階段，登入視窗需要它才能顯示網頁。&#x0a;請前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下載安裝，然後重新開啟登入視窗。</sys:String>
+    <sys:String x:Key="L.Login.InitFailedFmt">登入視窗初始化失敗：{0}</sys:String>
+    <sys:String x:Key="L.Login.Bilibili">嗶哩嗶哩</sys:String>
+
+    <!-- 依賴下載窗 -->
+    <sys:String x:Key="L.Dep.FirstRunTitle">準備依賴元件</sys:String>
+    <sys:String x:Key="L.Dep.FirstRunCaption">首次啟動需要下載影片處理元件（yt-dlp、ffmpeg、deno），請保持網路連線。</sys:String>
+    <sys:String x:Key="L.Dep.Checking">正在檢查元件…</sys:String>
+    <sys:String x:Key="L.Dep.DownloadFailed">下載失敗</sys:String>
+    <sys:String x:Key="L.Dep.CheckFailedFmt">依賴元件檢查失敗：{0}</sys:String>
+
+</ResourceDictionary>

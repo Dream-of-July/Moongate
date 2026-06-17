@@ -8,6 +8,7 @@ final class MacOSLoginBoundaryTests: XCTestCase {
         let updateBody = try XCTUnwrap(functionBody(prefix: "func updateNSView", in: source))
 
         XCTAssertTrue(source.contains("@State private var webViewCommand: LoginWebViewCommand?"))
+        XCTAssertTrue(source.contains("@EnvironmentObject private var localizer: Localizer"))
         XCTAssertTrue(source.contains("command: $webViewCommand"))
         XCTAssertTrue(webViewBody.contains("@Binding var command: LoginWebViewCommand?"))
         XCTAssertTrue(updateBody.contains("consumeCommand"))
@@ -20,12 +21,12 @@ final class MacOSLoginBoundaryTests: XCTestCase {
         XCTAssertTrue(topBarBody.contains("systemName: \"safari\""))
         XCTAssertTrue(topBarBody.contains(".labelStyle(.iconOnly)"))
         XCTAssertTrue(topBarBody.contains(".controlSize(.small)"))
-        XCTAssertTrue(topBarBody.contains(".help(\"返回\")"))
-        XCTAssertTrue(topBarBody.contains(".help(\"重新载入\")"))
-        XCTAssertTrue(topBarBody.contains(".help(\"在浏览器中打开\")"))
-        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(\"返回\")"))
-        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(\"重新载入\")"))
-        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(\"在浏览器中打开\")"))
+        XCTAssertTrue(topBarBody.contains(".help(localizer.t(L.Login.back))"))
+        XCTAssertTrue(topBarBody.contains(".help(localizer.t(L.Login.reload))"))
+        XCTAssertTrue(topBarBody.contains(".help(localizer.t(L.Login.openInBrowser))"))
+        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(localizer.t(L.Login.back))"))
+        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(localizer.t(L.Login.reload))"))
+        XCTAssertTrue(topBarBody.contains(".accessibilityLabel(localizer.t(L.Login.openInBrowser))"))
     }
 
     func testOpenInBrowserOnlyUsesUserActionAndCurrentOrStartURL() throws {
@@ -56,8 +57,8 @@ final class MacOSLoginBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("@State private var hasSiteLoginCookies = false"))
         XCTAssertTrue(topBarBody.contains("Text(cookieReadinessText)"))
-        XCTAssertTrue(readinessBody.contains("已检测到当前站点 Cookie"))
-        XCTAssertTrue(readinessBody.contains("仍未检测到当前站点 Cookie"))
+        XCTAssertTrue(readinessBody.contains("localizer.t(L.Login.cookieReady)"))
+        XCTAssertTrue(readinessBody.contains("localizer.t(L.Login.cookieMissing)"))
         XCTAssertFalse(readinessBody.contains("Cookie 内容"))
         XCTAssertFalse(readinessBody.contains("Cookie 名称"))
         XCTAssertFalse(readinessBody.contains("Cookie 数量"))
@@ -142,7 +143,7 @@ final class MacOSLoginBoundaryTests: XCTestCase {
 
         XCTAssertTrue(topBarBody.contains("if isLoading"))
         XCTAssertTrue(loadingStateBody.contains("ProgressView()"))
-        XCTAssertTrue(loadingStateBody.contains(".accessibilityLabel(\"页面加载中\")"))
+        XCTAssertTrue(loadingStateBody.contains(".accessibilityLabel(localizer.t(L.Login.loading))"))
         XCTAssertFalse(loadingStateBody.localizedCaseInsensitiveContains("cookie"))
     }
 
@@ -153,18 +154,15 @@ final class MacOSLoginBoundaryTests: XCTestCase {
             functionBody(prefix: "private var saveLoginHelpText: String", in: source)
         )
 
-        XCTAssertTrue(topBarBody.contains("Text(isExporting ? \"保存中…\" : \"保存登录信息\")"))
+        XCTAssertTrue(topBarBody.contains("Text(isExporting ? localizer.t(L.Login.saving) : localizer.t(L.Login.saveLogin))"))
         XCTAssertTrue(topBarBody.contains("exportCookies()"))
         XCTAssertTrue(topBarBody.contains(".help(saveLoginHelpText)"))
         XCTAssertTrue(topBarBody.contains(".accessibilityHint(saveLoginHelpText)"))
         XCTAssertTrue(topBarBody.contains(".accessibilityValue(cookieReadinessText)"))
         XCTAssertTrue(source.contains("private var saveLoginHelpText: String"))
         XCTAssertTrue(helpTextBody.contains("if hasSiteLoginCookies"))
-        XCTAssertTrue(helpTextBody.contains("当前站点 Cookie 已就绪"))
-        XCTAssertTrue(helpTextBody.contains("还没有检测到当前站点 Cookie"))
-        XCTAssertTrue(helpTextBody.contains("保存到本 App"))
-        XCTAssertTrue(helpTextBody.contains("供下载器使用"))
-        XCTAssertTrue(helpTextBody.contains("不会在界面显示 Cookie 内容"))
+        XCTAssertTrue(helpTextBody.contains("localizer.t(L.Login.saveReadyHelp)"))
+        XCTAssertTrue(helpTextBody.contains("localizer.t(L.Login.saveMissingHelp)"))
         XCTAssertFalse(topBarBody.contains("getAllCookies"))
         XCTAssertFalse(topBarBody.contains("NetscapeCookieFile.write"))
     }

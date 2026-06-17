@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(MoongateCore)
+import MoongateCore
+#endif
 
 /// AI 总结卡片：仿 Apple Intelligence 的「计算时流光边框 + 完成后展开」效果。
 /// 计算中：圆角卡片描一圈缓慢旋转/呼吸的彩色渐变光边；完成：结果淡入并展开。
@@ -8,6 +11,7 @@ struct SummaryCard: View {
     let isAvailable: Bool
     let onSummarize: () -> Void
     let onCancel: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -39,7 +43,7 @@ struct SummaryCard: View {
     @ViewBuilder
     private var idleContent: some View {
         Button(action: onSummarize) {
-            Label("总结视频内容", systemImage: "sparkles")
+            Label(localizer.t(L.Summary.title), systemImage: "sparkles")
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.capsule)
@@ -50,7 +54,7 @@ struct SummaryCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            Text("下载前先用 AI 看一眼这是什么视频。")
+            Text(localizer.t(L.Summary.idleDescription))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -59,9 +63,9 @@ struct SummaryCard: View {
     @ViewBuilder
     private var runningContent: some View {
         HStack(spacing: 10) {
-            ShimmerText(text: "正在理解视频内容…")
+            ShimmerText(text: localizer.t(L.Summary.running))
             Spacer(minLength: 0)
-            Button("取消", action: onCancel)
+            Button(localizer.t(L.Common.cancel), action: onCancel)
                 .buttonStyle(.plain)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -76,7 +80,7 @@ struct SummaryCard: View {
             FlowingBorder()
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("正在生成总结")
+        .accessibilityLabel(localizer.t(L.Summary.runningAccessibility))
     }
 
     @ViewBuilder
@@ -100,7 +104,7 @@ struct SummaryCard: View {
         HStack {
             Spacer(minLength: 0)
             Button(action: onSummarize) {
-                Label("重新总结", systemImage: "arrow.clockwise")
+                Label(localizer.t(L.Summary.retry), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -116,7 +120,7 @@ struct SummaryCard: View {
             .fixedSize(horizontal: false, vertical: true)
         HStack {
             Spacer(minLength: 0)
-            Button("重试", action: onSummarize)
+            Button(localizer.t(L.Common.retry), action: onSummarize)
                 .buttonStyle(.bordered)
                 .disabled(!isAvailable)
         }

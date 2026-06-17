@@ -32,7 +32,7 @@ public static class DownloadPaths
             name = name[..80].Trim();
         }
         name = name.TrimEnd('.');
-        return name.Length == 0 ? L10n.T("视频", "Video") : name;
+        return name.Length == 0 ? L10n.T("视频", "影片", "Video") : name;
     }
 
     /// <summary>

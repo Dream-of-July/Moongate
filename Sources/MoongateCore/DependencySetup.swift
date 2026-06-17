@@ -33,17 +33,17 @@ public enum DependencySetup {
         [
             Component(
                 id: "yt-dlp", formula: "yt-dlp",
-                purpose: "视频解析与下载",
+                purpose: CoreL10n.t(L.Dependency.purposeYtDlp),
                 isInstalled: ytDlpInstalled
             ),
             Component(
                 id: "ffmpeg", formula: "ffmpeg-full",
-                purpose: "合并、转码与字幕烧录（需 libass）",
+                purpose: CoreL10n.t(L.Dependency.purposeFfmpeg),
                 isInstalled: subtitleRendererFfmpegInstalled
             ),
             Component(
                 id: "deno", formula: "deno",
-                purpose: "YouTube 下载所需的 JS 运行时",
+                purpose: CoreL10n.t(L.Dependency.purposeDeno),
                 isInstalled: jsRuntimeInstalled
             ),
         ]

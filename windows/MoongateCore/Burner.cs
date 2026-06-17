@@ -354,6 +354,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
         {
             TryRemoveDirectory(tempDir);
             throw MoongateException.BurnFailed(L10n.T($"无法准备字幕临时文件：{e.Message}",
+                $"無法準備字幕暫存檔：{e.Message}",
                 $"Could not prepare subtitle temp files: {e.Message}"));
         }
 
@@ -406,6 +407,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
                 {
                     throw MoongateException.BurnFailed(L10n.T(
                         "烧录进程超过 2 分钟没有任何输出，疑似挂死，已自动中止（可重试）。",
+                        "燒錄程序超過 2 分鐘沒有任何輸出，疑似卡住，已自動中止（可重試）。",
                         "The encoder produced no output for 2 minutes and was stopped (you can retry)."));
                 }
                 finally
@@ -458,6 +460,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
                 {
                     throw MoongateException.BurnFailed(L10n.T(
                         "当前 ffmpeg 不带字幕渲染组件（libass）。请在「设置」里重新下载完整版 ffmpeg 后重试。",
+                        "目前 ffmpeg 不帶字幕渲染元件（libass）。請在「設定」裡重新下載完整版 ffmpeg 後重試。",
                         "This ffmpeg build lacks the subtitle renderer (libass). Re-download ffmpeg in Settings and retry."));
                 }
                 throw MoongateException.BurnFailed(LastLine(stderrTail));
@@ -466,14 +469,15 @@ public sealed class FFmpegBurner : ISubtitleBurner
             if (!File.Exists(produced))
             {
                 throw MoongateException.BurnFailed(L10n.T("ffmpeg 已退出，但没有生成输出文件。",
+                    "ffmpeg 已退出，但沒有產生輸出檔案。",
                     "ffmpeg exited without producing an output file."));
             }
             progress(1);
 
-            // 6. 移到视频同目录："<原名>（中文字幕）.mp4"（标签可由 outputTag 定制），重名时加 " 2"、" 3"…
+            // 6. 移到视频同目录："<原名>（字幕版）.mp4"（标签可由 outputTag 定制），重名时加 " 2"、" 3"…
             var stem = Path.GetFileNameWithoutExtension(video);
             var directory = Path.GetDirectoryName(video) ?? ".";
-            var tag = outputTag ?? L10n.T("（中文字幕）", " (Chinese subtitles)");
+            var tag = outputTag ?? L10n.T("（字幕版）", "（字幕版）", " (subtitled)");
             var destination = Path.Combine(directory, $"{stem}{tag}.mp4");
             var serial = 2;
             while (File.Exists(destination))
@@ -488,6 +492,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
             catch (Exception e)
             {
                 throw MoongateException.BurnFailed(L10n.T($"无法移动输出文件：{e.Message}",
+                    $"無法移動輸出檔案：{e.Message}",
                     $"Could not move the output file: {e.Message}"));
             }
             return destination;
@@ -637,7 +642,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
             .Select(l => l.Trim())
             .Where(l => l.Length > 0)
             .ToList();
-        var last = lines.Count > 0 ? lines[^1] : L10n.T("未知错误", "Unknown error");
+        var last = lines.Count > 0 ? lines[^1] : L10n.T("未知错误", "未知錯誤", "Unknown error");
         return last.Length > 200 ? last[..200] : last;
     }
 

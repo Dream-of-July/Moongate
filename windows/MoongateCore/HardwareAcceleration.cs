@@ -18,7 +18,10 @@ public sealed record PipelineAccelerationReport(
     bool UsesHardwareEncode = false,
     string? CompatibilityNotice = null)
 {
-    public const string CompatibilityModeNotice = "遇到兼容性问题，实际耗时可能比预计更长。";
+    public static string CompatibilityModeNotice => L10n.T(
+        "遇到兼容性问题，实际耗时可能比预计更长。",
+        "遇到相容性問題，實際耗時可能比預計更長。",
+        "Compatibility handling is active, so this may take longer than expected.");
     public static readonly PipelineAccelerationReport None = new();
 }
 

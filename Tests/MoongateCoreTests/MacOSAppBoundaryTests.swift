@@ -18,18 +18,21 @@ final class MacOSAppBoundaryTests: XCTestCase {
         let body = try XCTUnwrap(functionBody(prefix: "private func confirmAbortDownload", in: source))
 
         XCTAssertTrue(body.contains("alert.informativeText ="))
-        XCTAssertTrue(body.contains("保留任务，继续下载"))
-        XCTAssertTrue(body.contains("终止任务并关闭"))
-        XCTAssertTrue(body.contains("取消本次关闭或退出"))
-        XCTAssertTrue(body.contains("不会主动删除已经完成生成的文件"))
+        XCTAssertTrue(body.contains("localizer.t(L.App.abortInformativeText)"))
+        XCTAssertTrue(body.contains("localizer.t(L.App.keepTasks)"))
+        XCTAssertTrue(body.contains("localizer.t(L.App.abortTasks)"))
         XCTAssertTrue(body.contains("return alert.runModal() == .alertSecondButtonReturn"))
 
-        let keepButton = try XCTUnwrap(body.range(of: "alert.addButton(withTitle: \"保留任务，继续下载\")"))
-        let abortButton = try XCTUnwrap(body.range(of: "alert.addButton(withTitle: \"终止任务并关闭\")"))
+        let keepButton = try XCTUnwrap(body.range(of: "alert.addButton(withTitle: localizer.t(L.App.keepTasks))"))
+        let abortButton = try XCTUnwrap(body.range(of: "alert.addButton(withTitle: localizer.t(L.App.abortTasks))"))
         let abortReturn = try XCTUnwrap(body.range(of: ".alertSecondButtonReturn"))
 
         XCTAssertLessThan(keepButton.lowerBound, abortButton.lowerBound)
         XCTAssertLessThan(abortButton.lowerBound, abortReturn.lowerBound)
+
+        let messageBody = try XCTUnwrap(functionBody(prefix: "private func abortConfirmationMessage", in: source))
+        XCTAssertTrue(messageBody.contains("localizer.t(L.App.abortPausedTasks"))
+        XCTAssertTrue(messageBody.contains("localizer.t(L.App.abortRunningTasks"))
     }
 
     private func appSource() throws -> String {

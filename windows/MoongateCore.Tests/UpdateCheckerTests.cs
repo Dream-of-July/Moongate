@@ -5,6 +5,7 @@ using Xunit;
 
 namespace Moongate.Core.Tests;
 
+[Collection("L10n.Language global state")]
 public class UpdateCheckerTests
 {
     [Fact]
@@ -125,6 +126,29 @@ public class UpdateCheckerTests
         Assert.Contains("检查更新失败", ex.Message);
         Assert.DoesNotContain("解析视频信息失败", ex.Message);
         Assert.DoesNotContain("Failed to analyze the video", ex.Message);
+    }
+
+    [Fact]
+    public async Task CheckForUpdateErrorsLocalizeReasonForEnglishAndTraditionalChinese()
+    {
+        var checker = new UpdateChecker();
+        var previous = L10n.Language;
+        try
+        {
+            L10n.Language = CoreLanguage.English;
+            var en = await Assert.ThrowsAsync<MoongateException>(() =>
+                checker.CheckForUpdateAsync("not-a-version"));
+            Assert.Equal("Update check failed: Could not parse current version: not-a-version", en.Message);
+
+            L10n.Language = CoreLanguage.TraditionalChinese;
+            var zhHant = await Assert.ThrowsAsync<MoongateException>(() =>
+                checker.CheckForUpdateAsync("not-a-version"));
+            Assert.Equal("檢查更新失敗：無法解析目前版本號：not-a-version", zhHant.Message);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
     }
 
     [Fact]

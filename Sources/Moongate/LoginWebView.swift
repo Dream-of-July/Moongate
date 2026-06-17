@@ -15,6 +15,8 @@ struct LoginSheet: View {
     let onComplete: () -> Void
     let onCancel: () -> Void
 
+    @EnvironmentObject private var localizer: Localizer
+
     @State private var currentURL: String = ""
     @State private var errorText: String?
     @State private var loadErrorText: String?
@@ -30,6 +32,7 @@ struct LoginSheet: View {
             Divider()
             LoginWebView(
                 startURL: Self.startURL(for: site),
+                loadErrorMessage: localizer.t(L.Login.loadFailed),
                 currentURL: $currentURL,
                 loadError: $loadErrorText,
                 isLoading: $isLoading,
@@ -53,9 +56,9 @@ struct LoginSheet: View {
     private var topBar: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("登录 \(siteDisplayName)")
+                Text(localizer.t(L.Login.title, siteDisplayName))
                     .font(.headline)
-                Text("在下方页面完成登录，然后点右上角「保存登录信息」")
+                Text(localizer.t(L.Login.subtitle))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !currentURL.isEmpty {
@@ -75,7 +78,7 @@ struct LoginSheet: View {
                     webViewCommand = .back
                 } label: {
                     Label {
-                        Text("返回")
+                        Text(localizer.t(L.Login.back))
                     } icon: {
                         Image(systemName: "chevron.left")
                     }
@@ -83,47 +86,47 @@ struct LoginSheet: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .disabled(!canGoBack)
-                .help("返回")
-                .accessibilityLabel("返回")
-                .accessibilityHint("返回上一页")
+                .help(localizer.t(L.Login.back))
+                .accessibilityLabel(localizer.t(L.Login.back))
+                .accessibilityHint(localizer.t(L.Login.backHint))
 
                 Button {
                     webViewCommand = .reload
                 } label: {
                     Label {
-                        Text("重新载入")
+                        Text(localizer.t(L.Login.reload))
                     } icon: {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
-                .help("重新载入")
-                .accessibilityLabel("重新载入")
-                .accessibilityHint("重新载入当前页面")
+                .help(localizer.t(L.Login.reload))
+                .accessibilityLabel(localizer.t(L.Login.reload))
+                .accessibilityHint(localizer.t(L.Login.reloadHint))
 
                 Button {
                     openCurrentPageInBrowser()
                 } label: {
                     Label {
-                        Text("在浏览器中打开")
+                        Text(localizer.t(L.Login.openInBrowser))
                     } icon: {
                         Image(systemName: "safari")
                     }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
-                .help("在浏览器中打开")
-                .accessibilityLabel("在浏览器中打开")
-                .accessibilityHint("用系统默认浏览器打开当前页面")
+                .help(localizer.t(L.Login.openInBrowser))
+                .accessibilityLabel(localizer.t(L.Login.openInBrowser))
+                .accessibilityHint(localizer.t(L.Login.openInBrowserHint))
             }
             .controlSize(.small)
             if isLoading {
                 HStack(spacing: 6) {
                     ProgressView()
-                        .accessibilityLabel("页面加载中")
+                        .accessibilityLabel(localizer.t(L.Login.loading))
                         .controlSize(.small)
-                    Text("页面加载中")
+                    Text(localizer.t(L.Login.loading))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -135,14 +138,14 @@ struct LoginSheet: View {
                     .lineLimit(2)
                     .frame(maxWidth: 260, alignment: .trailing)
             }
-            Button("取消") {
+            Button(localizer.t(L.Common.cancel)) {
                 onCancel()
             }
             .buttonStyle(.bordered)
             Button {
                 exportCookies()
             } label: {
-                Text(isExporting ? "保存中…" : "保存登录信息")
+                Text(isExporting ? localizer.t(L.Login.saving) : localizer.t(L.Login.saveLogin))
             }
             .buttonStyle(.borderedProminent)
             .disabled(isExporting)
@@ -156,13 +159,13 @@ struct LoginSheet: View {
 
     private var saveLoginHelpText: String {
         if hasSiteLoginCookies {
-            return "当前站点 Cookie 已就绪。保存到本 App，供下载器使用；不会在界面显示 Cookie 内容。"
+            return localizer.t(L.Login.saveReadyHelp)
         }
-        return "还没有检测到当前站点 Cookie。可以继续登录，保存到本 App 后供下载器使用；不会在界面显示 Cookie 内容。"
+        return localizer.t(L.Login.saveMissingHelp)
     }
 
     private var cookieReadinessText: String {
-        hasSiteLoginCookies ? "已检测到当前站点 Cookie" : "仍未检测到当前站点 Cookie"
+        hasSiteLoginCookies ? localizer.t(L.Login.cookieReady) : localizer.t(L.Login.cookieMissing)
     }
 
     private var currentPageURL: URL? {
@@ -243,7 +246,7 @@ struct LoginSheet: View {
             do {
                 try NetscapeCookieFile.write(cookies: cookies, to: fileURL)
             } catch {
-                failureText = "保存登录信息失败：\(error.localizedDescription)"
+                failureText = localizer.t(L.Login.exportFailed, error.localizedDescription)
             }
             finishExport(failureText)
         }
@@ -268,6 +271,7 @@ enum LoginWebViewCommand: Equatable {
 /// 登录产生的 cookies 跨重启保留。
 struct LoginWebView: NSViewRepresentable {
     let startURL: URL
+    let loadErrorMessage: String
     @Binding var currentURL: String
     @Binding var loadError: String?
     @Binding var isLoading: Bool
@@ -284,7 +288,8 @@ struct LoginWebView: NSViewRepresentable {
             loadError: $loadError,
             isLoading: $isLoading,
             canGoBack: $canGoBack,
-            command: $command
+            command: $command,
+            loadErrorMessage: loadErrorMessage
         )
     }
 
@@ -305,6 +310,7 @@ struct LoginWebView: NSViewRepresentable {
         context.coordinator.isLoading = $isLoading
         context.coordinator.canGoBack = $canGoBack
         context.coordinator.command = $command
+        context.coordinator.loadErrorMessage = loadErrorMessage
         context.coordinator.consumeCommand(in: nsView)
         context.coordinator.updateNavigationState(for: nsView)
     }
@@ -315,19 +321,22 @@ struct LoginWebView: NSViewRepresentable {
         var isLoading: Binding<Bool>
         var canGoBack: Binding<Bool>
         var command: Binding<LoginWebViewCommand?>
+        var loadErrorMessage: String
 
         init(
             currentURL: Binding<String>,
             loadError: Binding<String?>,
             isLoading: Binding<Bool>,
             canGoBack: Binding<Bool>,
-            command: Binding<LoginWebViewCommand?>
+            command: Binding<LoginWebViewCommand?>,
+            loadErrorMessage: String
         ) {
             self.currentURL = currentURL
             self.loadError = loadError
             self.isLoading = isLoading
             self.canGoBack = canGoBack
             self.command = command
+            self.loadErrorMessage = loadErrorMessage
         }
 
         func consumeCommand(in webView: WKWebView) {
@@ -383,7 +392,7 @@ struct LoginWebView: NSViewRepresentable {
         private func reportLoadFailure(_ error: Error) {
             isLoading.wrappedValue = false
             guard (error as NSError).code != NSURLErrorCancelled else { return }
-            loadError.wrappedValue = "页面加载失败，请检查网络后重试"
+            loadError.wrappedValue = loadErrorMessage
         }
 
         /// 弹窗 / target=_blank：直接在当前 webView 里打开，不创建新窗口。

@@ -97,6 +97,7 @@ internal static class ProcessRunner
         catch (Exception e)
         {
             throw MoongateException.AnalyzeFailed(L10n.T($"无法启动 {Path.GetFileName(executable)}：{e.Message}",
+                $"無法啟動 {Path.GetFileName(executable)}：{e.Message}",
                 $"Could not start {Path.GetFileName(executable)}: {e.Message}"));
         }
         process.StandardInput.Close();
@@ -152,6 +153,7 @@ internal static class ProcessRunner
         {
             var tool = Path.GetFileName(executable);
             throw MoongateException.DownloadFailed(L10n.T($"无法启动 {tool}：{e.Message}",
+                $"無法啟動 {tool}：{e.Message}",
                 $"Could not start {tool}: {e.Message}"));
         }
         process.StandardInput.Close();
@@ -349,11 +351,19 @@ public class YtDlpEngine : IDownloadEngine
             {
                 return MoongateException.DownloadFailed(L10n.T(
                     "YouTube 要求确认登录状态。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
+                    "YouTube 要求確認登入狀態。登入資訊可能已過期，可在設定裡重新登入，或稍後重試。",
                     "YouTube asked to confirm sign-in. Your login may have expired; sign in again in Settings or retry later."));
             }
             return MoongateException.LoginRequired("youtube.com");
         }
         var host = Uri.TryCreate(urlString, UriKind.Absolute, out var url) ? url.Host.ToLowerInvariant() : "";
+        var lowerStderr = stderr.ToLowerInvariant();
+        if (IsBilibiliHost(host)
+            && !hasCookies
+            && (lowerStderr.Contains("412") || lowerStderr.Contains("precondition failed")))
+        {
+            return MoongateException.LoginRequired("bilibili.com");
+        }
         // YouTube 的 403 实质是 PO token / 未登录，登录 cookies 是正解；其他站点的 403 保持防盗链文案。
         // 只看最后一条 ERROR 行，避免中间分片的瞬时 403 被误判成需要登录。
         if (IsYouTubeHost(host) && SummarizeStderr(stderr).Contains("HTTP Error 403"))
@@ -362,6 +372,7 @@ public class YtDlpEngine : IDownloadEngine
             {
                 return MoongateException.DownloadFailed(L10n.T(
                     "YouTube 拒绝了请求（403）。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
+                    "YouTube 拒絕了請求（403）。登入資訊可能已過期，可在設定裡重新登入，或稍後重試。",
                     "YouTube rejected the request (403). Your login may have expired; sign in again in Settings or retry later."));
             }
             return MoongateException.LoginRequired("youtube.com");
@@ -369,7 +380,7 @@ public class YtDlpEngine : IDownloadEngine
         if (LoginRequiredRegex.IsMatch(stderr))
         {
             var site = host.StartsWith("www.") ? host[4..] : host;
-            if (site.Length == 0) site = L10n.T("该站点", "this site");
+            if (site.Length == 0) site = L10n.T("该站点", "該站點", "this site");
             return MoongateException.LoginRequired(site);
         }
         return null;
@@ -444,7 +455,7 @@ public class YtDlpEngine : IDownloadEngine
             || (url.Scheme != "http" && url.Scheme != "https")
             || string.IsNullOrEmpty(url.Host))
         {
-            throw MoongateException.SniffFailed(L10n.T("请检查链接格式。", "Please check the link format."));
+            throw MoongateException.SniffFailed(L10n.T("请检查链接格式。", "請檢查連結格式。", "Please check the link format."));
         }
 
         var result = await RunYtDlpJsonAsync(trimmed, ct).ConfigureAwait(false);
@@ -484,11 +495,12 @@ public class YtDlpEngine : IDownloadEngine
         }
         catch
         {
-            throw MoongateException.SniffFailed(L10n.T("页面加载失败，请稍后重试。", "The page failed to load. Try again later."));
+            throw MoongateException.SniffFailed(L10n.T("页面加载失败，请稍后重试。", "頁面載入失敗，請稍後重試。", "The page failed to load. Try again later."));
         }
         if (candidates.Count == 0)
         {
             throw MoongateException.SniffFailed(L10n.T("可以换个页面，或直接粘贴视频文件地址。",
+                "可以換個頁面，或直接貼上影片檔案地址。",
                 "Try another page, or paste a direct video file URL."));
         }
         return candidates;
@@ -552,6 +564,7 @@ public class YtDlpEngine : IDownloadEngine
                 if (output.TimedOut)
                 {
                     throw MoongateException.AnalyzeFailed(L10n.T("解析超时，请检查网络后重试",
+                        "解析逾時，請檢查網路後重試",
                         "Analysis timed out. Check your network and retry"));
                 }
                 if (output.Status == 0)
@@ -679,7 +692,7 @@ public class YtDlpEngine : IDownloadEngine
                     ? ShortVCodec(vc) : null;
                 var container = bestStream.ValueKind == JsonValueKind.Object ? StringField(bestStream, "ext") : null;
                 var label = $"{height}p · mp4";
-                if (hdrAvailable) label = $"{height}p · 可选 HDR";
+                if (hdrAvailable) label = $"{height}p · {L10n.T("可选 HDR", "可選 HDR", "HDR available")}";
                 formats.Add(new FormatChoice
                 {
                     Id = formatId,
@@ -698,7 +711,7 @@ public class YtDlpEngine : IDownloadEngine
                 ? Path.GetExtension(srcUri.AbsolutePath).TrimStart('.')
                 : "";
             var ext = StringField(json, "ext") ?? (urlExt.Length == 0 ? "mp4" : urlExt);
-            var label = $"{L10n.T("原始文件", "Original file")} · {ext}";
+            var label = $"{L10n.T("原始文件", "原始檔案", "Original file")} · {ext}";
             string? sizeDetail = null;
             if (rawFormats.Count > 0
                 && (DoubleField(rawFormats[0], "filesize") ?? DoubleField(rawFormats[0], "filesize_approx")) is { } bytes)
@@ -727,7 +740,7 @@ public class YtDlpEngine : IDownloadEngine
             formats.Add(new FormatChoice { Id = "best", Label = label, Detail = sizeDetail });
         }
 
-        formats.Add(new FormatChoice { Id = "audio", Label = $"{L10n.T("仅音频", "Audio only")} · m4a", Detail = null, IsAudioOnly = true });
+        formats.Add(new FormatChoice { Id = "audio", Label = $"{L10n.T("仅音频", "僅音訊", "Audio only")} · m4a", Detail = null, IsAudioOnly = true });
 
         var subtitles = ParseSubtitles(json);
         // yt-dlp 没给字幕时（如 Apple WWDC 等走 generic/HLS 提取器的页面，字幕只存在于
@@ -1092,33 +1105,33 @@ public class YtDlpEngine : IDownloadEngine
     {
         var special = code switch
         {
-            "zh-Hans" => L10n.T("简体中文", "Simplified Chinese"),
-            "zh-Hant" => L10n.T("繁体中文", "Traditional Chinese"),
+            "zh-Hans" => L10n.T("简体中文", "簡體中文", "Simplified Chinese"),
+            "zh-Hant" => L10n.T("繁体中文", "繁體中文", "Traditional Chinese"),
             _ => null,
         };
         if (special is not null) return $"{special} ({code})";
         var baseName = code.Split('-')[0].ToLowerInvariant() switch
         {
-            "zh" => L10n.T("中文", "Chinese"),
-            "en" => L10n.T("英语", "English"),
-            "ja" => L10n.T("日语", "Japanese"),
-            "ko" => L10n.T("韩语", "Korean"),
-            "fr" => L10n.T("法语", "French"),
-            "de" => L10n.T("德语", "German"),
-            "es" => L10n.T("西班牙语", "Spanish"),
-            "pt" => L10n.T("葡萄牙语", "Portuguese"),
-            "ru" => L10n.T("俄语", "Russian"),
-            "it" => L10n.T("意大利语", "Italian"),
-            "ar" => L10n.T("阿拉伯语", "Arabic"),
-            "hi" => L10n.T("印地语", "Hindi"),
-            "th" => L10n.T("泰语", "Thai"),
-            "vi" => L10n.T("越南语", "Vietnamese"),
-            "id" => L10n.T("印度尼西亚语", "Indonesian"),
-            "nl" => L10n.T("荷兰语", "Dutch"),
-            "tr" => L10n.T("土耳其语", "Turkish"),
-            "pl" => L10n.T("波兰语", "Polish"),
-            "sv" => L10n.T("瑞典语", "Swedish"),
-            "uk" => L10n.T("乌克兰语", "Ukrainian"),
+            "zh" => L10n.T("中文", "中文", "Chinese"),
+            "en" => L10n.T("英语", "英語", "English"),
+            "ja" => L10n.T("日语", "日語", "Japanese"),
+            "ko" => L10n.T("韩语", "韓語", "Korean"),
+            "fr" => L10n.T("法语", "法語", "French"),
+            "de" => L10n.T("德语", "德語", "German"),
+            "es" => L10n.T("西班牙语", "西班牙語", "Spanish"),
+            "pt" => L10n.T("葡萄牙语", "葡萄牙語", "Portuguese"),
+            "ru" => L10n.T("俄语", "俄語", "Russian"),
+            "it" => L10n.T("意大利语", "義大利語", "Italian"),
+            "ar" => L10n.T("阿拉伯语", "阿拉伯語", "Arabic"),
+            "hi" => L10n.T("印地语", "印地語", "Hindi"),
+            "th" => L10n.T("泰语", "泰語", "Thai"),
+            "vi" => L10n.T("越南语", "越南語", "Vietnamese"),
+            "id" => L10n.T("印度尼西亚语", "印尼語", "Indonesian"),
+            "nl" => L10n.T("荷兰语", "荷蘭語", "Dutch"),
+            "tr" => L10n.T("土耳其语", "土耳其語", "Turkish"),
+            "pl" => L10n.T("波兰语", "波蘭語", "Polish"),
+            "sv" => L10n.T("瑞典语", "瑞典語", "Swedish"),
+            "uk" => L10n.T("乌克兰语", "烏克蘭語", "Ukrainian"),
             _ => null,
         };
         return baseName is null ? code : $"{baseName} ({code})";
@@ -1249,6 +1262,7 @@ public class YtDlpEngine : IDownloadEngine
                     // 保留 .part 文件：yt-dlp 重试时可断点续传。
                     throw MoongateException.DownloadFailed(L10n.T(
                         "下载停滞：超过 10 分钟没有任何进度输出，已自动中止。可能是站点限速或网络中断，可点「重试」续传。",
+                        "下載停滯：超過 10 分鐘沒有任何進度輸出，已自動中止。可能是站點限速或網路中斷，可點「重試」續傳。",
                         "Download stalled: no progress for 10 minutes, stopped automatically. The site may be throttling or the network dropped; press Retry to resume."));
                 }
                 catch (Exception e)
@@ -1306,6 +1320,7 @@ public class YtDlpEngine : IDownloadEngine
             if (files.Count == 0)
             {
                 throw MoongateException.DownloadFailed(L10n.T("下载进程已结束，但在目标目录里没有找到产出文件。",
+                    "下載程序已結束，但在目標資料夾裡沒有找到產出檔案。",
                     "The download process finished, but no output file was found in the destination folder."));
             }
 
@@ -1501,14 +1516,16 @@ public class YtDlpEngine : IDownloadEngine
         if (stderrTail.Contains("HTTP Error 403") || stderrTail.Contains("403 Forbidden"))
         {
             return L10n.T("资源拒绝访问（403），可能存在防盗链或地区限制。可先在浏览器确认视频能正常播放，或换一个候选来源。",
+                "資源拒絕存取（403），可能有防盜連或地區限制。可先在瀏覽器確認影片能正常播放，或換一個候選來源。",
                 "Access denied (403): possibly hotlink protection or a region lock. Confirm the video plays in a browser, or pick another source.") + "\n" + rawLine;
         }
         if (IsLikelyNetworkError(stderrTail))
         {
             return L10n.T("网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再点「重试」。",
+                "網路連線不穩定或被中斷。若在中國大陸訪問 YouTube 等站點，請確認代理/VPN 已開啟且正常運作，再點「重試」。",
                 "The network connection is unstable or was interrupted. If you are behind the GFW, make sure your proxy/VPN is on and working, then press Retry.") + "\n" + rawLine;
         }
-        return L10n.T("下载过程中出现错误。", "An error occurred while downloading.") + "\n" + rawLine;
+        return L10n.T("下载过程中出现错误。", "下載過程中發生錯誤。", "An error occurred while downloading.") + "\n" + rawLine;
     }
 
     /// <summary>识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。</summary>
@@ -1570,9 +1587,34 @@ public class YtDlpEngine : IDownloadEngine
         return h == "bilibili.com" || h.EndsWith(".bilibili.com") || h == "b23.tv";
     }
 
+    internal static bool IsTikTokHost(string host)
+    {
+        var h = host.ToLowerInvariant();
+        return h == "tiktok.com" || h.EndsWith(".tiktok.com");
+    }
+
+    internal static bool IsDouyinHost(string host)
+    {
+        var h = host.ToLowerInvariant();
+        return h == "douyin.com" || h.EndsWith(".douyin.com")
+            || h == "iesdouyin.com" || h.EndsWith(".iesdouyin.com")
+            || h == "amemv.com" || h.EndsWith(".amemv.com");
+    }
+
+    internal static bool IsXiaohongshuHost(string host)
+    {
+        var h = host.ToLowerInvariant();
+        return h == "xiaohongshu.com" || h.EndsWith(".xiaohongshu.com")
+            || h == "xhslink.com" || h.EndsWith(".xhslink.com");
+    }
+
     /// <summary>yt-dlp 原生 extractor 的站点（非靠网页嗅探）。解析失败应直接给原因，不回退嗅探显示误导性的「页面加载失败」。</summary>
     internal static bool IsNativeExtractorHost(string host) =>
-        IsYouTubeHost(host) || IsBilibiliHost(host);
+        IsYouTubeHost(host)
+        || IsBilibiliHost(host)
+        || IsTikTokHost(host)
+        || IsDouyinHost(host)
+        || IsXiaohongshuHost(host);
 
     /// <summary>站点风控/限流（如 bilibili HTTP 412）：给诚实可操作的提示。与 macOS riskControlMessage 同构。</summary>
     internal static string? RiskControlMessage(string stderr, string host)
@@ -1586,10 +1628,12 @@ public class YtDlpEngine : IDownloadEngine
         {
             return L10n.T(
                 "哔哩哔哩触发了安全风控（HTTP 412），暂时拒绝了解析请求。这通常是短时间请求过多或登录尝试频繁导致，和你的网络出口 IP 相关。建议：等待 10–30 分钟再试、换一个网络环境、或在浏览器里正常访问 B 站确认账号未受限。不要反复点登录，会延长风控时间。",
+                "Bilibili 觸發了安全風控（HTTP 412），暫時拒絕了解析請求。這通常是短時間請求過多或登入嘗試頻繁導致，和你的網路出口 IP 相關。建議：等待 10–30 分鐘再試、換一個網路環境，或在瀏覽器裡正常訪問 B 站確認帳號未受限。不要反覆點登入，會延長風控時間。",
                 "Bilibili triggered anti-bot protection (HTTP 412) and temporarily refused the request. This usually comes from too many requests or repeated logins from your IP. Wait 10–30 minutes, switch networks, or open Bilibili in a browser to confirm your account is fine. Don't keep retrying login—it prolongs the block.");
         }
         return L10n.T(
             "站点触发了访问风控（HTTP 412），暂时拒绝了请求。请稍后重试或更换网络环境。",
+            "站點觸發了訪問風控（HTTP 412），暫時拒絕了請求。請稍後重試或更換網路環境。",
             "The site triggered access protection (HTTP 412) and refused the request. Retry later or switch networks.");
     }
 
@@ -1599,11 +1643,13 @@ public class YtDlpEngine : IDownloadEngine
         if (stderr.Contains("Requested format is not available"))
         {
             return L10n.T("站点暂时没有返回可用的清晰度（多为临时风控），请稍后重试；若反复出现，可在设置里重新登录。",
+                "站點暫時沒有返回可用的清晰度（多為臨時風控），請稍後重試；若反覆出現，可在設定裡重新登入。",
                 "The site returned no usable formats (usually temporary anti-bot). Retry later; if it persists, sign in again in Settings.");
         }
         if (IsLikelyNetworkError(stderr))
         {
             return L10n.T("解析失败：网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再重试。",
+                "解析失敗：網路連線不穩定或被中斷。若在中國大陸訪問 YouTube 等站點，請確認代理/VPN 已開啟且正常運作，再重試。",
                 "Analysis failed: the network is unstable or was interrupted. If you are behind the GFW, make sure your proxy/VPN is on and working, then retry.");
         }
         return SummarizeStderr(stderr);
@@ -1617,7 +1663,7 @@ public class YtDlpEngine : IDownloadEngine
             .ToList();
         var errorLine = lines.LastOrDefault(l => l.StartsWith("ERROR", StringComparison.Ordinal))
             ?? lines.LastOrDefault()
-            ?? L10n.T("未知错误", "Unknown error");
+            ?? L10n.T("未知错误", "未知錯誤", "Unknown error");
         return errorLine.Length > 200 ? errorLine[..200] : errorLine;
     }
 

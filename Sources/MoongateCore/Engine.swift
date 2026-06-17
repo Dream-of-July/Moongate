@@ -431,26 +431,46 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     /// 识别"需要登录"类错误。命中返回 loginRequired（或已登录时的过期文案），否则返回 nil 走常规文案。
     private static func detectLoginRequired(stderr: String, url urlString: String) -> MoongateError? {
         let hasCookies = FileManager.default.fileExists(atPath: AppSettings.cookieFileURL.path)
+        return detectLoginRequired(stderr: stderr, url: urlString, hasCookies: hasCookies)
+    }
+
+    private static func detectLoginRequired(stderr: String, url urlString: String, hasCookies: Bool) -> MoongateError? {
         if stderr.contains("Sign in to confirm") {
             // 已登录过仍被风控：再弹登录窗没有意义，提示重新登录或稍后重试。
             if hasCookies {
-                return .downloadFailed("YouTube 要求确认登录状态。登录信息可能已过期，可在设置里重新登录，或稍后重试。")
+                return .downloadFailed(CoreL10n.text(
+                    en: "YouTube requires login confirmation. Your saved login may have expired; log in again in Settings or retry later.",
+                    zhHans: "YouTube 要求确认登录状态。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
+                    zhHant: "YouTube 要求確認登入狀態。已儲存的登入資訊可能已過期；可在設定裡重新登入，或稍後重試。"
+                ))
             }
             return .loginRequired("youtube.com")
         }
         let host = (URL(string: urlString)?.host ?? "").lowercased()
+        let lowerStderr = stderr.lowercased()
+        if isBilibiliHost(host),
+           !hasCookies,
+           (lowerStderr.contains("412") || lowerStderr.contains("precondition failed")) {
+            return .loginRequired("bilibili.com")
+        }
         // YouTube 的 403 实质是 PO token / 未登录，登录 cookies 是正解；其他站点的 403 保持防盗链文案。
         // 只看最后一条 ERROR 行，避免中间分片的瞬时 403 被误判成需要登录。
         if isYouTubeHost(host), summarizeStderr(stderr).contains("HTTP Error 403") {
             if hasCookies {
-                return .downloadFailed("YouTube 拒绝了请求（403）。登录信息可能已过期，可在设置里重新登录，或稍后重试。")
+                return .downloadFailed(CoreL10n.text(
+                    en: "YouTube rejected the request (403). Your saved login may have expired; log in again in Settings or retry later.",
+                    zhHans: "YouTube 拒绝了请求（403）。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
+                    zhHant: "YouTube 拒絕了請求（403）。已儲存的登入資訊可能已過期；可在設定裡重新登入，或稍後重試。"
+                ))
             }
             return .loginRequired("youtube.com")
         }
         let pattern = "login required|need to log ?in|requires? (?:a )?login|account cookies|cookies.*(?:required|--cookies)|members?[- ]only|premium|sign ?in|authenticat|登录|登陆|大会员|会员|付费|请先登录|需要登录"
         if stderr.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
             var site = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-            if site.isEmpty { site = "该站点" }
+            if site.isEmpty {
+                site = CoreL10n.text(en: "This site", zhHans: "该站点", zhHant: "此站點")
+            }
             return .loginRequired(site)
         }
         return nil
@@ -461,8 +481,16 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         detectLoginRequired(stderr: stderr, url: url)
     }
 
+    static func _testLoginRequired(stderr: String, url: String, hasCookies: Bool) -> MoongateError? {
+        detectLoginRequired(stderr: stderr, url: url, hasCookies: hasCookies)
+    }
+
     static func _testRiskControlMessage(stderr: String, host: String) -> String? {
         riskControlMessage(stderr: stderr, host: host)
+    }
+
+    static func _testIsNativeExtractorHost(_ host: String) -> Bool {
+        isNativeExtractorHost(host)
     }
 
     // MARK: 信息缓存
@@ -517,7 +545,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               url.host != nil else {
-            throw MoongateError.sniffFailed("请检查链接格式。")
+            throw MoongateError.sniffFailed(CoreL10n.text(
+                en: "Check the link format.",
+                zhHans: "请检查链接格式。",
+                zhHant: "請檢查連結格式。"
+            ))
         }
 
         switch try await runYtDlpJSON(for: trimmed) {
@@ -546,10 +578,18 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             } catch let error as MoongateError {
                 throw error
             } catch {
-                throw MoongateError.sniffFailed("页面加载失败，请稍后重试。")
+                throw MoongateError.sniffFailed(CoreL10n.text(
+                    en: "Page loading failed. Try again later.",
+                    zhHans: "页面加载失败，请稍后重试。",
+                    zhHant: "頁面載入失敗，請稍後重試。"
+                ))
             }
             guard !candidates.isEmpty else {
-                throw MoongateError.sniffFailed("可以换个页面，或直接粘贴视频文件地址。")
+                throw MoongateError.sniffFailed(CoreL10n.text(
+                    en: "Try another page, or paste a direct video file URL.",
+                    zhHans: "可以换个页面，或直接粘贴视频文件地址。",
+                    zhHant: "可以換個頁面，或直接貼上影片檔案地址。"
+                ))
             }
             return candidates
         }
@@ -600,7 +640,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 timeout: 90
             )
             if output.timedOut {
-                throw MoongateError.analyzeFailed("解析超时，请检查网络后重试")
+                throw MoongateError.analyzeFailed(CoreL10n.text(
+                    en: "Parsing timed out. Check the network and retry.",
+                    zhHans: "解析超时，请检查网络后重试",
+                    zhHant: "解析逾時，請檢查網路後重試"
+                ))
             }
             if output.status == 0,
                let object = try? JSONSerialization.jsonObject(with: output.stdout),
@@ -738,7 +782,9 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 let vcodec = (bestStream?["vcodec"] as? String).map(Self.shortVCodec)
                 let container = bestStream?["ext"] as? String
                 var label = "\(height)p"
-                if hdrAvailable { label += " · 可选 HDR" }
+                if hdrAvailable {
+                    label += CoreL10n.text(en: " · HDR available", zhHans: " · 可选 HDR", zhHant: " · 可選 HDR")
+                }
                 formats.append(FormatChoice(
                     id: formatID,
                     label: label,
@@ -752,7 +798,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             // 直链文件：单一格式，无分档信息。
             let urlExt = URL(string: sourceURL)?.pathExtension ?? ""
             let ext = (json["ext"] as? String) ?? (urlExt.isEmpty ? "mp4" : urlExt)
-            var label = "原始文件 · \(ext)"
+            var label = "\(CoreL10n.text(en: "Original file", zhHans: "原始文件", zhHant: "原始檔")) · \(ext)"
             var sizeDetail: String?
             if let first = rawFormats.first,
                let bytes = Self.doubleValue(first["filesize"]) ?? Self.doubleValue(first["filesize_approx"]) {
@@ -776,7 +822,12 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             formats.append(FormatChoice(id: "best", label: label, detail: sizeDetail))
         }
 
-        formats.append(FormatChoice(id: "audio", label: "仅音频 · m4a", detail: nil, isAudioOnly: true))
+        formats.append(FormatChoice(
+            id: "audio",
+            label: "\(CoreL10n.text(en: "Audio only", zhHans: "仅音频", zhHant: "僅音訊")) · m4a",
+            detail: nil,
+            isAudioOnly: true
+        ))
 
         var subtitles = Self.parseSubtitles(json: json)
         // yt-dlp 没给字幕时（如 Apple WWDC 等走 generic/HLS 提取器的页面，字幕只存在于
@@ -1088,7 +1139,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 control?.setActivePID(0)
                 // 保留 .part 文件：yt-dlp 重试时可断点续传。
                 throw MoongateError.downloadFailed(
-                    "下载停滞：超过 10 分钟没有任何进度输出，已自动中止。可能是站点限速或网络中断，可点「重试」续传。"
+                    CoreL10n.text(
+                        en: "Download stalled: no progress output for more than 10 minutes, so it was stopped. The site may be rate-limiting or the network may have dropped; click Retry to resume.",
+                        zhHans: "下载停滞：超过 10 分钟没有任何进度输出，已自动中止。可能是站点限速或网络中断，可点「重试」续传。",
+                        zhHant: "下載停滯：超過 10 分鐘沒有任何進度輸出，已自動中止。可能是站點限速或網路中斷，可點「重試」續傳。"
+                    )
                 )
             } catch {
                 control?.setActivePID(0)
@@ -1131,7 +1186,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             }
         }
         guard !files.isEmpty else {
-            throw MoongateError.downloadFailed("下载进程已结束，但在目标目录里没有找到产出文件。")
+            throw MoongateError.downloadFailed(CoreL10n.text(
+                en: "The download process finished, but no output file was found in the destination folder.",
+                zhHans: "下载进程已结束，但在目标目录里没有找到产出文件。",
+                zhHant: "下載程序已結束，但在目標資料夾裡沒有找到輸出檔。"
+            ))
         }
 
         // yt-dlp 取不到的字幕（如 Apple WWDC 等只存在于 HLS manifest 里的字幕）：
@@ -1263,11 +1322,21 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
     /// 把 yt-dlp 后处理行映射成中文步骤说明（合并 HDR 视频时 [Merger] 可能耗时）。
     private static func processingStep(for line: String) -> String? {
-        if line.hasPrefix("[Merger]") { return "正在合并音视频" }
-        if line.hasPrefix("[VideoConvertor]") { return "正在转码视频" }
-        if line.hasPrefix("[ExtractAudio]") { return "正在提取音频" }
-        if line.hasPrefix("[SubtitleConvertor]") { return "正在转换字幕" }
-        if line.hasPrefix("[Fixup") { return "正在修复封装" }
+        if line.hasPrefix("[Merger]") {
+            return CoreL10n.text(en: "Merging video and audio", zhHans: "正在合并音视频", zhHant: "正在合併影音")
+        }
+        if line.hasPrefix("[VideoConvertor]") {
+            return CoreL10n.text(en: "Transcoding video", zhHans: "正在转码视频", zhHant: "正在轉碼影片")
+        }
+        if line.hasPrefix("[ExtractAudio]") {
+            return CoreL10n.text(en: "Extracting audio", zhHans: "正在提取音频", zhHant: "正在提取音訊")
+        }
+        if line.hasPrefix("[SubtitleConvertor]") {
+            return CoreL10n.text(en: "Converting subtitles", zhHans: "正在转换字幕", zhHant: "正在轉換字幕")
+        }
+        if line.hasPrefix("[Fixup") {
+            return CoreL10n.text(en: "Fixing container", zhHans: "正在修复封装", zhHant: "正在修復封裝")
+        }
         return nil
     }
 
@@ -1281,12 +1350,24 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     private static func friendlyDownloadReason(stderrTail: String) -> String {
         let rawLine = summarizeStderr(stderrTail)
         if stderrTail.contains("HTTP Error 403") || stderrTail.contains("403 Forbidden") {
-            return "资源拒绝访问（403），可能存在防盗链或地区限制。可先在浏览器确认视频能正常播放，或换一个候选来源。\n" + rawLine
+            return CoreL10n.text(
+                en: "Access was denied (403). The source may block hotlinking or restrict your region. Confirm the video plays in a browser, or choose another candidate source.",
+                zhHans: "资源拒绝访问（403），可能存在防盗链或地区限制。可先在浏览器确认视频能正常播放，或换一个候选来源。",
+                zhHant: "資源拒絕存取（403），可能存在防盜連或地區限制。可先在瀏覽器確認影片能正常播放，或換一個候選來源。"
+            ) + "\n" + rawLine
         }
         if isLikelyNetworkError(stderrTail) {
-            return "网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再点「重试」。\n" + rawLine
+            return CoreL10n.text(
+                en: "The network connection was unstable or interrupted. If the site is blocked on your network, confirm your proxy/VPN is working, then click Retry.",
+                zhHans: "网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再点「重试」。",
+                zhHant: "網路連線不穩或被中斷。若該站點在你的網路中受限，請確認代理/VPN 已開啟且正常，再點「重試」。"
+            ) + "\n" + rawLine
         }
-        return "下载过程中出现错误。\n" + rawLine
+        return CoreL10n.text(
+            en: "An error occurred during download.",
+            zhHans: "下载过程中出现错误。",
+            zhHant: "下載過程中發生錯誤。"
+        ) + "\n" + rawLine
     }
 
     /// 识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。
@@ -1346,7 +1427,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                         try process.run()
                     } catch {
                         let name = (executable as NSString).lastPathComponent
-                        continuation.resume(throwing: MoongateError.analyzeFailed("无法启动 \(name)：\(error.localizedDescription)"))
+                        continuation.resume(throwing: MoongateError.analyzeFailed("\(CoreL10n.text(en: "Could not start", zhHans: "无法启动", zhHant: "無法啟動")) \(name)：\(error.localizedDescription)"))
                         return
                     }
                     if box.register(process) { process.terminate() }
@@ -1488,7 +1569,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                     ioGroup.leave()
                     ioGroup.leave()
                     state.resumeOnce {
-                        continuation.resume(throwing: MoongateError.downloadFailed("无法启动 yt-dlp：\(error.localizedDescription)"))
+                        continuation.resume(throwing: MoongateError.downloadFailed("\(CoreL10n.text(en: "Could not start yt-dlp", zhHans: "无法启动 yt-dlp", zhHant: "無法啟動 yt-dlp"))：\(error.localizedDescription)"))
                     }
                     return
                 }
@@ -1534,10 +1615,32 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return h == "bilibili.com" || h.hasSuffix(".bilibili.com") || h == "b23.tv"
     }
 
+    private static func isTikTokHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h == "tiktok.com" || h.hasSuffix(".tiktok.com")
+    }
+
+    private static func isDouyinHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h == "douyin.com" || h.hasSuffix(".douyin.com")
+            || h == "iesdouyin.com" || h.hasSuffix(".iesdouyin.com")
+            || h == "amemv.com" || h.hasSuffix(".amemv.com")
+    }
+
+    private static func isXiaohongshuHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h == "xiaohongshu.com" || h.hasSuffix(".xiaohongshu.com")
+            || h == "xhslink.com" || h.hasSuffix(".xhslink.com")
+    }
+
     /// yt-dlp 是该站点的原生 extractor（而非靠网页嗅探）。这些站点解析失败应直接给原因，
     /// 不要回退到 PageSniffer 显示误导性的「页面加载失败」。
     private static func isNativeExtractorHost(_ host: String) -> Bool {
-        isYouTubeHost(host) || isBilibiliHost(host)
+        isYouTubeHost(host)
+            || isBilibiliHost(host)
+            || isTikTokHost(host)
+            || isDouyinHost(host)
+            || isXiaohongshuHost(host)
     }
 
     /// 站点风控/限流（如 bilibili HTTP 412）：给出诚实可操作的提示，而不是当成普通失败。
@@ -1548,18 +1651,34 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         let isRisk = lower.contains("risk") || summary.contains("风控") || summary.contains("安全风控")
         guard is412 || isRisk else { return nil }
         if isBilibiliHost(host) {
-            return "哔哩哔哩触发了安全风控（HTTP 412），暂时拒绝了解析请求。这通常是短时间请求过多或登录尝试频繁导致，和你的网络出口 IP 相关。建议：等待 10–30 分钟再试、换一个网络环境、或在浏览器里正常访问 B 站确认账号未受限。不要反复点登录，会延长风控时间。"
+            return CoreL10n.text(
+                en: "Bilibili triggered risk control (HTTP 412) and temporarily rejected parsing. This is usually caused by too many requests or frequent login attempts, and is tied to your network egress IP. Wait 10-30 minutes, try another network, or open Bilibili in a browser to confirm the account is not restricted. Repeated login attempts can extend the lockout.",
+                zhHans: "哔哩哔哩触发了安全风控（HTTP 412），暂时拒绝了解析请求。这通常是短时间请求过多或登录尝试频繁导致，和你的网络出口 IP 相关。建议：等待 10–30 分钟再试、换一个网络环境、或在浏览器里正常访问 B 站确认账号未受限。不要反复点登录，会延长风控时间。",
+                zhHant: "Bilibili 觸發了安全風控（HTTP 412），暫時拒絕解析請求。這通常是短時間請求過多或登入嘗試頻繁導致，與你的網路出口 IP 相關。建議等待 10–30 分鐘再試、換一個網路環境，或在瀏覽器裡正常開啟 Bilibili 確認帳號未受限。不要反覆登入，會延長風控時間。"
+            )
         }
-        return "站点触发了访问风控（HTTP 412），暂时拒绝了请求。请稍后重试或更换网络环境。"
+        return CoreL10n.text(
+            en: "The site triggered access risk control (HTTP 412) and temporarily rejected the request. Try again later or switch networks.",
+            zhHans: "站点触发了访问风控（HTTP 412），暂时拒绝了请求。请稍后重试或更换网络环境。",
+            zhHant: "站點觸發了存取風控（HTTP 412），暫時拒絕請求。請稍後重試或更換網路環境。"
+        )
     }
 
     /// 解析阶段错误的中文化（自动重试一次后仍失败才会走到这里）。
     private static func friendlyAnalyzeMessage(_ stderr: String) -> String {
         if stderr.contains("Requested format is not available") {
-            return "站点暂时没有返回可用的清晰度（多为临时风控），请稍后重试；若反复出现，可在设置里重新登录。"
+            return CoreL10n.text(
+                en: "The site did not return any available quality options, often due to temporary risk control. Try again later; if it keeps happening, log in again in Settings.",
+                zhHans: "站点暂时没有返回可用的清晰度（多为临时风控），请稍后重试；若反复出现，可在设置里重新登录。",
+                zhHant: "站點暫時沒有返回可用清晰度（多半是臨時風控），請稍後重試；若反覆出現，可在設定裡重新登入。"
+            )
         }
         if isLikelyNetworkError(stderr) {
-            return "解析失败：网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再重试。"
+            return CoreL10n.text(
+                en: "Parsing failed because the network connection was unstable or interrupted. If the site is blocked on your network, confirm your proxy/VPN is working, then retry.",
+                zhHans: "解析失败：网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再重试。",
+                zhHant: "解析失敗：網路連線不穩或被中斷。若該站點在你的網路中受限，請確認代理/VPN 已開啟且正常，再重試。"
+            )
         }
         return summarizeStderr(stderr)
     }
@@ -1568,7 +1687,8 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         let lines = text.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        let errorLine = lines.last(where: { $0.hasPrefix("ERROR") }) ?? lines.last ?? "未知错误"
+        let fallback = CoreL10n.text(en: "Unknown error", zhHans: "未知错误", zhHant: "未知錯誤")
+        let errorLine = lines.last(where: { $0.hasPrefix("ERROR") }) ?? lines.last ?? fallback
         return String(errorLine.prefix(200))
     }
 

@@ -91,6 +91,104 @@ func serializeSRT(_ cues: [SubtitleCue]) -> String {
 
 // MARK: - 字幕清洗（去重叠 + 按句合并）
 
+private let nonSpeechMarkerRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"[\[\(（【]\s*([^\]\)）】]{1,48})\s*[\]\)）】]"#,
+    options: [.caseInsensitive]
+)
+
+private let nonSpeechMarkerTerms: Set<String> = [
+    "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
+    "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
+    "音乐", "音樂", "背景音乐", "背景音樂", "歌声", "歌聲",
+    "applause", "applauding", "clapping", "claps", "applausecontinues", "clappingcontinues",
+    "掌声", "掌聲", "掌声继续", "掌聲繼續", "鼓掌", "鼓掌声", "鼓掌聲", "拍手", "拍手声", "拍手聲",
+    "laughter", "laugh", "laughs", "laughing", "chuckle", "chuckles", "chuckling", "giggle",
+    "giggles", "giggling", "snicker", "snickers", "laughingcontinues",
+    "笑", "笑声", "笑聲", "笑声继续", "笑聲繼續", "大笑", "轻笑", "輕笑", "哄笑", "偷笑", "笑い", "笑い声",
+    "risa", "risas", "rire", "rires", "lachen", "gelächter", "웃음",
+    "cry", "crying", "sobbing", "sob", "sobs", "weeping", "sniffles", "sniffling",
+    "哭", "哭声", "哭聲", "哭泣", "啜泣", "抽泣", "llanto", "pleurs", "weinen",
+    "cheer", "cheers", "cheering", "crowdcheering", "audiencecheering", "欢呼", "歡呼", "喝彩",
+    "sigh", "sighs", "sighing", "叹气", "嘆氣", "叹息", "嘆息",
+    "cough", "coughs", "coughing", "咳嗽",
+    "sneeze", "sneezes", "sneezing", "喷嚏", "噴嚏", "打喷嚏", "打噴嚏",
+    "gasp", "gasps", "gasping", "breathing", "heavybreathing", "panting", "喘息", "喘气", "喘氣", "呼吸声", "呼吸聲",
+    "scream", "screams", "screaming", "yell", "yells", "groan", "groans", "groaning", "moan", "moans", "moaning",
+    "尖叫", "喊叫", "呻吟", "低吟",
+    "inaudible", "unintelligible", "silence", "silent", "noise", "noises", "static",
+    "backgroundnoise", "ambientnoise", "murmur", "murmurs", "murmuring",
+    "听不清", "聽不清", "无法听清", "無法聽清", "沉默", "静音", "靜音", "噪音", "杂音", "雜音", "背景音", "背景噪音",
+    "dooropens", "doorcloses", "phonerings", "phoneringing", "ringing", "footsteps", "steps",
+    "knocking", "knocks", "beep", "beeping", "bellrings", "alarm", "siren", "windblowing", "rainfalling",
+    "门开", "門開", "开门", "開門", "关门", "關門", "门关", "門關", "脚步", "腳步", "脚步声", "腳步聲",
+    "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲"
+]
+
+private func normalizedNonSpeechMarker(_ raw: String) -> String {
+    raw.lowercased().filter { char in
+        !(char.isWhitespace || char == "-" || char == "_" || char == "." || char == "!" || char == "?" || char == "！" || char == "？")
+    }
+}
+
+private func stripNonSpeechMarkers(_ text: String) -> String {
+    text.components(separatedBy: .newlines).compactMap { rawLine in
+        guard let regex = nonSpeechMarkerRegex else {
+            let fallback = collapseSubtitleWhitespace(rawLine)
+            return fallback.isEmpty ? nil : fallback
+        }
+        var line = rawLine
+        let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+        for match in matches.reversed() {
+            guard let contentRange = Range(match.range(at: 1), in: line),
+                  let markerRange = Range(match.range(at: 0), in: line) else { continue }
+            let marker = normalizedNonSpeechMarker(String(line[contentRange]))
+            if nonSpeechMarkerTerms.contains(marker) {
+                line.replaceSubrange(markerRange, with: " ")
+            }
+        }
+        let cleaned = collapseSubtitleWhitespace(line)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+    .joined(separator: "\n")
+}
+
+private func collapseSubtitleWhitespace(_ s: String) -> String {
+    let collapsed = s.components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    return removeSpacesBetweenCJKCharacters(collapsed)
+}
+
+private func removeSpacesBetweenCJKCharacters(_ text: String) -> String {
+    let chars = Array(text)
+    guard chars.count >= 3 else { return text }
+    var result: [Character] = []
+    result.reserveCapacity(chars.count)
+    for index in chars.indices {
+        let char = chars[index]
+        if char == " ",
+           index > chars.startIndex,
+           index < chars.index(before: chars.endIndex),
+           isCJKSubtitleCharacter(chars[chars.index(before: index)]),
+           isCJKSubtitleCharacter(chars[chars.index(after: index)]) {
+            continue
+        }
+        result.append(char)
+    }
+    return String(result)
+}
+
+private func isCJKSubtitleCharacter(_ char: Character) -> Bool {
+    char.unicodeScalars.contains { scalar in
+        switch scalar.value {
+        case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0x3040...0x30FF, 0xAC00...0xD7AF:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// 把 "HH:MM:SS,mmm"（或用 "." 作毫秒分隔）解析为秒。失败返回 nil。
 func srtTimeToSeconds(_ s: String) -> Double? {
     let normalized = s.replacingOccurrences(of: ",", with: ".")
@@ -129,9 +227,11 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
             continue
         }
-        timed.append(Timed(start: start, end: max(end, start), text: cue.text, order: i))
+        let text = stripNonSpeechMarkers(cue.text)
+        guard !text.isEmpty else { continue }
+        timed.append(Timed(start: start, end: max(end, start), text: text, order: i))
     }
-    guard !timed.isEmpty else { return input }
+    guard !timed.isEmpty else { return [] }
     timed.sort { $0.start != $1.start ? $0.start < $1.start : $0.order < $1.order }
 
     // (e) 滚动判定一：时间戳重叠（样式 A）——相邻条 start < 上一条 end 的比例 > 50%
@@ -209,11 +309,6 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     guard isRolling else { return makeCues(timed) }
 
     // (c) 按句合并：把碎条文本规整空白后用空格累积，满足任一断句条件即收一条
-    func normalizeWhitespace(_ s: String) -> String {
-        s.components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
     let sentenceEnders: Set<Character> = [".", "!", "?", "。", "！", "？"]
     let trailingAllowed: Set<Character> = ["\"", "'", "”", "’", ")", "）", "」", "』", "]"]
     func endsSentence(_ text: String) -> Bool {
@@ -224,6 +319,32 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         }
         guard let last = chars.last else { return false }
         return sentenceEnders.contains(last)
+    }
+    let continuationStarts: Set<String> = [
+        "if", "that", "which", "who", "whom", "whose", "when", "where", "why", "how",
+        "and", "or", "but", "because", "so", "then", "than", "to", "of", "for", "with",
+        "as", "in", "on", "at", "by", "from", "do", "does", "did", "is", "are", "was",
+        "were", "be", "been", "being", "have", "has", "had", "can", "could", "would",
+        "will", "should", "may", "might", "must", "not"
+    ]
+    let continuationEnds: Set<String> = [
+        "the", "a", "an", "and", "or", "but", "if", "that", "which", "who", "what",
+        "when", "where", "why", "how", "to", "of", "for", "with", "from", "as",
+        "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+        "have", "has", "had", "can", "could", "would", "will", "should", "may",
+        "might", "must", "we", "you", "i", "they", "he", "she", "it"
+    ]
+    func wordTokens(_ text: String) -> [String] {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+    func looksLikeContinuation(current: String, nextPiece: String?) -> Bool {
+        guard let nextPiece, !endsSentence(current) else { return false }
+        let currentWords = wordTokens(current)
+        let nextWords = wordTokens(nextPiece)
+        guard let last = currentWords.last, let first = nextWords.first else { return false }
+        return continuationEnds.contains(last) || continuationStarts.contains(first)
     }
 
     var merged: [Timed] = []
@@ -239,20 +360,32 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         curText = ""
     }
 
-    for t in timed {
-        let piece = normalizeWhitespace(t.text)
+    let softDuration = 6.0
+    let softCharacterBudget = 84
+    let hardDuration = 18.0
+    let hardCharacterBudget = 220
+
+    for i in timed.indices {
+        let t = timed[i]
+        let piece = collapseSubtitleWhitespace(t.text)
         if !hasCurrent {
             curText = piece
             curStart = t.start
             curEnd = t.end
             hasCurrent = true
         } else {
-            curText = normalizeWhitespace(curText + " " + piece)
+            curText = collapseSubtitleWhitespace(curText + " " + piece)
             curEnd = t.end
         }
-        let longEnough = (curEnd - curStart) >= 6.0
-        let charsEnough = curText.count >= 84
-        if endsSentence(curText) || longEnough || charsEnough {
+        let nextPiece = i + 1 < timed.count ? collapseSubtitleWhitespace(timed[i + 1].text) : nil
+        let nextGap = i + 1 < timed.count ? timed[i + 1].start - curEnd : nil
+        let hardLimitReached = (curEnd - curStart) >= hardDuration || curText.count >= hardCharacterBudget
+        let softLimitReached = (curEnd - curStart) >= softDuration || curText.count >= softCharacterBudget
+        let shouldHoldForContinuation = looksLikeContinuation(current: curText, nextPiece: nextPiece)
+        if endsSentence(curText)
+            || (nextGap ?? 0) > 1.2
+            || hardLimitReached
+            || (softLimitReached && !shouldHoldForContinuation) {
             flush()
         }
     }
@@ -296,10 +429,10 @@ func sendConfiguredMessage(
     case .appleTranslationLowLatency,
          .appleTranslationHighFidelity,
          .appleFoundationPCC,
-         .appleFoundationCloudPro:
+        .appleFoundationCloudPro:
         let readiness = settings.translationReadiness(context: context)
         let message = readiness.issues.map(\.message).joined(separator: " ")
-        throw MoongateError.translateFailed(message.isEmpty ? "当前翻译引擎不可运行。" : message)
+        throw MoongateError.translateFailed(message.isEmpty ? TranslatorL10n.engineNotReady : message)
     case .appleFoundationOnDevice:
         return try await sendFoundationModelsMessage(
             system: system,
@@ -316,24 +449,24 @@ private func sendFoundationModelsMessage(
 ) async throws -> ModelReply {
     #if canImport(FoundationModels)
     guard #available(macOS 26.0, iOS 26.0, *) else {
-        throw MoongateError.translateFailed("当前系统版本不支持本地 Apple Intelligence。")
+        throw MoongateError.translateFailed(TranslatorL10n.unsupportedLocalAppleIntelligenceOS)
     }
     let model = SystemLanguageModel.default
     switch model.availability {
     case .available:
         break
     case .unavailable(.deviceNotEligible):
-        throw MoongateError.translateFailed("当前设备不支持 Apple Intelligence。")
+        throw MoongateError.translateFailed(TranslatorL10n.deviceNotEligibleForAppleIntelligence)
     case .unavailable(.appleIntelligenceNotEnabled):
-        throw MoongateError.translateFailed("需要先在系统设置中启用 Apple Intelligence。")
+        throw MoongateError.translateFailed(TranslatorL10n.enableAppleIntelligence)
     case .unavailable(.modelNotReady):
-        throw MoongateError.translateFailed("Apple Intelligence 本地模型尚未就绪，请在系统设置中完成下载。")
+        throw MoongateError.translateFailed(TranslatorL10n.appleIntelligenceModelNotReady)
     @unknown default:
-        throw MoongateError.translateFailed("Apple Intelligence 当前不可用。")
+        throw MoongateError.translateFailed(TranslatorL10n.appleIntelligenceUnavailable)
     }
 
     guard model.supportsLocale(Locale(identifier: "zh-Hans")) else {
-        throw MoongateError.translateFailed("Apple Intelligence 当前不支持简体中文输出。")
+        throw MoongateError.translateFailed(TranslatorL10n.unsupportedSimplifiedChineseOutput)
     }
 
     do {
@@ -344,7 +477,7 @@ private func sendFoundationModelsMessage(
         )
         let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            throw MoongateError.translateFailed("Apple Intelligence 没有返回可用译文。")
+            throw MoongateError.translateFailed(TranslatorL10n.appleIntelligenceEmptyReply)
         }
         return ModelReply(text: text, reachedOutputLimit: false)
     } catch let error as MoongateError {
@@ -355,7 +488,7 @@ private func sendFoundationModelsMessage(
         throw MoongateError.translateFailed(error.localizedDescription)
     }
     #else
-    throw MoongateError.translateFailed("当前构建不包含 FoundationModels.framework。")
+    throw MoongateError.translateFailed(TranslatorL10n.foundationModelsMissing)
     #endif
 }
 
@@ -366,6 +499,108 @@ private func normalizedToken(_ raw: String) -> String {
         token = String(token.dropFirst("bearer ".count)).trimmingCharacters(in: .whitespaces)
     }
     return token
+}
+
+private enum TranslatorL10n {
+    static var engineNotReady: String {
+        CoreL10n.text(en: "The current translation engine is not ready.", zhHans: "当前翻译引擎不可运行。", zhHant: "目前翻譯引擎不可執行。")
+    }
+
+    static var unsupportedLocalAppleIntelligenceOS: String {
+        CoreL10n.text(en: "The current system version does not support local Apple Intelligence.", zhHans: "当前系统版本不支持本地 Apple Intelligence。", zhHant: "目前系統版本不支援本機 Apple Intelligence。")
+    }
+
+    static var deviceNotEligibleForAppleIntelligence: String {
+        CoreL10n.text(en: "This device does not support Apple Intelligence.", zhHans: "当前设备不支持 Apple Intelligence。", zhHant: "目前裝置不支援 Apple Intelligence。")
+    }
+
+    static var enableAppleIntelligence: String {
+        CoreL10n.text(en: "Enable Apple Intelligence in System Settings first.", zhHans: "需要先在系统设置中启用 Apple Intelligence。", zhHant: "需要先在系統設定中啟用 Apple Intelligence。")
+    }
+
+    static var appleIntelligenceModelNotReady: String {
+        CoreL10n.text(en: "The local Apple Intelligence model is not ready yet. Finish downloading it in System Settings.", zhHans: "Apple Intelligence 本地模型尚未就绪，请在系统设置中完成下载。", zhHant: "Apple Intelligence 本機模型尚未就緒，請在系統設定中完成下載。")
+    }
+
+    static var appleIntelligenceUnavailable: String {
+        CoreL10n.text(en: "Apple Intelligence is currently unavailable.", zhHans: "Apple Intelligence 当前不可用。", zhHant: "Apple Intelligence 目前不可用。")
+    }
+
+    static var unsupportedSimplifiedChineseOutput: String {
+        CoreL10n.text(en: "Apple Intelligence currently does not support Simplified Chinese output.", zhHans: "Apple Intelligence 当前不支持简体中文输出。", zhHant: "Apple Intelligence 目前不支援簡體中文輸出。")
+    }
+
+    static var appleIntelligenceEmptyReply: String {
+        CoreL10n.text(en: "Apple Intelligence did not return usable translated text.", zhHans: "Apple Intelligence 没有返回可用译文。", zhHant: "Apple Intelligence 沒有返回可用譯文。")
+    }
+
+    static var foundationModelsMissing: String {
+        CoreL10n.text(en: "This build does not include FoundationModels.framework.", zhHans: "当前构建不包含 FoundationModels.framework。", zhHant: "目前建置不包含 FoundationModels.framework。")
+    }
+
+    static var invalidServiceURL: String {
+        CoreL10n.text(en: "Invalid service URL", zhHans: "服务地址无效", zhHant: "服務地址無效")
+    }
+
+    static var requestFailed: String {
+        CoreL10n.text(en: "Request failed", zhHans: "请求失败", zhHant: "請求失敗")
+    }
+
+    static var missingModel: String {
+        CoreL10n.text(en: "No model is configured. Enter a model name in Settings.", zhHans: "尚未配置模型，请在设置里填写模型名称。", zhHant: "尚未設定模型，請在設定裡填寫模型名稱。")
+    }
+
+    static var missingCredential: String {
+        CoreL10n.text(en: "No API credential is configured. Fill it in Settings.", zhHans: "尚未配置 API 凭证，请在设置里填写。", zhHant: "尚未設定 API 憑證，請在設定裡填寫。")
+    }
+
+    static var unrecognizedResponse: String {
+        CoreL10n.text(en: "The service returned an unrecognized response.", zhHans: "服务返回了无法识别的响应。", zhHant: "服務回傳了無法識別的回應。")
+    }
+
+    static var connectionFailed: String {
+        CoreL10n.text(en: "Could not connect to the translation service. Check the service URL and network.", zhHans: "无法连接到翻译服务，请检查服务地址和网络。", zhHant: "無法連線到翻譯服務，請檢查服務地址與網路。")
+    }
+
+    static var emptySummary: String {
+        CoreL10n.text(en: "AI did not return usable summary content. Try again later or switch models.", zhHans: "AI 没有返回可用的总结内容，请稍后重试或更换模型。", zhHant: "AI 沒有返回可用的摘要內容，請稍後重試或更換模型。")
+    }
+
+    static var modelListInvalid: String {
+        CoreL10n.text(en: "Failed to fetch model list: invalid response.", zhHans: "拉取模型列表失败：无效响应。", zhHant: "拉取模型列表失敗：無效回應。")
+    }
+
+    static var modelListEmpty: String {
+        CoreL10n.text(en: "The service returned an empty model list. Enter the model name manually.", zhHans: "服务返回的模型列表为空，请手动填写模型名。", zhHant: "服務回傳的模型列表為空，請手動填寫模型名稱。")
+    }
+
+    static func cannotReadSubtitle(_ name: String) -> String {
+        "\(CoreL10n.text(en: "Could not read subtitle file", zhHans: "无法读取字幕文件", zhHant: "無法讀取字幕檔"))：\(name)"
+    }
+
+    static var emptySubtitle: String {
+        CoreL10n.text(en: "The subtitle file has no recognizable subtitle content.", zhHans: "字幕文件里没有可识别的字幕内容。", zhHant: "字幕檔裡沒有可識別的字幕內容。")
+    }
+
+    static var missingTranslatedLine: String {
+        CoreL10n.text(en: "The model response format is invalid: missing translated lines", zhHans: "模型返回格式异常，缺失译文行", zhHant: "模型回傳格式異常，缺少譯文行")
+    }
+
+    static var outputLimitReached: String {
+        CoreL10n.text(en: "The translation exceeded the model output limit. Reduce subtitle chunk size or check the model max_tokens limit.", zhHans: "译文超出模型输出上限，请减小每块字幕条数或检查模型 max_tokens 限制", zhHant: "譯文超出模型輸出上限，請減小每塊字幕條數或檢查模型 max_tokens 限制")
+    }
+
+    static var smartPromptNeedsSummaryModel: String {
+        CoreL10n.text(en: "Smart translation prompts require a summary model that can generate text. Choose a cloud API or local Apple Intelligence in AI summary settings.", zhHans: "智能翻译提示词需要可生成文本的总结模型，请在 AI 总结设置里选择云端 API 或本地 Apple Intelligence。", zhHant: "智慧翻譯提示詞需要可生成文字的摘要模型，請在 AI 摘要設定裡選擇雲端 API 或本機 Apple Intelligence。")
+    }
+
+    static var smartAnalysisInvalid: String {
+        CoreL10n.text(en: "Smart translation analysis returned an invalid format. Retry or turn off smart translation prompts.", zhHans: "智能翻译分析返回格式异常，请重试或关闭智能翻译提示词。", zhHant: "智慧翻譯分析回傳格式異常，請重試或關閉智慧翻譯提示詞。")
+    }
+
+    static var truncatedMarker: String {
+        CoreL10n.text(en: "...[truncated]", zhHans: "…（已截断）", zhHant: "…（已截斷）")
+    }
 }
 
 private func endpointURL(baseURL: String, endpointPath: String) throws -> URL {
@@ -388,7 +623,7 @@ private func endpointURL(baseURL: String, endpointPath: String) throws -> URL {
           let url = URL(string: urlString),
           let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
           url.host != nil else {
-        throw MoongateError.translateFailed("服务地址无效")
+        throw MoongateError.translateFailed(TranslatorL10n.invalidServiceURL)
     }
     return url
 }
@@ -404,7 +639,7 @@ private func responseErrorMessage(from data: Data) -> String {
     let decoded = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error?.message
     let fallback = String(decoding: data.prefix(200), as: UTF8.self)
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    return decoded ?? (fallback.isEmpty ? "请求失败" : fallback)
+    return decoded ?? (fallback.isEmpty ? TranslatorL10n.requestFailed : fallback)
 }
 
 private func requestFailureMessage(statusCode: Int, data: Data, settings: AppSettings) -> String {
@@ -415,7 +650,14 @@ private func requestFailureMessage(statusCode: Int, data: Data, settings: AppSet
     }
 
     let model = settings.translationModel.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "HTTP \(statusCode)：网关没有可用账号或模型映射未命中。请确认模型名 \(model.isEmpty ? "已填写" : "「\(model)」") 在公司网关里已登记——点「拉取模型」选一个网关实际提供的模型。原始错误：\(message)"
+    let modelStatus = model.isEmpty
+        ? CoreL10n.text(en: "filled in", zhHans: "已填写", zhHant: "已填寫")
+        : "「\(model)」"
+    return CoreL10n.text(
+        en: "HTTP \(statusCode): the gateway has no available account, or the model mapping was not found. Confirm model \(modelStatus) is registered in the company gateway. Click Fetch models and choose a model actually provided by the gateway. Original error: \(message)",
+        zhHans: "HTTP \(statusCode)：网关没有可用账号或模型映射未命中。请确认模型名 \(modelStatus) 在公司网关里已登记——点「拉取模型」选一个网关实际提供的模型。原始错误：\(message)",
+        zhHant: "HTTP \(statusCode)：閘道沒有可用帳號或模型映射未命中。請確認模型名 \(modelStatus) 已在公司閘道登記，點「拉取模型」選一個閘道實際提供的模型。原始錯誤：\(message)"
+    )
 }
 
 /// 调一次 Anthropic Messages API，返回回复里所有 type=="text" 块拼接后的文本。
@@ -428,11 +670,11 @@ func sendAnthropicMessage(
 ) async throws -> ModelReply {
     let model = settings.translationModel.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !model.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置模型，请在设置里填写模型名称。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingModel)
     }
     let token = normalizedToken(settings.translationAuthToken)
     guard !token.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置 API 凭证，请在设置里填写。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingCredential)
     }
 
     let url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/messages")
@@ -467,7 +709,7 @@ func sendAnthropicMessage(
             messages: [Message(role: "user", content: userContent)]
         ))
     } catch {
-        throw MoongateError.translateFailed("无法构造请求体：\(error.localizedDescription)")
+        throw MoongateError.translateFailed("\(CoreL10n.text(en: "Could not build request body", zhHans: "无法构造请求体", zhHant: "無法構造請求本文"))：\(error.localizedDescription)")
     }
 
     let backoffNanoseconds: [UInt64] = [2_000_000_000, 8_000_000_000]
@@ -477,7 +719,7 @@ func sendAnthropicMessage(
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                throw MoongateError.translateFailed("服务返回了无法识别的响应。")
+                throw MoongateError.translateFailed(TranslatorL10n.unrecognizedResponse)
             }
             if http.statusCode == 200 {
                 struct Block: Decodable {
@@ -490,7 +732,11 @@ func sendAnthropicMessage(
                 }
                 guard let reply = try? JSONDecoder().decode(Reply.self, from: data),
                       reply.content.contains(where: { $0.type == "text" }) else {
-                    throw MoongateError.translateFailed("服务响应不符合 Anthropic Messages 协议，请检查服务地址。")
+                    throw MoongateError.translateFailed(CoreL10n.text(
+                        en: "The service response does not match the Anthropic Messages protocol. Check the service URL.",
+                        zhHans: "服务响应不符合 Anthropic Messages 协议，请检查服务地址。",
+                        zhHant: "服務回應不符合 Anthropic Messages 協定，請檢查服務地址。"
+                    ))
                 }
                 let text = reply.content.filter { $0.type == "text" }.compactMap(\.text).joined()
                 return ModelReply(text: text, reachedOutputLimit: reply.stop_reason == "max_tokens")
@@ -512,7 +758,7 @@ func sendAnthropicMessage(
             throw MoongateError.cancelled
         } catch let error as URLError {
             if error.code == .cancelled { throw MoongateError.cancelled }
-            throw MoongateError.translateFailed("无法连接到翻译服务，请检查服务地址和网络。")
+            throw MoongateError.translateFailed(TranslatorL10n.connectionFailed)
         } catch {
             throw MoongateError.translateFailed(error.localizedDescription)
         }
@@ -533,11 +779,11 @@ func sendOpenAIChatCompletion(
 ) async throws -> ModelReply {
     let model = settings.translationModel.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !model.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置模型，请在设置里填写模型名称。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingModel)
     }
     let token = normalizedToken(settings.translationAuthToken)
     guard !token.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置 API 凭证，请在设置里填写。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingCredential)
     }
 
     let url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/chat/completions")
@@ -569,7 +815,7 @@ func sendOpenAIChatCompletion(
             max_completion_tokens: maxOutputTokens
         ))
     } catch {
-        throw MoongateError.translateFailed("无法构造请求体：\(error.localizedDescription)")
+        throw MoongateError.translateFailed("\(CoreL10n.text(en: "Could not build request body", zhHans: "无法构造请求体", zhHant: "無法構造請求本文"))：\(error.localizedDescription)")
     }
 
     let backoffNanoseconds: [UInt64] = [2_000_000_000, 8_000_000_000]
@@ -579,7 +825,7 @@ func sendOpenAIChatCompletion(
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                throw MoongateError.translateFailed("服务返回了无法识别的响应。")
+                throw MoongateError.translateFailed(TranslatorL10n.unrecognizedResponse)
             }
             if http.statusCode == 200 {
                 struct Choice: Decodable {
@@ -590,11 +836,19 @@ func sendOpenAIChatCompletion(
                 struct Reply: Decodable { let choices: [Choice] }
                 guard let reply = try? JSONDecoder().decode(Reply.self, from: data),
                       let first = reply.choices.first else {
-                    throw MoongateError.translateFailed("服务响应不符合 OpenAI Chat Completions 协议，请检查服务地址。")
+                    throw MoongateError.translateFailed(CoreL10n.text(
+                        en: "The service response does not match the OpenAI Chat Completions protocol. Check the service URL.",
+                        zhHans: "服务响应不符合 OpenAI Chat Completions 协议，请检查服务地址。",
+                        zhHant: "服務回應不符合 OpenAI Chat Completions 協定，請檢查服務地址。"
+                    ))
                 }
                 let text = (first.message?.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else {
-                    throw MoongateError.translateFailed("OpenAI 响应里没有文本内容，请检查模型或服务地址。")
+                    throw MoongateError.translateFailed(CoreL10n.text(
+                        en: "The OpenAI response did not contain text. Check the model or service URL.",
+                        zhHans: "OpenAI 响应里没有文本内容，请检查模型或服务地址。",
+                        zhHant: "OpenAI 回應裡沒有文字內容，請檢查模型或服務地址。"
+                    ))
                 }
                 return ModelReply(text: text, reachedOutputLimit: first.finish_reason == "length")
             }
@@ -615,7 +869,7 @@ func sendOpenAIChatCompletion(
             throw MoongateError.cancelled
         } catch let error as URLError {
             if error.code == .cancelled { throw MoongateError.cancelled }
-            throw MoongateError.translateFailed("无法连接到翻译服务，请检查服务地址和网络。")
+            throw MoongateError.translateFailed(TranslatorL10n.connectionFailed)
         } catch {
             throw MoongateError.translateFailed(error.localizedDescription)
         }
@@ -632,11 +886,11 @@ func sendOpenAIResponse(
 ) async throws -> ModelReply {
     let model = settings.translationModel.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !model.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置模型，请在设置里填写模型名称。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingModel)
     }
     let token = normalizedToken(settings.translationAuthToken)
     guard !token.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置 API 凭证，请在设置里填写。")
+        throw MoongateError.translateFailed(TranslatorL10n.missingCredential)
     }
 
     let url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/responses")
@@ -663,7 +917,7 @@ func sendOpenAIResponse(
             store: false
         ))
     } catch {
-        throw MoongateError.translateFailed("无法构造请求体：\(error.localizedDescription)")
+        throw MoongateError.translateFailed("\(CoreL10n.text(en: "Could not build request body", zhHans: "无法构造请求体", zhHant: "無法構造請求本文"))：\(error.localizedDescription)")
     }
 
     let backoffNanoseconds: [UInt64] = [2_000_000_000, 8_000_000_000]
@@ -673,7 +927,7 @@ func sendOpenAIResponse(
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                throw MoongateError.translateFailed("服务返回了无法识别的响应。")
+                throw MoongateError.translateFailed(TranslatorL10n.unrecognizedResponse)
             }
             if http.statusCode == 200 {
                 struct Content: Decodable {
@@ -693,7 +947,11 @@ func sendOpenAIResponse(
                     let incomplete_details: IncompleteDetails?
                 }
                 guard let reply = try? JSONDecoder().decode(Reply.self, from: data) else {
-                    throw MoongateError.translateFailed("服务响应不符合 OpenAI Responses 协议，请检查服务地址。")
+                    throw MoongateError.translateFailed(CoreL10n.text(
+                        en: "The service response does not match the OpenAI Responses protocol. Check the service URL.",
+                        zhHans: "服务响应不符合 OpenAI Responses 协议，请检查服务地址。",
+                        zhHant: "服務回應不符合 OpenAI Responses 協定，請檢查服務地址。"
+                    ))
                 }
                 let messageItems: [OutputItem] = reply.output.filter { $0.type == "message" }
                 var textParts: [String] = []
@@ -705,7 +963,11 @@ func sendOpenAIResponse(
                 }
                 let text = textParts.joined()
                 guard !text.isEmpty else {
-                    throw MoongateError.translateFailed("OpenAI 响应里没有文本内容，请检查模型或服务地址。")
+                    throw MoongateError.translateFailed(CoreL10n.text(
+                        en: "The OpenAI response did not contain text. Check the model or service URL.",
+                        zhHans: "OpenAI 响应里没有文本内容，请检查模型或服务地址。",
+                        zhHant: "OpenAI 回應裡沒有文字內容，請檢查模型或服務地址。"
+                    ))
                 }
                 return ModelReply(
                     text: text,
@@ -730,7 +992,7 @@ func sendOpenAIResponse(
             throw MoongateError.cancelled
         } catch let error as URLError {
             if error.code == .cancelled { throw MoongateError.cancelled }
-            throw MoongateError.translateFailed("无法连接到翻译服务，请检查服务地址和网络。")
+            throw MoongateError.translateFailed(TranslatorL10n.connectionFailed)
         } catch {
             throw MoongateError.translateFailed(error.localizedDescription)
         }
@@ -767,7 +1029,11 @@ public func summarizeVideo(
     settings: AppSettings
 ) async throws -> String {
     guard config.engine.canGenerateText else {
-        throw MoongateError.translateFailed("当前总结引擎（\(config.engine.displayName)）只能翻译、不能生成内容总结。请在 AI 设置里为总结单独选择支持文本生成的引擎（云端 API 或本地 Apple Intelligence）。")
+        throw MoongateError.translateFailed(CoreL10n.text(
+            en: "The current summary engine (\(config.engine.displayName)) can only translate and cannot generate summaries. Choose a text-generation engine for summaries in AI settings.",
+            zhHans: "当前总结引擎（\(config.engine.displayName)）只能翻译、不能生成内容总结。请在 AI 设置里为总结单独选择支持文本生成的引擎（云端 API 或本地 Apple Intelligence）。",
+            zhHant: "目前摘要引擎（\(config.engine.displayName)）只能翻譯、無法產生內容摘要。請在 AI 設定裡為摘要單獨選擇支援文字生成的引擎（雲端 API 或本機 Apple Intelligence）。"
+        ))
     }
 
     let system = """
@@ -787,7 +1053,7 @@ public func summarizeVideo(
     let trimmedSource = source?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !trimmedSource.isEmpty {
         // 控制 prompt 体量：超长字幕/简介截断，保留开头足够判断内容主题。
-        let capped = trimmedSource.count > 6000 ? String(trimmedSource.prefix(6000)) + "…（已截断）" : trimmedSource
+        let capped = trimmedSource.count > 6000 ? String(trimmedSource.prefix(6000)) + TranslatorL10n.truncatedMarker : trimmedSource
         lines.append("以下是该视频的字幕或简介内容：\n\(capped)")
     } else {
         lines.append("（没有可用的字幕或简介，只能依据标题等元信息概述。）")
@@ -804,7 +1070,7 @@ public func summarizeVideo(
     )
     let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else {
-        throw MoongateError.translateFailed("AI 没有返回可用的总结内容，请稍后重试或更换模型。")
+        throw MoongateError.translateFailed(TranslatorL10n.emptySummary)
     }
     return text
 }
@@ -814,12 +1080,20 @@ public func summarizeVideo(
 /// 只需服务地址 + 凭证，不需要先填模型。
 public func listTranslationModels(settings: AppSettings) async throws -> [String] {
     guard settings.translationEngine.requiresCloudConfiguration else {
-        throw MoongateError.translateFailed("\(settings.translationEngine.displayName) 不支持拉取云端模型列表。请使用运行前检测确认系统能力。")
+        throw MoongateError.translateFailed(CoreL10n.text(
+            en: "\(settings.translationEngine.displayName) does not support fetching cloud model lists. Use the runtime check to confirm system capability.",
+            zhHans: "\(settings.translationEngine.displayName) 不支持拉取云端模型列表。请使用运行前检测确认系统能力。",
+            zhHant: "\(settings.translationEngine.displayName) 不支援拉取雲端模型列表。請使用執行前檢測確認系統能力。"
+        ))
     }
 
     let token = normalizedToken(settings.translationAuthToken)
     guard !token.isEmpty else {
-        throw MoongateError.translateFailed("尚未配置 API 凭证，请先填写凭证再拉取模型。")
+        throw MoongateError.translateFailed(CoreL10n.text(
+            en: "No API credential is configured. Fill the credential before fetching models.",
+            zhHans: "尚未配置 API 凭证，请先填写凭证再拉取模型。",
+            zhHant: "尚未設定 API 憑證，請先填寫憑證再拉取模型。"
+        ))
     }
     var url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/models")
     // Anthropic 协议的 /v1/models 默认每页只回 20 条，不带 limit 会漏模型；
@@ -850,7 +1124,7 @@ public func listTranslationModels(settings: AppSettings) async throws -> [String
     do {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw MoongateError.translateFailed("拉取模型列表失败：无效响应。")
+            throw MoongateError.translateFailed(TranslatorL10n.modelListInvalid)
         }
         guard http.statusCode == 200 else {
             throw MoongateError.translateFailed(requestFailureMessage(
@@ -859,14 +1133,14 @@ public func listTranslationModels(settings: AppSettings) async throws -> [String
         }
         let ids = parseModelIDs(from: data)
         guard !ids.isEmpty else {
-            throw MoongateError.translateFailed("服务返回的模型列表为空，请手动填写模型名。")
+            throw MoongateError.translateFailed(TranslatorL10n.modelListEmpty)
         }
         return ids
     } catch let error as MoongateError {
         throw error
     } catch let error as URLError {
         if error.code == .cancelled { throw MoongateError.cancelled }
-        throw MoongateError.translateFailed("无法连接到翻译服务，请检查服务地址和网络。")
+        throw MoongateError.translateFailed(TranslatorL10n.connectionFailed)
     } catch {
         throw MoongateError.translateFailed(error.localizedDescription)
     }
@@ -909,11 +1183,11 @@ public func cleanSRTFile(at url: URL) throws -> (parsed: Int, cleaned: Int, outp
     do {
         raw = try String(contentsOf: url, encoding: .utf8)
     } catch {
-        throw MoongateError.translateFailed("无法读取字幕文件：\(url.lastPathComponent)")
+        throw MoongateError.translateFailed(TranslatorL10n.cannotReadSubtitle(url.lastPathComponent))
     }
     let parsed = parseSRT(raw)
     guard !parsed.isEmpty else {
-        throw MoongateError.translateFailed("字幕文件里没有可识别的字幕内容。")
+        throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
     }
     let cleaned = cleanCues(parsed)
     let name = url.lastPathComponent
@@ -925,6 +1199,64 @@ public func cleanSRTFile(at url: URL) throws -> (parsed: Int, cleaned: Int, outp
 
 // MARK: - ConfiguredTranslator
 
+public enum TranslationPromptPreset: String, Codable, Sendable, Equatable {
+    case general
+    case songLyrics
+    case interviewConversation
+    case tutorialHowTo
+    case lectureCourse
+    case newsExplainer
+    case reviewProduct
+    case vlogLifestyle
+    case shortSocial
+    case documentaryNarrative
+    case gamingEntertainment
+}
+
+public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
+    public let summary: String
+    public let context: String
+    public let terms: [String]
+    public let preset: TranslationPromptPreset
+
+    public init(summary: String, context: String = "", terms: [String] = [], preset: TranslationPromptPreset) {
+        self.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.context = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.terms = Self.normalizedTerms(terms)
+        self.preset = preset
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary, context, terms, preset
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decode(String.self, forKey: .summary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        context = try c.decodeIfPresent(String.self, forKey: .context)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        terms = Self.normalizedTerms(try c.decodeIfPresent([String].self, forKey: .terms) ?? [])
+        let rawPreset = try c.decodeIfPresent(String.self, forKey: .preset) ?? TranslationPromptPreset.general.rawValue
+        preset = TranslationPromptPreset(rawValue: rawPreset) ?? .general
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(summary, forKey: .summary)
+        try c.encode(context, forKey: .context)
+        try c.encode(terms, forKey: .terms)
+        try c.encode(preset.rawValue, forKey: .preset)
+    }
+
+    private static func normalizedTerms(_ terms: [String]) -> [String] {
+        Array(terms
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(8))
+    }
+}
+
 /// 通过设置里选择的协议翻译字幕。服务地址、模型、凭证全部来自 AppSettings。
 public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     private let settings: AppSettings
@@ -933,11 +1265,71 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     /// 每次请求翻译的字幕条数
     private static let chunkSize = 30
 
-    private static let systemPrompt = """
-        你是专业字幕翻译。把用户给出的字幕逐条翻译成简体中文。\
-        输入每行格式为 编号|原文。输出必须严格逐行 编号|中文译文，\
+    /// 翻译系统提示词。目标语言由 context 决定（简体中文 / 繁體中文 / English），不再写死。
+    internal static func systemPrompt(
+        targetLanguageDisplayName: String,
+        advice: TranslationPromptAdvice? = nil
+    ) -> String {
+        var prompt = """
+        你是专业字幕翻译。把用户给出的字幕逐条翻译成\(targetLanguageDisplayName)。\
+        输入每行格式为 编号|原文。输出必须严格逐行 编号|译文，\
         行数与输入一致，不要输出任何其他内容。口语自然、简洁，保留专有名词。
         """
+        guard let advice else { return prompt }
+        prompt += "\n\n翻译前上下文：\n内容摘要：\(advice.summary)"
+        if !advice.context.isEmpty {
+            prompt += "\n人物/场景/发生的事：\(advice.context)"
+        }
+        if !advice.terms.isEmpty {
+            prompt += "\n专名参考：\n" + advice.terms.map { "- \($0)" }.joined(separator: "\n")
+        }
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到某一行译文，仍按输入编号逐字逐句贴近原文翻译。"
+        switch advice.preset {
+        case .general:
+            prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
+        case .songLyrics:
+            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。"
+        case .interviewConversation:
+            prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
+        case .tutorialHowTo:
+            prompt += "\n这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名和动作顺序清楚可跟做；语气保持简洁直接，技术词前后统一。"
+        case .lectureCourse:
+            prompt += "\n这段内容更像课程或讲座。翻译时优先保留概念层次、因果关系和术语一致性；表达可以更清楚，但不要把讲者的铺垫和重点压扁。"
+        case .newsExplainer:
+            prompt += "\n这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间和因果关系要稳，避免额外立场。"
+        case .reviewProduct:
+            prompt += "\n这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名和结论要清楚一致。"
+        case .vlogLifestyle:
+            prompt += "\n这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感和个人语气；不要过度正式，短句可以保持日常说话的节奏。"
+        case .shortSocial:
+            prompt += "\n这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，但不要生造原文没有的信息。"
+        case .documentaryNarrative:
+            prompt += "\n这段内容更像纪录片或叙事旁白。翻译时保留画面感、时间线和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。"
+        case .gamingEntertainment:
+            prompt += "\n这段内容更像游戏或娱乐解说。翻译时保留即时反应、玩笑、术语和场面节奏；游戏名、角色名、机制名要一致，语气可以更有现场感。"
+        }
+        return prompt
+    }
+
+    internal static func parseTranslationPromptAdvice(_ text: String) -> TranslationPromptAdvice? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let json: String
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+            json = trimmed
+        } else if let start = trimmed.firstIndex(of: "{"),
+                  let end = trimmed.lastIndex(of: "}"),
+                  start <= end {
+            json = String(trimmed[start...end])
+        } else {
+            return nil
+        }
+        guard let data = json.data(using: .utf8),
+              let advice = try? JSONDecoder().decode(TranslationPromptAdvice.self, from: data),
+              !advice.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return advice
+    }
 
     public init(settings: AppSettings) {
         self.init(settings: settings, appleTranslationExecutor: DefaultAppleTranslationExecutor())
@@ -964,14 +1356,15 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         do {
             raw = try String(contentsOf: srtFile, encoding: .utf8)
         } catch {
-            throw MoongateError.translateFailed("无法读取字幕文件：\(srtFile.lastPathComponent)")
+            throw MoongateError.translateFailed(TranslatorL10n.cannotReadSubtitle(srtFile.lastPathComponent))
         }
         let parsed = parseSRT(raw)
         guard !parsed.isEmpty else {
-            throw MoongateError.translateFailed("字幕文件里没有可识别的字幕内容。")
+            throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
         }
         // 翻译前清洗：消除 YouTube 自动字幕的重叠滚动碎句、按句合并，减少疯狂刷新。
         let cues = cleanCues(parsed)
+        let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
@@ -1000,6 +1393,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
                         allCues[range],
                         startNumber: range.lowerBound + 1,
                         context: context,
+                        advice: advice,
                         depth: 0
                     )
                     return (range, mapping)
@@ -1017,30 +1411,30 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
         for cueIndex in 0..<cues.count {
             guard let rawChinese = merged[cueIndex + 1] else {
-                throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+                throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
             }
             let chinese = Self.sanitizeTranslation(rawChinese)
             guard !chinese.isEmpty else {
-                throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+                throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
             }
             switch style {
             case .bilingual:
-                // 中文在上、原文在下（烧录时原文用更小字号）
+                // 译文在上、原文在下（烧录时原文用更小字号）
                 output[cueIndex].text = chinese + "\n" + cues[cueIndex].text
             case .chineseOnly:
                 output[cueIndex].text = chinese
             }
         }
 
-        // 写 "<原文件名去.srt>.zh.srt"
+        // 写 "<原文件名去.srt>.<target>.srt"
         let name = srtFile.lastPathComponent
         let stem = name.lowercased().hasSuffix(".srt") ? String(name.dropLast(4)) : name
         let outputURL = srtFile.deletingLastPathComponent()
-            .appendingPathComponent(stem + ".zh.srt")
+            .appendingPathComponent(stem + TranslationLanguage.translatedSubtitleFileSuffix(for: context.targetLanguage))
         do {
             try serializeSRT(output).write(to: outputURL, atomically: true, encoding: .utf8)
         } catch {
-            throw MoongateError.translateFailed("无法写入译文文件：\(error.localizedDescription)")
+            throw MoongateError.translateFailed("\(CoreL10n.text(en: "Could not write translated subtitle file", zhHans: "无法写入译文文件", zhHant: "無法寫入譯文檔"))：\(error.localizedDescription)")
         }
         return outputURL
     }
@@ -1053,6 +1447,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         _ chunk: ArraySlice<SubtitleCue>,
         startNumber: Int,
         context: TranslationContext,
+        advice: TranslationPromptAdvice?,
         depth: Int
     ) async throws -> [Int: String] {
         if Task.isCancelled { throw MoongateError.cancelled }
@@ -1073,7 +1468,10 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
 
         let reply = try await sendConfiguredMessage(
             settings: settings,
-            system: Self.systemPrompt,
+            system: Self.systemPrompt(
+                targetLanguageDisplayName: context.targetLanguageDisplayName,
+                advice: advice
+            ),
             userContent: userContent,
             maxTokens: 8000,
             context: context
@@ -1081,19 +1479,21 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         if reply.reachedOutputLimit {
             let half = chunk.count / 2
             guard depth < 2, half >= 8 else {
-                throw MoongateError.translateFailed("译文超出模型输出上限，请减小每块字幕条数或检查模型 max_tokens 限制")
+                throw MoongateError.translateFailed(TranslatorL10n.outputLimitReached)
             }
             let mid = chunk.startIndex + half
             var merged = try await translateChunk(
                 chunk[chunk.startIndex..<mid],
                 startNumber: startNumber,
                 context: context,
+                advice: advice,
                 depth: depth + 1
             )
             let second = try await translateChunk(
                 chunk[mid..<chunk.endIndex],
                 startNumber: startNumber + half,
                 context: context,
+                advice: advice,
                 depth: depth + 1
             )
             merged.merge(second) { _, new in new }
@@ -1105,9 +1505,74 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             .filter { (map[$0] ?? "").isEmpty }
             .count
         if missing > 0 {
-            throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+            let half = chunk.count / 2
+            if depth < 2, half >= 8 {
+                let mid = chunk.startIndex + half
+                var merged = try await translateChunk(
+                    chunk[chunk.startIndex..<mid],
+                    startNumber: startNumber,
+                    context: context,
+                    advice: advice,
+                    depth: depth + 1
+                )
+                let second = try await translateChunk(
+                    chunk[mid..<chunk.endIndex],
+                    startNumber: startNumber + half,
+                    context: context,
+                    advice: advice,
+                    depth: depth + 1
+                )
+                merged.merge(second) { _, new in new }
+                return merged
+            }
+            throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
         }
         return map
+    }
+
+    private func makeTranslationPromptAdvice(
+        cues: [SubtitleCue],
+        context: TranslationContext
+    ) async throws -> TranslationPromptAdvice? {
+        guard settings.smartTranslationPromptsEnabled else { return nil }
+        let config = settings.effectiveSummaryConfig
+        guard config.engine.canGenerateText else {
+            throw MoongateError.translateFailed(TranslatorL10n.smartPromptNeedsSummaryModel)
+        }
+        let sample = Self.subtitleAnalysisSample(cues)
+        let summarySettings = settings.applyingTranslationConfig(config)
+        let system = """
+        你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：\
+        {"summary":"不超过80字的中文摘要","context":"不超过160字，写清人物、组织、场景、发生的事和主题","terms":["原文专名或术语：目标语言说明，最多8个"],"preset":"general|songLyrics|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment"}。\
+        summary 写整体内容；context 写会影响翻译的背景，不要编造字幕没有支持的信息；terms 只放字幕里出现或能高置信识别的专名、人物、组织、作品名、品牌、术语，不确定官方译名时保留原文写法并说明不确定。\
+        preset 选择最贴近的一个：歌曲/歌词/MV 用 songLyrics；访谈播客对话用 interviewConversation；教程操作演示用 tutorialHowTo；课程讲座用 lectureCourse；新闻评论解释用 newsExplainer；产品评测体验用 reviewProduct；vlog 生活记录用 vlogLifestyle；短视频社交平台内容用 shortSocial；纪录片旁白叙事用 documentaryNarrative；游戏或娱乐解说用 gamingEntertainment；无法判断用 general。不要输出 Markdown。
+        """
+        let userContent = """
+        目标译文语言：\(context.targetLanguageDisplayName)
+        字幕内容分析样本：
+        \(sample)
+        """
+        let reply = try await sendConfiguredMessage(
+            settings: summarySettings,
+            system: system,
+            userContent: userContent,
+            maxTokens: 1200,
+            context: context
+        )
+        guard let advice = Self.parseTranslationPromptAdvice(reply.text) else {
+            throw MoongateError.translateFailed(TranslatorL10n.smartAnalysisInvalid)
+        }
+        return advice
+    }
+
+    private static func subtitleAnalysisSample(_ cues: [SubtitleCue]) -> String {
+        let text = cues.prefix(120)
+            .map { flattened($0.text) }
+            .joined(separator: "\n")
+        if text.count > 6000 {
+            return String(text.prefix(6000)) + TranslatorL10n.truncatedMarker
+        }
+        return text
     }
 
     private func translateAppleTranslationChunk(
@@ -1130,7 +1595,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             .filter { (map[$0] ?? "").isEmpty }
             .count
         if missing > 0 {
-            throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+            throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
         }
         return map
     }
@@ -1154,7 +1619,21 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
         // 兜底：把残留的 " / " 折叠分隔符还原成自然停顿（正常译文不会出现）。
         t = t.replacingOccurrences(of: " / ", with: "，")
+        t = Self.removingChineseTerminalPeriod(t)
         return t.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func removingChineseTerminalPeriod(_ text: String) -> String {
+        var chars = Array(text.trimmingCharacters(in: .whitespaces))
+        let trailingClosers: Set<Character> = ["\"", "'", "”", "’", ")", "）", "」", "』", "]", "】"]
+        var closing: [Character] = []
+        while let last = chars.last, trailingClosers.contains(last) {
+            closing.insert(chars.removeLast(), at: 0)
+        }
+        if chars.last == "。" {
+            chars.removeLast()
+        }
+        return String(chars + closing)
     }
 
     /// 把模型回复按行解析为 [编号: 译文]；不合规的行忽略。

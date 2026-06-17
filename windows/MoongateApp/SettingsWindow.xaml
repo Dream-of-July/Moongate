@@ -43,6 +43,15 @@
                                 <ComboBoxItem Content="{DynamicResource L.Settings.LangAuto}"/>
                                 <!-- 语言名按各自语言显示（惯例），不随界面语言翻译 -->
                                 <ComboBoxItem Content="简体中文"/>
+                                <ComboBoxItem Content="繁體中文"/>
+                                <ComboBoxItem Content="English"/>
+                            </ComboBox>
+                        </DockPanel>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="{DynamicResource L.Settings.TargetLanguage}" Width="96" VerticalAlignment="Center"/>
+                            <ComboBox SelectedIndex="{Binding TargetLanguageIndex}">
+                                <ComboBoxItem Content="简体中文"/>
+                                <ComboBoxItem Content="繁體中文"/>
                                 <ComboBoxItem Content="English"/>
                             </ComboBox>
                         </DockPanel>
@@ -129,6 +138,10 @@
                 <TextBlock Text="{DynamicResource L.Settings.Translation}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
+                        <CheckBox Content="{DynamicResource L.Settings.SmartTranslationPrompts}"
+                                  IsChecked="{Binding SmartTranslationPromptsEnabled}"/>
+                        <TextBlock Text="{DynamicResource L.Settings.SmartTranslationPromptsHint}"
+                                   Style="{StaticResource Caption}" Margin="0,5,0,10"/>
                         <CheckBox Content="{DynamicResource L.Settings.TranslationFollowsDefault}"
                                   IsChecked="{Binding TranslationFollowsDefault}"/>
                         <TextBlock Text="{DynamicResource L.Settings.TranslationFollowsDefaultHint}"

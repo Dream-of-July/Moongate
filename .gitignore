@@ -1,5 +1,6 @@
 .build/
 .DS_Store
+android/**/build/
 artifacts/ios-simulator-smoke/
 *.xcodeproj
 !ios/MoongateiOSApp.xcodeproj/

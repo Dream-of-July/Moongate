@@ -22,14 +22,14 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .pccUnavailable,
-                    message: "Private Cloud Compute 暂未提供可用于本 App 的公开运行时接口。"
+                    message: CoreL10n.t(L.Core.readinessPCCUnavailable)
                 )
             ])
         case .appleFoundationCloudPro:
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .pccUnavailable,
-                    message: "Apple Intelligence Cloud Pro（云端 Pro）暂未提供可用于本 App 的公开运行时接口。"
+                    message: CoreL10n.t(L.Core.readinessCloudProUnavailable)
                 )
             ])
         }
@@ -43,7 +43,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .needsRuntimeVerification,
-                    message: "Apple Translation 执行需要 macOS 26 或 iOS 26 及以上。"
+                    message: CoreL10n.t(L.Core.appleTranslationUnsupportedOS)
                 )
             ])
         }
@@ -52,7 +52,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
                 return TranslationReadiness(issues: [
                     TranslationReadinessIssue(
                         kind: .needsRuntimeVerification,
-                        message: "Apple Translation 高保真模式需要 macOS 26.4 或 iOS 26.4 及以上。"
+                        message: CoreL10n.t(L.Core.appleTranslationHighFidelityUnsupportedOS)
                     )
                 ])
             }
@@ -61,7 +61,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .needsRuntimeVerification,
-                    message: "Apple Translation 需要明确源语言后才能运行。"
+                    message: CoreL10n.t(L.Core.appleTranslationNeedsSourceLanguage)
                 )
             ])
         }
@@ -80,12 +80,12 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .needsLanguageDownload,
-                    message: "系统支持中文字幕翻译，但需要先下载对应语言。"
+                    message: CoreL10n.t(L.Core.appleTranslationNeedsLanguageDownload)
                 )
             ])
         case .unsupported:
             return TranslationReadiness(issues: [
-                TranslationReadinessIssue(kind: .unsupportedLanguagePair)
+                CoreL10n.issue(.unsupportedLanguagePair)
             ])
         @unknown default:
             return request.fallbackReadiness
@@ -94,7 +94,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
         return TranslationReadiness(issues: [
             TranslationReadinessIssue(
                 kind: .needsRuntimeVerification,
-                message: "当前构建不包含 Translation.framework。"
+                message: CoreL10n.t(L.Core.appleTranslationFrameworkMissing)
             )
         ])
         #endif
@@ -108,7 +108,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .appleIntelligenceUnavailable,
-                    message: "当前系统版本不支持本地 Apple Intelligence。"
+                    message: CoreL10n.t(L.Core.readinessAppleIntelligenceUnavailable)
                 )
             ])
         }
@@ -126,21 +126,21 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .appleIntelligenceUnavailable,
-                    message: "这台 Mac 不支持 Apple Intelligence。"
+                    message: CoreL10n.t(L.Core.readinessAppleIntelligenceUnavailable)
                 )
             ])
         case .unavailable(.appleIntelligenceNotEnabled):
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .appleIntelligenceUnavailable,
-                    message: "需要先在系统设置中启用 Apple Intelligence。"
+                    message: CoreL10n.t(L.Core.readinessAppleIntelligenceUnavailable)
                 )
             ])
         case .unavailable(.modelNotReady):
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .modelUnavailable,
-                    message: "Apple Intelligence 本地模型尚未就绪，请在系统设置中完成下载。"
+                    message: CoreL10n.t(L.Core.readinessModelUnavailable)
                 )
             ])
         @unknown default:
@@ -150,7 +150,7 @@ struct AppleRuntimeReadinessEvaluator: TranslationRuntimeReadinessEvaluating {
         return TranslationReadiness(issues: [
             TranslationReadinessIssue(
                 kind: .appleIntelligenceUnavailable,
-                message: "当前构建不包含 FoundationModels.framework。"
+                message: CoreL10n.t(L.Core.readinessAppleIntelligenceUnavailable)
             )
         ])
         #endif

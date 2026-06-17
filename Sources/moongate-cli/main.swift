@@ -294,9 +294,8 @@ do {
         let outputURL = try await translator.translate(
             srtFile: srtURL,
             style: style,
-            context: TranslationContext(
-                sourceLanguage: TranslationContext.sourceLanguageIdentifier(fromSubtitleFile: srtURL),
-                targetLanguage: "zh-Hans"
+            context: settings.makeTranslationContext(
+                sourceLanguage: TranslationContext.sourceLanguageIdentifier(fromSubtitleFile: srtURL)
             )
         ) { printer.update($0) }
         printer.finish()

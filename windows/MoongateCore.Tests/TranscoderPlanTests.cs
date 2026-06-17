@@ -154,9 +154,26 @@ public class TranscoderPlanTests
         Assert.Contains("FFmpegBurner.HardwareHevcEncoder(Available) is null", source);
         Assert.Contains("!x265", source);
         Assert.Contains("缺少 HEVC 编码器", source);
+        Assert.Contains("缺少 HEVC 編碼器", source);
         Assert.True(
             source.IndexOf("缺少 HEVC 编码器", StringComparison.Ordinal)
             < source.IndexOf("BuildPlan(format, inputFile, inputFile", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TranscodeUserFacingErrorsAreLocalizedAtCallSites()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Transcoder.cs"));
+
+        Assert.Contains("MoongateException.BurnFailed(L10n.T(", source);
+        Assert.Contains("\"找不到 ffmpeg，无法转码。\"", source);
+        Assert.Contains("\"找不到 ffmpeg，無法轉碼。\"", source);
+        Assert.Contains("\"Could not find ffmpeg; cannot transcode.\"", source);
+        Assert.Contains("$\"转码失败：{lastLine}\"", source);
+        Assert.Contains("$\"轉碼失敗：{lastLine}\"", source);
+        Assert.Contains("$\"Transcoding failed: {lastLine}\"", source);
+        Assert.DoesNotContain("MoongateException.BurnFailed(\"找不到 ffmpeg，无法转码。\")", source);
+        Assert.DoesNotContain("MoongateException.BurnFailed($\"转码失败：{lastLine}\")", source);
     }
 
     [Fact]

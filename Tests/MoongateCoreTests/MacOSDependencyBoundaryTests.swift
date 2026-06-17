@@ -5,20 +5,22 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         let source = try dependencySetupSource()
         let sheetBody = try XCTUnwrap(functionBody(prefix: "var body", in: source))
 
+        XCTAssertTrue(source.contains("@EnvironmentObject private var localizer: Localizer"))
+
         let openBrewButton = try XCTUnwrap(sourceSlice(
-            from: "Button(\"打开 brew.sh\")",
+            from: "Button(localizer.t(L.Dependency.openBrew))",
             to: "if let errorText",
             in: sheetBody
         ))
         XCTAssertTrue(openBrewButton.contains("NSWorkspace.shared.open(URL(string: \"https://brew.sh/zh-cn/\")!)"))
         assertButtonCopy(
             openBrewButton,
-            help: "用默认浏览器打开 Homebrew 网站。你需要手动安装 Homebrew，App 不会自动安装 Homebrew。",
-            hint: "会用默认浏览器打开 Homebrew 网站；你需要手动安装 Homebrew，App 不会自动安装 Homebrew。"
+            helpExpression: "localizer.t(L.Dependency.openBrewHelp)",
+            hintExpression: "localizer.t(L.Dependency.openBrewHint)"
         )
 
         let refreshButton = try XCTUnwrap(sourceSlice(
-            from: "Button(\"重新检测\")",
+            from: "Button(localizer.t(L.Dependency.refresh))",
             to: "Spacer()",
             in: sheetBody
         ))
@@ -26,8 +28,8 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(refreshButton.contains(".disabled(installer.isRunning"))
         assertButtonCopy(
             refreshButton,
-            help: "重新检查本机依赖状态，不安装或下载任何组件。",
-            hint: "只重新检查本机依赖状态，不安装或下载任何组件。"
+            helpExpression: "localizer.t(L.Dependency.refreshHelp)",
+            hintExpression: "localizer.t(L.Dependency.refreshHint)"
         )
 
         let installButton = try XCTUnwrap(sourceSlice(
@@ -39,8 +41,8 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(installButton.contains(".disabled(installer.isRunning)"))
         assertButtonCopy(
             installButton,
-            help: "运行 brew install 安装缺失组件，可能下载 Homebrew 公式及其依赖。",
-            hint: "会运行 brew install 安装缺失组件，可能下载 Homebrew 公式及其依赖。"
+            helpExpression: "localizer.t(L.Dependency.installHelp)",
+            hintExpression: "localizer.t(L.Dependency.installHint)"
         )
     }
 
@@ -53,7 +55,7 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
             to: "if installer.allInstalled",
             in: sheetBody
         ))
-        XCTAssertTrue(closeButton.contains("Text(installer.isRunning ? \"取消安装并关闭\" : \"关闭\")"))
+        XCTAssertTrue(closeButton.contains("Text(installer.isRunning ? localizer.t(L.Dependency.cancelInstallAndClose) : localizer.t(L.Common.close))"))
         XCTAssertTrue(closeButton.contains("installer.cancel()"))
         XCTAssertTrue(closeButton.contains("model.closeDependencySetup()"))
         XCTAssertTrue(closeButton.contains(".help(closeButtonHelpText)"))
@@ -65,9 +67,8 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
 
         let helpBody = try XCTUnwrap(functionBody(prefix: "private var closeButtonHelpText", in: source))
         XCTAssertTrue(helpBody.contains("installer.isRunning"))
-        XCTAssertTrue(helpBody.contains("终止当前 Homebrew 安装进程"))
-        XCTAssertTrue(helpBody.contains("不会自动回滚 Homebrew 已经完成的改动"))
-        XCTAssertTrue(helpBody.contains("关闭这个窗口"))
+        XCTAssertTrue(helpBody.contains("localizer.t(L.Dependency.closeRunningHelp)"))
+        XCTAssertTrue(helpBody.contains("localizer.t(L.Dependency.closeIdleHelp)"))
         XCTAssertFalse(helpBody.contains("installer.install()"))
     }
 
@@ -78,7 +79,7 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         // 删除按钮只在「已检测 + brew 可用 + 有已安装组件」时出现，且只置位确认 flag，
         // 绝不直接 installer.uninstall()。
         let deleteButton = try XCTUnwrap(sourceSlice(
-            from: "Button(\"删除依赖\", role: .destructive)",
+            from: "Button(localizer.t(L.Dependency.deleteDependencies), role: .destructive)",
             to: "Spacer()",
             in: sheetBody
         ))
@@ -88,13 +89,14 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
 
         // 真正的卸载只发生在确认 alert 的 destructive 按钮里。
         let alertBlock = try XCTUnwrap(sourceSlice(
-            from: ".alert(\"删除依赖组件？\"",
+            from: ".alert(localizer.t(L.Dependency.uninstallAlertTitle)",
             to: "} message:",
             in: sheetBody
         ))
-        XCTAssertTrue(alertBlock.contains("Button(\"取消\", role: .cancel)"))
-        XCTAssertTrue(alertBlock.contains("Button(\"删除\", role: .destructive)"))
+        XCTAssertTrue(alertBlock.contains("Button(localizer.t(L.Common.cancel), role: .cancel)"))
+        XCTAssertTrue(alertBlock.contains("Button(localizer.t(L.Dependency.delete), role: .destructive)"))
         XCTAssertTrue(alertBlock.contains("installer.uninstall()"))
+        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.uninstallMessage, installer.installedFormulaList)"))
     }
 
     func testDependencySetupSheetExposesAccessibleStatusSemantics() throws {
@@ -115,15 +117,15 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
             functionBody(prefix: "private func componentAccessibilityLabel", in: source)
         )
         XCTAssertTrue(helperBody.contains("component.id"))
-        XCTAssertTrue(helperBody.contains("component.purpose"))
-        XCTAssertTrue(helperBody.contains("return \"\\(component.id)，\\(component.purpose)\""))
+        XCTAssertTrue(helperBody.contains("componentPurposeText(component)"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Dependency.componentAccessibilityLabel"))
 
-        XCTAssertTrue(sheetBody.contains(".accessibilityLabel(\"Homebrew 安装日志\")"))
+        XCTAssertTrue(sheetBody.contains(".accessibilityLabel(localizer.t(L.Dependency.logAccessibility))"))
 
         let progressStart = try XCTUnwrap(sheetBody.range(of: "ProgressView()"))
-        let progressEnd = try XCTUnwrap(sheetBody[progressStart.lowerBound...].range(of: "Text(\"安装中…\")"))
+        let progressEnd = try XCTUnwrap(sheetBody[progressStart.lowerBound...].range(of: "Text(localizer.t(L.Dependency.installing))"))
         let progressBody = String(sheetBody[progressStart.lowerBound..<progressEnd.upperBound])
-        XCTAssertTrue(progressBody.contains(".accessibilityLabel(\"正在安装缺失组件\")"))
+        XCTAssertTrue(progressBody.contains(".accessibilityLabel(localizer.t(L.Dependency.installingMissingAccessibility))"))
     }
 
     private func dependencySetupSource() throws -> String {
@@ -171,20 +173,20 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
 
     private func assertButtonCopy(
         _ source: String,
-        help: String,
-        hint: String,
+        helpExpression: String,
+        hintExpression: String,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
         XCTAssertTrue(
-            source.contains(".help(\"\(help)\")"),
-            "Expected button source to expose help: \(help)",
+            source.contains(".help(\(helpExpression))"),
+            "Expected button source to expose help expression: \(helpExpression)",
             file: file,
             line: line
         )
         XCTAssertTrue(
-            source.contains(".accessibilityHint(\"\(hint)\")"),
-            "Expected button source to expose accessibility hint: \(hint)",
+            source.contains(".accessibilityHint(\(hintExpression))"),
+            "Expected button source to expose accessibility hint expression: \(hintExpression)",
             file: file,
             line: line
         )

@@ -75,7 +75,7 @@ public struct UpdateChecker: Sendable {
     /// 公开仓库匿名访问即可；超时短、失败抛错由调用方决定是否静默。
     public func checkForUpdate(currentVersion: String) async throws -> UpdateInfo? {
         guard let current = SemVer(currentVersion) else {
-            throw MoongateError.updateFailed("无法解析当前版本号：\(currentVersion)")
+            throw MoongateError.updateFailed("\(CoreL10n.text(en: "Could not parse current version", zhHans: "无法解析当前版本号", zhHant: "無法解析目前版本號"))：\(currentVersion)")
         }
         var request = URLRequest(url: URL(string:
             "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=20")!)
@@ -92,16 +92,32 @@ public struct UpdateChecker: Sendable {
         } catch let error as URLError {
             if error.code == .cancelled { throw MoongateError.cancelled }
             if error.code == .timedOut {
-                throw MoongateError.updateFailed("连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。")
+                throw MoongateError.updateFailed(CoreL10n.text(
+                    en: "The update server timed out. If GitHub is blocked on your network, check your proxy or VPN and try again.",
+                    zhHans: "连接更新服务器超时。若在中国大陆，请检查代理/VPN 是否开启并能正常访问 GitHub。",
+                    zhHant: "連線更新伺服器逾時。若 GitHub 在你的網路中受限，請檢查代理/VPN 是否開啟並能正常存取 GitHub。"
+                ))
             }
-            throw MoongateError.updateFailed("无法连接到更新服务器，请检查网络与代理设置。")
+            throw MoongateError.updateFailed(CoreL10n.text(
+                en: "Could not connect to the update server. Check your network and proxy settings.",
+                zhHans: "无法连接到更新服务器，请检查网络与代理设置。",
+                zhHant: "無法連線到更新伺服器，請檢查網路與代理設定。"
+            ))
         }
         guard let http = response as? HTTPURLResponse else {
-            throw MoongateError.updateFailed("更新服务器返回了无效响应。")
+            throw MoongateError.updateFailed(CoreL10n.text(
+                en: "The update server returned an invalid response.",
+                zhHans: "更新服务器返回了无效响应。",
+                zhHant: "更新伺服器回傳了無效回應。"
+            ))
         }
         guard http.statusCode == 200 else {
             if http.statusCode == 403 {
-                throw MoongateError.updateFailed("更新检查过于频繁（GitHub 限流），请稍后再试。")
+                throw MoongateError.updateFailed(CoreL10n.text(
+                    en: "Update checks are happening too often (GitHub rate limit). Try again later.",
+                    zhHans: "更新检查过于频繁（GitHub 限流），请稍后再试。",
+                    zhHant: "更新檢查過於頻繁（GitHub 限流），請稍後再試。"
+                ))
             }
             throw MoongateError.updateFailed("HTTP \(http.statusCode)。")
         }

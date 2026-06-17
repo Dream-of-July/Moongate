@@ -194,7 +194,10 @@ public sealed class Transcoder
         CancellationToken ct = default)
     {
         var ffmpeg = FFmpegBurner.LocateFfmpeg()
-            ?? throw MoongateException.BurnFailed("找不到 ffmpeg，无法转码。");
+            ?? throw MoongateException.BurnFailed(L10n.T(
+                "找不到 ffmpeg，无法转码。",
+                "找不到 ffmpeg，無法轉碼。",
+                "Could not find ffmpeg; cannot transcode."));
         // 运行时探测 libx265 是否可用（与 macOS 一致）。BtbN ffmpeg-gpl 通常带 libx265，
         // 但第三方/精简构建可能没有；不可用时 HDR 转码会回退 tonemap 成 SDR 而非直接失败。
         var x265 = FFmpegBurner.EncoderAvailable("libx265", ffmpeg);
@@ -209,8 +212,10 @@ public sealed class Transcoder
             && FFmpegBurner.HardwareHevcEncoder(Available) is null
             && !x265)
         {
-            throw MoongateException.BurnFailed(
-                "当前 ffmpeg 缺少 HEVC 编码器（硬件 HEVC 或 libx265），无法转为 H.265。请安装完整 ffmpeg，或改选 H.264/原格式。");
+            throw MoongateException.BurnFailed(L10n.T(
+                "当前 ffmpeg 缺少 HEVC 编码器（硬件 HEVC 或 libx265），无法转为 H.265。请安装完整 ffmpeg，或改选 H.264/原格式。",
+                "目前 ffmpeg 缺少 HEVC 編碼器（硬體 HEVC 或 libx265），無法轉為 H.265。請安裝完整 ffmpeg，或改選 H.264/原格式。",
+                "The current ffmpeg build is missing an HEVC encoder (hardware HEVC or libx265), so it cannot convert to H.265. Install a complete ffmpeg build, or choose H.264/original format."));
         }
         // 先求目标容器扩展名（ffmpeg 按输出扩展名推断 muxer，临时文件必须带正确扩展名）。
         var resolvedIsHdr = await FFmpegBurner.ProbeVideoIsHdrAsync(inputFile, ct).ConfigureAwait(false) ?? sourceIsHdr;
@@ -263,14 +268,21 @@ public sealed class Transcoder
             if (status != 0)
             {
                 TryDelete(tmpOutput);
-                var lastLine = tail.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "未知错误";
-                throw MoongateException.BurnFailed($"转码失败：{lastLine}");
+                var lastLine = tail.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()
+                    ?? L10n.T("未知错误", "未知錯誤", "Unknown error");
+                throw MoongateException.BurnFailed(L10n.T(
+                    $"转码失败：{lastLine}",
+                    $"轉碼失敗：{lastLine}",
+                    $"Transcoding failed: {lastLine}"));
             }
         }
         catch (ProcessStalledException)
         {
             TryDelete(tmpOutput);
-            throw MoongateException.BurnFailed("转码进程长时间无输出，已中止（可重试）。");
+            throw MoongateException.BurnFailed(L10n.T(
+                "转码进程长时间无输出，已中止（可重试）。",
+                "轉碼程序長時間沒有輸出，已中止（可重試）。",
+                "The transcoding process produced no output for too long and was stopped. You can retry."));
         }
         finally
         {
@@ -285,7 +297,10 @@ public sealed class Transcoder
         catch (Exception e)
         {
             TryDelete(tmpOutput);
-            throw MoongateException.BurnFailed($"转码完成但无法保存输出文件：{e.Message}");
+            throw MoongateException.BurnFailed(L10n.T(
+                $"转码完成但无法保存输出文件：{e.Message}",
+                $"轉碼完成但無法儲存輸出檔：{e.Message}",
+                $"Transcoding finished but the output file could not be saved: {e.Message}"));
         }
         progress(1);
         return output;

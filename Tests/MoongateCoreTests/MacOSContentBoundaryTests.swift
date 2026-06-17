@@ -1,6 +1,95 @@
 import XCTest
 
 final class MacOSContentBoundaryTests: XCTestCase {
+    func testFirstRunOnboardingLetsUsersChooseLanguagesWithoutApiSetup() throws {
+        let content = try contentViewSource()
+        let viewModel = try viewModelSource()
+
+        XCTAssertTrue(content.contains("@EnvironmentObject private var localizer: Localizer"))
+        XCTAssertTrue(content.contains(".sheet(isPresented: $model.showOnboarding)"))
+        XCTAssertTrue(content.contains("OnboardingView(model: model)"))
+        XCTAssertTrue(content.contains("Picker(localizer.t(L.Onboarding.appLanguage)"))
+        XCTAssertTrue(content.contains("Picker(localizer.t(L.Onboarding.translationTarget)"))
+        XCTAssertTrue(content.contains("Toggle(localizer.t(L.Onboarding.useLocalTranslation)"))
+        XCTAssertTrue(content.contains("model.completeOnboarding("))
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("translationAuthToken"))
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("authToken"))
+
+        XCTAssertTrue(viewModel.contains("@Published var showOnboarding = false"))
+        XCTAssertTrue(viewModel.contains("showOnboardingIfNeeded()"))
+        XCTAssertTrue(viewModel.contains("func completeOnboarding("))
+        XCTAssertTrue(viewModel.contains("var draft = settings"))
+        XCTAssertTrue(viewModel.contains("draft.appLanguage = appLanguage.rawValue"))
+        XCTAssertTrue(viewModel.contains("draft.translationTargetLanguage = translationTargetLanguage"))
+        XCTAssertTrue(viewModel.contains("draft.onboardingCompleted = true"))
+        XCTAssertTrue(viewModel.contains("draft.translationEngine = .appleTranslationLowLatency"))
+        XCTAssertTrue(viewModel.contains("draft.translationFollowsDefault = false"))
+        XCTAssertTrue(viewModel.contains("try draft.save()"))
+        XCTAssertTrue(viewModel.contains("settings = draft"))
+        XCTAssertTrue(viewModel.contains("showDependencySetupIfNeededOnStartup()"))
+    }
+
+    func testPrimaryMainWindowFlowUsesLocalizer() throws {
+        let source = try contentViewSource()
+
+        XCTAssertTrue(source.contains("TextField(localizer.t(L.Main.urlPlaceholderMultiline)"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))"))
+        XCTAssertTrue(source.contains(".help(localizer.t(L.Main.pasteAndParseHelp))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.parse))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.idleTitle))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.idleSubtitle))"))
+        XCTAssertTrue(source.contains("model.batchStatusText ?? localizer.t(L.Main.loadingAccessibility)"))
+        XCTAssertTrue(source.contains("Text(model.batchStatusText ?? localizer.t(L.Main.loading))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.batchAutoQueueHint))"))
+        XCTAssertTrue(source.contains("Button(localizer.t(L.Common.cancel))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.videoCount, candidates.count))"))
+        XCTAssertTrue(source.contains(".accessibilityHint(localizer.t(L.Main.chooseVideoHint))"))
+        XCTAssertTrue(source.contains("Label(localizer.t(L.Main.backToList), systemImage: \"chevron.left\")"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.enqueue))"))
+        XCTAssertTrue(source.contains("localizer.t(L.Main.saveToVideoFolder, folderName)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Main.saveToDownloads)"))
+
+        XCTAssertFalse(source.contains("TextField(\"粘贴视频链接，可一次粘贴多条\""))
+        XCTAssertFalse(source.contains("Text(\"粘贴链接，下载网页里的视频\")"))
+        XCTAssertFalse(source.contains("Text(\"解析完成的视频会按最高画质自动加入队列\")"))
+        XCTAssertFalse(source.contains("Button(\"取消\") {"))
+        XCTAssertFalse(source.contains("Text(\"这个页面里有 \\(candidates.count) 个视频\")"))
+        XCTAssertFalse(source.contains("Label(\"返回列表\", systemImage: \"chevron.left\")"))
+        XCTAssertFalse(source.contains("Text(\"加入队列\")"))
+    }
+
+    func testReadyPageFormatAndSubtitleControlsUseLocalizer() throws {
+        let source = try contentViewSource()
+
+        XCTAssertTrue(source.contains("section(localizer.t(L.Ready.formatSection))"))
+        XCTAssertTrue(source.contains("section(localizer.t(L.Ready.subtitlesSection))"))
+        XCTAssertTrue(source.contains("section(localizer.t(L.Ready.subtitleProcessingSection))"))
+        XCTAssertTrue(source.contains("section(localizer.t(L.Ready.outputOptionsSection))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Ready.hdrHint))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Ready.outputFormat))"))
+        XCTAssertTrue(source.contains("Picker(localizer.t(L.Ready.outputFormat), selection: $model.selectedOutputFormat)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.keepSourceFormatWithSource, s)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.keepSourceFormat)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.h264HdrWarning)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.h264ReencodeWarning)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.h265ReencodeWarning)"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Ready.audioSection))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Ready.noSubtitles))"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Ready.autoGenerated))"))
+        XCTAssertTrue(source.contains(".accessibilityHint(localizer.t(L.Ready.chooseFormatHint))"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.selected)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.notSelected)"))
+        XCTAssertTrue(source.contains(".accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))"))
+        XCTAssertTrue(source.contains("localizer.t(L.Ready.autoGeneratedSubtitleLabel, subtitle.label)"))
+
+        XCTAssertFalse(source.contains("section(\"格式\")"))
+        XCTAssertFalse(source.contains("section(\"字幕\")"))
+        XCTAssertFalse(source.contains("section(\"字幕处理\")"))
+        XCTAssertFalse(source.contains("section(\"输出选项\")"))
+        XCTAssertFalse(source.contains("Text(\"这个视频没有字幕\")"))
+        XCTAssertFalse(source.contains("Text(\"自动生成\")"))
+    }
+
     func testChineseSubtitleRowsUsesAppleGuidanceOnlyForAppleEngines() throws {
         let source = try contentViewSource()
         let rowsBody = try XCTUnwrap(functionBody(prefix: "private func chineseSubtitleRows", in: source))
@@ -17,9 +106,9 @@ final class MacOSContentBoundaryTests: XCTestCase {
         XCTAssertTrue(guidanceBody.contains("readiness: readiness"))
         XCTAssertTrue(guidanceBody.contains("guidance.title"))
         XCTAssertTrue(guidanceBody.contains("guidance.steps"))
-        XCTAssertTrue(guidanceBody.contains("Button(\"去设置\")"))
-        XCTAssertTrue(guidanceBody.contains(".help(\"只打开 App 设置查看系统侧步骤；不会直接打开系统设置、下载语言包、保存配置或切换引擎。\")"))
-        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(\"只打开 App 设置查看系统侧步骤；不会直接打开系统设置、下载语言包、保存配置或切换引擎。\")"))
+        XCTAssertTrue(guidanceBody.contains("Button(localizer.t(L.Ready.openSettings))"))
+        XCTAssertTrue(guidanceBody.contains(".help(localizer.t(L.Ready.appleTranslationOpenSettingsHelp))"))
+        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(localizer.t(L.Ready.appleTranslationOpenSettingsHelp))"))
         XCTAssertFalse(guidanceBody.contains("NSWorkspace.shared.open"))
         XCTAssertFalse(guidanceBody.contains("saveSettings()"))
         XCTAssertFalse(guidanceBody.contains("model.settings ="))
@@ -32,7 +121,9 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let summaryBody = try XCTUnwrap(
             functionBody(prefix: "private func appleTranslationSetupActionSummary", in: source)
         )
-        XCTAssertTrue(summaryBody.contains("建议动作：打开 App 设置查看系统侧配置步骤。"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Ready.appleTranslationActionOpenSettings)"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Ready.appleTranslationActionRefresh)"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Ready.appleTranslationActionChooseDifferentEngine)"))
         XCTAssertFalse(summaryBody.contains("去设置完成系统侧配置"))
         XCTAssertFalse(summaryBody.contains("NSWorkspace.shared.open"))
         XCTAssertFalse(summaryBody.contains("saveSettings()"))
@@ -56,7 +147,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
         )
 
         XCTAssertTrue(guidanceBody.contains("Text(appleTranslationSetupFallbackText)"))
-        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(\"如果本机 Apple 能力暂不可用，可以先切换到 API 兼容引擎\")"))
+        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(localizer.t(L.Ready.appleTranslationFallbackHint))"))
         XCTAssertFalse(guidanceBody.contains("model.settings ="))
         XCTAssertFalse(guidanceBody.contains(".translationEngine ="))
         XCTAssertFalse(guidanceBody.contains("saveSettings()"))
@@ -68,7 +159,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let fallbackBody = try XCTUnwrap(
             functionBody(prefix: "private var appleTranslationSetupFallbackText", in: source)
         )
-        XCTAssertTrue(fallbackBody.contains("Anthropic-compatible 或 OpenAI-compatible"))
+        XCTAssertTrue(fallbackBody.contains("localizer.t(L.Ready.appleTranslationFallback)"))
         XCTAssertFalse(fallbackBody.contains("PCC"))
         XCTAssertFalse(fallbackBody.localizedCaseInsensitiveContains("Cloud Pro"))
         XCTAssertFalse(fallbackBody.contains("云端"))
@@ -85,13 +176,13 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let summaryBody = try XCTUnwrap(
             functionBody(prefix: "private func appleTranslationSetupReadinessSummary", in: source)
         )
-        XCTAssertTrue(summaryBody.contains("Text(\"当前引擎\")"))
+        XCTAssertTrue(summaryBody.contains("Text(localizer.t(L.Ready.currentEngine))"))
         XCTAssertTrue(summaryBody.contains("effectiveTranslationEngine.displayName"))
-        XCTAssertTrue(summaryBody.contains("Text(\"状态\")"))
-        XCTAssertTrue(summaryBody.contains("readiness.isReady ? \"当前可运行\" : \"需要处理\""))
-        XCTAssertTrue(summaryBody.contains("Text(\"首要原因\")"))
+        XCTAssertTrue(summaryBody.contains("Text(localizer.t(L.Ready.status))"))
+        XCTAssertTrue(summaryBody.contains("readiness.isReady ? localizer.t(L.Ready.statusReady) : localizer.t(L.Ready.statusNeedsAction)"))
+        XCTAssertTrue(summaryBody.contains("Text(localizer.t(L.Ready.primaryReason))"))
         XCTAssertTrue(summaryBody.contains("appleTranslationSetupReadinessReason(readiness)"))
-        XCTAssertTrue(summaryBody.contains(".accessibilityLabel(\"Apple 翻译引擎状态\")"))
+        XCTAssertTrue(summaryBody.contains(".accessibilityLabel(localizer.t(L.Ready.appleTranslationStatus))"))
         XCTAssertTrue(summaryBody.contains(".accessibilityValue("))
         XCTAssertFalse(summaryBody.contains("model.settings ="))
         XCTAssertFalse(summaryBody.contains(".translationEngine ="))
@@ -117,19 +208,19 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let source = try contentViewSource()
 
         let settingsHeaderBody = try XCTUnwrap(functionBody(prefix: "private var header", in: source))
-        XCTAssertTrue(settingsHeaderBody.contains("\"打开设置\""))
+        XCTAssertTrue(settingsHeaderBody.contains("localizer.t(L.Main.settingsAccessibility)"))
 
         let candidateRowBody = try XCTUnwrap(functionBody(prefix: "private func candidateRow", in: source))
         XCTAssertTrue(candidateRowBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(candidateRowBody.contains(".accessibilityLabel(candidate.title)"))
-        XCTAssertTrue(candidateRowBody.contains(".accessibilityHint(\"选择这个视频\")"))
+        XCTAssertTrue(candidateRowBody.contains(".accessibilityHint(localizer.t(L.Main.chooseVideoHint))"))
 
         let formatRowBody = try XCTUnwrap(functionBody(prefix: "private func formatRow", in: source))
         XCTAssertTrue(formatRowBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(formatRowBody.contains(".accessibilityLabel(format.label)"))
-        XCTAssertTrue(formatRowBody.contains(".accessibilityHint(\"选择这个下载格式\")"))
+        XCTAssertTrue(formatRowBody.contains(".accessibilityHint(localizer.t(L.Ready.chooseFormatHint))"))
         XCTAssertTrue(formatRowBody.contains(".accessibilityValue("))
-        XCTAssertTrue(formatRowBody.contains("model.selectedFormatID == format.id ? \"已选择\" : \"未选择\""))
+        XCTAssertTrue(formatRowBody.contains("model.selectedFormatID == format.id ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected)"))
     }
 
     func testHeaderShowsUpdateBadgeOnSettingsButtonAndKeepsControlsCentered() throws {
@@ -142,7 +233,8 @@ final class MacOSContentBoundaryTests: XCTestCase {
         XCTAssertFalse(headerBody.contains("HStack(alignment: .top, spacing: 8)"))
         XCTAssertTrue(headerBody.contains("if updater.hasAvailableUpdate"))
         XCTAssertTrue(headerBody.contains("updateBadge"))
-        XCTAssertTrue(headerBody.contains(".accessibilityLabel(updater.hasAvailableUpdate ? \"打开设置，有可用更新\" : \"打开设置\")"))
+        XCTAssertTrue(headerBody.contains("localizer.t(L.Main.settingsWithUpdateAccessibility)"))
+        XCTAssertTrue(headerBody.contains("localizer.t(L.Main.settingsAccessibility)"))
         XCTAssertGreaterThanOrEqual(headerBody.components(separatedBy: ".frame(height: 34)").count - 1, 2)
 
         let parseButtonBody = try XCTUnwrap(functionBody(prefix: "private var parseButton", in: source))
@@ -159,21 +251,22 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let source = try contentViewSource()
         let rowsBody = try XCTUnwrap(functionBody(prefix: "private func chineseSubtitleRows", in: source))
 
-        XCTAssertTrue(rowsBody.contains("Picker(\"字幕处理\""))
-        XCTAssertTrue(rowsBody.contains(".accessibilityLabel(\"字幕处理方式\")"))
+        XCTAssertTrue(rowsBody.contains("Picker(localizer.t(L.Ready.subtitleProcessingSection)"))
+        XCTAssertTrue(rowsBody.contains(".accessibilityLabel(localizer.t(L.Ready.subtitleProcessingAccessibility))"))
         XCTAssertTrue(rowsBody.contains(".accessibilityHint("))
-        XCTAssertTrue(rowsBody.contains("hasSubtitleSelected ? \"选择是否生成、翻译或烧录中文字幕\" : \"先在上面勾选一条字幕\""))
-        XCTAssertTrue(rowsBody.contains(".accessibilityValue(model.chineseMode.label)"))
+        XCTAssertTrue(rowsBody.contains("localizer.t(L.Ready.subtitleProcessingHint)"))
+        XCTAssertTrue(rowsBody.contains("localizer.t(L.Ready.subtitleProcessingHintSelectFirst)"))
+        XCTAssertTrue(rowsBody.contains(".accessibilityValue(localizer.t(model.chineseMode.localizationKey))"))
     }
 
     func testChineseSubtitleRowsPrioritizesChineseSourceMessageBeforeReadinessGuidance() throws {
         let source = try contentViewSource()
         let rowsBody = try XCTUnwrap(functionBody(prefix: "private func chineseSubtitleRows", in: source))
 
-        let chineseSourceRange = try XCTUnwrap(rowsBody.range(of: "model.translationSourceIsChinese(in: info)"))
+        let chineseSourceRange = try XCTUnwrap(rowsBody.range(of: "model.translationSourceMatchesTarget(in: info)"))
         let readinessGateRange = try XCTUnwrap(rowsBody.range(of: "!readiness.isReady"))
-        let directUsePromptRange = try XCTUnwrap(rowsBody.range(of: "该字幕已是中文，将直接使用（不翻译）"))
-        let burnInPromptRange = try XCTUnwrap(rowsBody.range(of: "该字幕已是中文，将直接烧录（不翻译）"))
+        let directUsePromptRange = try XCTUnwrap(rowsBody.range(of: "localizer.t(L.Ready.sourceAlreadyTargetUse)"))
+        let burnInPromptRange = try XCTUnwrap(rowsBody.range(of: "localizer.t(L.Ready.sourceAlreadyTargetBurn)"))
 
         XCTAssertLessThan(chineseSourceRange.lowerBound, readinessGateRange.lowerBound)
         XCTAssertLessThan(directUsePromptRange.lowerBound, readinessGateRange.lowerBound)
@@ -194,29 +287,29 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let pasteButtonFragment = String(headerBody[pasteActionRange.lowerBound..<followingParseButtonRange.lowerBound])
         XCTAssertTrue(pasteButtonFragment.contains("Image(systemName: \"doc.on.clipboard\")"))
         XCTAssertTrue(pasteButtonFragment.contains(".disabled(model.isParsing)"))
-        XCTAssertTrue(pasteButtonFragment.contains(".help(\"粘贴并解析剪贴板链接\")"))
-        XCTAssertTrue(pasteButtonFragment.contains(".accessibilityLabel(\"粘贴并解析\")"))
-        XCTAssertTrue(pasteButtonFragment.contains(".accessibilityHint(\"粘贴剪贴板里的链接并开始解析\")"))
+        XCTAssertTrue(pasteButtonFragment.contains(".help(localizer.t(L.Main.pasteAndParseHelp))"))
+        XCTAssertTrue(pasteButtonFragment.contains(".accessibilityLabel(localizer.t(L.Main.pasteAndParseAccessibility))"))
+        XCTAssertTrue(pasteButtonFragment.contains(".accessibilityHint(localizer.t(L.Main.pasteAndParseHint))"))
         XCTAssertFalse(pasteButtonFragment.containsVisibleViewLine(prefix: "Label("))
         XCTAssertFalse(pasteButtonFragment.containsVisibleViewLine(prefix: "Text(\"粘贴"))
 
         let parseButtonBody = try XCTUnwrap(functionBody(prefix: "private var parseButton", in: source))
-        XCTAssertTrue(parseButtonBody.contains("Text(\"解析链接\")"))
-        XCTAssertTrue(parseButtonBody.contains(".help(\"解析当前输入框中的视频链接\")"))
-        XCTAssertTrue(parseButtonBody.contains(".accessibilityHint(\"解析当前输入框中的视频链接\")"))
+        XCTAssertTrue(parseButtonBody.contains("Text(localizer.t(L.Main.parse))"))
+        XCTAssertTrue(parseButtonBody.contains(".help(localizer.t(L.Main.parseCurrentHelp))"))
+        XCTAssertTrue(parseButtonBody.contains(".accessibilityHint(localizer.t(L.Main.parseCurrentHint))"))
 
         let buttonProgressRange = try XCTUnwrap(parseButtonBody.range(of: "ProgressView()"))
         let buttonTextRange = try XCTUnwrap(
             parseButtonBody.range(
-                of: "Text(\"解析链接\")",
+                of: "Text(localizer.t(L.Main.parse))",
                 range: buttonProgressRange.upperBound..<parseButtonBody.endIndex
             )
         )
         let buttonProgressFragment = String(parseButtonBody[buttonProgressRange.lowerBound..<buttonTextRange.upperBound])
-        XCTAssertTrue(buttonProgressFragment.contains(".accessibilityLabel(\"正在解析\")"))
+        XCTAssertTrue(buttonProgressFragment.contains(".accessibilityLabel(localizer.t(L.Main.parsingAccessibility))"))
 
         let loadingStateBody = try XCTUnwrap(functionBody(prefix: "private var loadingState", in: source))
-        XCTAssertTrue(loadingStateBody.contains(".accessibilityLabel(model.batchStatusText ?? \"正在解析\")"))
+        XCTAssertTrue(loadingStateBody.contains(".accessibilityLabel(model.batchStatusText ?? localizer.t(L.Main.loadingAccessibility))"))
     }
 
     func testSubtitleRowsExposeManualAndAutoGeneratedAccessibilitySemantics() throws {
@@ -224,14 +317,14 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let rowsBody = try XCTUnwrap(functionBody(prefix: "private func subtitleRows", in: source))
 
         XCTAssertTrue(rowsBody.contains("accessibilityLabel(subtitleAccessibilityLabel(subtitle))"))
-        XCTAssertTrue(rowsBody.contains("accessibilityHint(\"勾选后可下载字幕，或用于中文字幕处理\")"))
-        XCTAssertTrue(rowsBody.contains("accessibilityValue(model.selectedSubtitleIDs.contains(subtitle.id) ? \"已选择\" : \"未选择\")"))
+        XCTAssertTrue(rowsBody.contains("accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))"))
+        XCTAssertTrue(rowsBody.contains("accessibilityValue(model.selectedSubtitleIDs.contains(subtitle.id) ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))"))
 
         let helperBody = try XCTUnwrap(
             functionBody(prefix: "private func subtitleAccessibilityLabel", in: source)
         )
         XCTAssertTrue(helperBody.contains("subtitle.isAuto"))
-        XCTAssertTrue(helperBody.contains("\"\\(subtitle.label)，自动生成字幕\""))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Ready.autoGeneratedSubtitleLabel, subtitle.label)"))
         XCTAssertTrue(helperBody.contains("return subtitle.label"))
     }
 
@@ -245,10 +338,8 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let helperBody = try XCTUnwrap(functionBody(prefix: "private func readyFooterCopy", in: source))
         XCTAssertTrue(helperBody.contains("readyFooterUsesVideoFolder"))
         XCTAssertTrue(helperBody.contains("ViewModel.sanitizedFolderName(info.title)"))
-        XCTAssertTrue(helperBody.contains("保存到 Downloads"))
-        XCTAssertTrue(helperBody.contains("文件夹"))
-        XCTAssertTrue(helperBody.contains("return \"保存到 Downloads · 加入后可继续粘贴下一条\""))
-        XCTAssertTrue(helperBody.contains("加入后可继续粘贴下一条"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Main.saveToVideoFolder, folderName)"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Main.saveToDownloads)"))
         XCTAssertTrue(helperBody.contains("readyFooterUsesVideoFolder(for: info)"))
 
         let destinationGateBody = try XCTUnwrap(
@@ -276,6 +367,13 @@ final class MacOSContentBoundaryTests: XCTestCase {
 
         // SummaryCard 覆盖四态、按可用性禁用、计算中可取消，且不外发凭证。
         let cardSource = try summaryViewSource()
+        XCTAssertTrue(cardSource.contains("@EnvironmentObject private var localizer: Localizer"))
+        XCTAssertTrue(cardSource.contains("Label(localizer.t(L.Summary.title)"))
+        XCTAssertTrue(cardSource.contains("Text(localizer.t(L.Summary.idleDescription))"))
+        XCTAssertTrue(cardSource.contains("ShimmerText(text: localizer.t(L.Summary.running))"))
+        XCTAssertTrue(cardSource.contains(".accessibilityLabel(localizer.t(L.Summary.runningAccessibility))"))
+        XCTAssertTrue(cardSource.contains("Label(localizer.t(L.Summary.retry)"))
+        XCTAssertTrue(cardSource.contains("Button(localizer.t(L.Common.retry), action: onSummarize)"))
         XCTAssertTrue(cardSource.contains("case .idle:"))
         XCTAssertTrue(cardSource.contains("case .running:"))
         XCTAssertTrue(cardSource.contains("case .done(let summary):"))
@@ -306,6 +404,13 @@ final class MacOSContentBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("ContentView.swift"))
+    }
+
+    private func viewModelSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("ViewModel.swift"))
     }
 
     private func packageRoot() -> URL {

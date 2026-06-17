@@ -1,6 +1,51 @@
 import XCTest
 
 final class MacOSSettingsBoundaryTests: XCTestCase {
+    func testSettingsExposeAppAndTargetLanguagePickersAndPersistThem() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        XCTAssertTrue(source.contains("@EnvironmentObject private var localizer: Localizer"))
+        XCTAssertTrue(source.contains("languageSection"))
+        XCTAssertTrue(source.contains("Section(localizer.t(L.Settings.languageSection))"))
+        XCTAssertTrue(source.contains("Picker(localizer.t(L.Settings.appLanguage)"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Settings.followSystem))"))
+        XCTAssertTrue(source.contains("Picker(localizer.t(L.Settings.targetLanguage)"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Settings.languageHelp))"))
+        XCTAssertTrue(source.contains("$draft.appLanguage"))
+        XCTAssertTrue(source.contains("$draft.translationTargetLanguage"))
+        XCTAssertTrue(source.contains("localizer.setLanguage("))
+        XCTAssertTrue(source.contains("model.settings = draft"))
+    }
+
+    func testPrimaryAIConfigurationSectionsUseLocalizer() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        let translationSectionBody = try XCTUnwrap(functionBody(named: "translationSection", in: source))
+        XCTAssertTrue(translationSectionBody.contains("Section(localizer.t(L.Settings.aiSettingsSection))"))
+        XCTAssertTrue(translationSectionBody.contains("Text(localizer.t(L.Settings.aiSettingsDescription))"))
+        XCTAssertTrue(translationSectionBody.contains("Picker(localizer.t(L.Settings.aiEngine)"))
+
+        let translationConfigBody = try XCTUnwrap(functionBody(named: "translationConfigSection", in: source))
+        XCTAssertTrue(translationConfigBody.contains("Section(localizer.t(L.Settings.aiTranslationSection))"))
+        XCTAssertTrue(translationConfigBody.contains("Toggle(localizer.t(L.Settings.smartTranslationPrompts)"))
+        XCTAssertTrue(translationConfigBody.contains("Text(localizer.t(L.Settings.smartTranslationPromptsHelp))"))
+        XCTAssertTrue(translationConfigBody.contains("Picker(localizer.t(L.Settings.configMode)"))
+        XCTAssertTrue(translationConfigBody.contains("Text(localizer.t(L.Settings.followAISettings))"))
+        XCTAssertTrue(translationConfigBody.contains("Text(localizer.t(L.Settings.configureSeparately))"))
+        XCTAssertTrue(translationConfigBody.contains("Picker(localizer.t(L.Settings.translationEngine)"))
+
+        let summaryBody = try XCTUnwrap(functionBody(named: "summarySection", in: source))
+        XCTAssertTrue(summaryBody.contains("Section(localizer.t(L.Settings.aiSummarySection))"))
+        XCTAssertTrue(summaryBody.contains("Picker(localizer.t(L.Settings.configMode)"))
+        XCTAssertTrue(summaryBody.contains("Text(localizer.t(L.Settings.defaultEngineCannotSummarize))"))
+    }
+
     func testUpdateSectionExposesVersionCheckAndInstallEntry() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -11,6 +56,20 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(body.contains("updater.currentVersion"))
         XCTAssertTrue(body.contains("updater.check()"))
         XCTAssertTrue(body.contains("updater.downloadAndInstall(info)"))
+        XCTAssertTrue(body.contains("Section(localizer.t(L.Update.sectionTitle))"))
+        XCTAssertTrue(body.contains("Text(localizer.t(L.Update.currentVersion))"))
+        XCTAssertTrue(body.contains("Label(localizer.t(L.Update.upToDate)"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Update.check))"))
+        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.checkingAccessibility))"))
+        XCTAssertTrue(body.contains("localizer.t(L.Update.available, info.version.description)"))
+        XCTAssertTrue(body.contains("DisclosureGroup(localizer.t(L.Update.releaseNotes))"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Update.downloadAndInstall))"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Update.openReleases))"))
+        XCTAssertTrue(body.contains("localizer.t(L.Update.downloadingPercent"))
+        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.downloadProgress))"))
+        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.installingAccessibility))"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Common.retry))"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Update.openGitHubDownload))"))
         XCTAssertTrue(body.contains("case .available(let info)"))
         XCTAssertTrue(body.contains("case .downloading"))
         XCTAssertTrue(body.contains("case .installing"))
@@ -46,6 +105,49 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("return false"))
     }
 
+    func testSecondarySettingsSectionsUseLocalizer() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        let performanceBody = try XCTUnwrap(functionBody(named: "performanceSection", in: source))
+        XCTAssertTrue(performanceBody.contains("Section(localizer.t(L.Settings.performanceSection))"))
+        XCTAssertTrue(performanceBody.contains("Text(localizer.t(L.Settings.concurrentDownloads))"))
+        XCTAssertTrue(performanceBody.contains("Text(localizer.t(L.Settings.concurrentBurns))"))
+        XCTAssertTrue(performanceBody.contains("Text(localizer.t(L.Settings.performanceHelp))"))
+
+        let styleBody = try XCTUnwrap(functionBody(named: "styleSection", in: source))
+        XCTAssertTrue(styleBody.contains("Section(localizer.t(L.Settings.styleSection))"))
+        XCTAssertTrue(styleBody.contains("Picker(localizer.t(L.Settings.subtitleStyle),"))
+        XCTAssertTrue(styleBody.contains("Text(localizer.t(L.Settings.subtitleStyleBilingual))"))
+        XCTAssertTrue(styleBody.contains("Text(localizer.t(L.Settings.subtitleStyleChineseOnly))"))
+
+        let burnBody = try XCTUnwrap(functionBody(named: "burnQualitySection", in: source))
+        XCTAssertTrue(burnBody.contains("Section(localizer.t(L.Settings.burnSection))"))
+        XCTAssertTrue(burnBody.contains("Picker(localizer.t(L.Settings.encodeBackend),"))
+        XCTAssertTrue(burnBody.contains("Picker(localizer.t(L.Settings.burnEncoding),"))
+        XCTAssertTrue(burnBody.contains("Text(localizer.t(L.Settings.followSourceHEVC))"))
+        XCTAssertTrue(burnBody.contains("Text(localizer.t(L.Settings.alwaysH264))"))
+        XCTAssertTrue(burnBody.contains("localizer.t(L.Settings.scaleHD1080)"))
+
+        let loginBody = try XCTUnwrap(functionBody(named: "loginSection", in: source))
+        XCTAssertTrue(loginBody.contains("Section(localizer.t(L.Settings.loginSection))"))
+        XCTAssertTrue(loginBody.contains("Button(localizer.t(L.Settings.loginYouTube))"))
+        XCTAssertTrue(loginBody.contains("Button(localizer.t(L.Settings.loginBilibili))"))
+        XCTAssertTrue(loginBody.contains("Button(localizer.t(L.Settings.clearAppLogin), role: .destructive)"))
+        XCTAssertTrue(loginBody.contains("localizer.t(L.Settings.clearLoginDialogTitle)"))
+        XCTAssertTrue(loginBody.contains("Button(localizer.t(L.Settings.clearLoginAction), role: .destructive)"))
+
+        let bottomBody = try XCTUnwrap(functionBody(named: "bottomBar", in: source))
+        XCTAssertTrue(bottomBody.contains("Button(localizer.t(L.Common.cancel))"))
+        XCTAssertTrue(bottomBody.contains("Button(localizer.t(L.Common.done))"))
+
+        let loginStatusBody = try XCTUnwrap(functionBody(named: "loginStatusText", in: source))
+        XCTAssertTrue(loginStatusBody.contains("localizer.t(L.Settings.loginNone)"))
+        XCTAssertTrue(loginStatusBody.contains("localizer.t(L.Settings.loginSaved"))
+    }
+
     func testAppleTranslationReadinessUsesUserVisibleSourceLanguageContext() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -53,14 +155,15 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             .appendingPathComponent("SettingsView.swift"))
 
         XCTAssertTrue(source.contains("@State private var appleTranslationSourceLanguage"))
-        XCTAssertTrue(source.contains("Picker(\"源语言\""))
+        XCTAssertTrue(source.contains("Picker(localizer.t(L.Settings.sourceLanguage)"))
         XCTAssertTrue(source.contains("appleTranslationReadinessContext()"))
         XCTAssertTrue(source.contains(".onChange(of: appleTranslationSourceLanguage)"))
 
         let readinessContextBody = try XCTUnwrap(functionBody(named: "appleTranslationReadinessContext", in: source))
-        XCTAssertTrue(readinessContextBody.contains("TranslationContext(sourceLanguage: nil, targetLanguage: \"zh-Hans\")"))
-        XCTAssertTrue(readinessContextBody.contains("TranslationContext(sourceLanguage: appleTranslationSourceLanguage, targetLanguage: \"zh-Hans\")"))
-        XCTAssertFalse(readinessContextBody.contains("TranslationContext(targetLanguage: \"zh-Hans\")"))
+        // B：目标语言来自设置（单一漏斗），源语言仍来自用户可见的选择器。
+        XCTAssertTrue(readinessContextBody.contains("draft.makeTranslationContext(sourceLanguage: nil)"))
+        XCTAssertTrue(readinessContextBody.contains("draft.makeTranslationContext(sourceLanguage: appleTranslationSourceLanguage)"))
+        XCTAssertFalse(readinessContextBody.contains("targetLanguage: \"zh-Hans\""))
     }
 
     func testAppleTranslationPickerVisibilityAndRuntimeReadinessUseExpectedContext() throws {
@@ -109,9 +212,11 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         }
 
         let detailBody = try XCTUnwrap(functionBody(named: "credentialDetailText", in: source))
-        for term in technicalTerms {
-            XCTAssertTrue(detailBody.contains(term), "\(term) should remain available in advanced credential help")
-        }
+        XCTAssertTrue(detailBody.contains("localizer.t(L.Settings.credentialDetailAnthropic)"))
+        XCTAssertTrue(detailBody.contains("localizer.t(L.Settings.credentialDetailOpenAI)"))
+        XCTAssertFalse(detailBody.contains("appleTranslation"))
+        XCTAssertFalse(detailBody.contains("appleFoundation"))
+        XCTAssertFalse(detailBody.contains("PCC"))
     }
 
     func testAPICredentialCopyNamesOnlyUserTriggeredNetworkActions() throws {
@@ -121,8 +226,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             .appendingPathComponent("SettingsView.swift"))
 
         let summaryBody = try XCTUnwrap(functionBody(named: "credentialSummaryText", in: source))
-        XCTAssertTrue(summaryBody.contains("凭证只保存在本机设置中。"))
-        XCTAssertTrue(summaryBody.contains("只有点击「拉取模型」或「测试连接」时，才会发送到你填写的服务地址。"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Settings.credentialSummary)"))
         XCTAssertFalse(summaryBody.contains("测试连接前不会发送"))
 
         let apiFieldsBody = try XCTUnwrap(functionBody(named: "apiTranslationFields", in: source))
@@ -173,7 +277,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             range: modelProgressStart.upperBound..<apiFieldsBody.endIndex
         ))
         let modelProgressSnippet = String(apiFieldsBody[modelProgressStart.lowerBound..<modelProgressEnd.lowerBound])
-        XCTAssertTrue(modelProgressSnippet.contains(".accessibilityLabel(\"正在拉取模型\")"))
+        XCTAssertTrue(modelProgressSnippet.contains(".accessibilityLabel(localizer.t(L.Settings.fetchingModels))"))
 
         let testProgressStart = try XCTUnwrap(apiFieldsBody.range(of: "case .testing:"))
         let testProgressEnd = try XCTUnwrap(apiFieldsBody.range(
@@ -181,7 +285,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             range: testProgressStart.upperBound..<apiFieldsBody.endIndex
         ))
         let testProgressSnippet = String(apiFieldsBody[testProgressStart.lowerBound..<testProgressEnd.lowerBound])
-        XCTAssertTrue(testProgressSnippet.contains(".accessibilityLabel(\"正在测试连接\")"))
+        XCTAssertTrue(testProgressSnippet.contains(".accessibilityLabel(localizer.t(L.Settings.testingConnection))"))
     }
 
     func testClearLoginActionExplainsAppScopedSideEffects() throws {
@@ -191,24 +295,22 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             .appendingPathComponent("SettingsView.swift"))
 
         let loginSectionBody = try XCTUnwrap(functionBody(named: "loginSection", in: source))
-        let outerButtonRange = try XCTUnwrap(loginSectionBody.range(of: "Button(\"清除本 App 登录信息\", role: .destructive)"))
+        let outerButtonRange = try XCTUnwrap(loginSectionBody.range(of: "Button(localizer.t(L.Settings.clearAppLogin), role: .destructive)"))
         let confirmationDialogRange = try XCTUnwrap(loginSectionBody.range(of: ".confirmationDialog"))
         let outerClearLoginButton = String(loginSectionBody[outerButtonRange.lowerBound..<confirmationDialogRange.lowerBound])
 
-        XCTAssertTrue(outerClearLoginButton.contains("Button(\"清除本 App 登录信息\", role: .destructive)"))
+        XCTAssertTrue(outerClearLoginButton.contains("Button(localizer.t(L.Settings.clearAppLogin), role: .destructive)"))
         XCTAssertTrue(outerClearLoginButton.contains(".accessibilityHint(clearLoginHelpText)"))
         XCTAssertTrue(loginSectionBody.contains("Text(clearLoginHelpText)"))
-        XCTAssertTrue(loginSectionBody.contains("\"清除本 App 保存的登录信息？\""))
-        XCTAssertTrue(loginSectionBody.contains("Button(\"清除登录信息\", role: .destructive)"))
-        XCTAssertTrue(loginSectionBody.contains("Button(\"取消\", role: .cancel)"))
+        XCTAssertTrue(loginSectionBody.contains("localizer.t(L.Settings.clearLoginDialogTitle)"))
+        XCTAssertTrue(loginSectionBody.contains("Button(localizer.t(L.Settings.clearLoginAction), role: .destructive)"))
+        XCTAssertTrue(loginSectionBody.contains("Button(localizer.t(L.Common.cancel), role: .cancel)"))
         XCTAssertFalse(loginSectionBody.contains("\"确定要清除所有登录吗？\""))
         XCTAssertFalse(loginSectionBody.contains("Button(\"清除所有登录\", role: .destructive)"))
 
         XCTAssertTrue(source.contains("private var clearLoginHelpText"))
         let clearLoginHelpTextBody = try XCTUnwrap(functionBody(named: "clearLoginHelpText", in: source))
-        XCTAssertTrue(clearLoginHelpTextBody.contains("只清除本 App 保存的站点登录信息"))
-        XCTAssertTrue(clearLoginHelpTextBody.contains("不会退出浏览器或系统账号"))
-        XCTAssertTrue(clearLoginHelpTextBody.contains("需要重新登录才能下载会员/受限视频"))
+        XCTAssertTrue(clearLoginHelpTextBody.contains("localizer.t(L.Settings.clearLoginHelp)"))
     }
 
     func testCloudCredentialSurfaceStaysLimitedToAPICompatibleProviders() throws {
@@ -248,17 +350,17 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
 
         let readinessBody = try XCTUnwrap(functionBody(named: "appleTranslationReadiness", in: source))
         XCTAssertTrue(readinessBody.contains(".accessibilityElement(children: .combine)"))
-        XCTAssertTrue(readinessBody.contains(".accessibilityLabel(\"Apple 翻译引擎状态\")"))
-        XCTAssertTrue(readinessBody.contains("let statusText = readiness.isReady ? \"当前可运行\" : \"需要处理\""))
+        XCTAssertTrue(readinessBody.contains(".accessibilityLabel(localizer.t(L.Settings.appleTranslationStatus))"))
+        XCTAssertTrue(readinessBody.contains("let statusText = readiness.isReady ? localizer.t(L.Settings.statusReady) : localizer.t(L.Settings.statusNeedsAction)"))
         XCTAssertTrue(readinessBody.contains(".accessibilityValue(\"\\(draft.aiEngine.displayName)，\\(statusText)：\\(readinessMessage(readiness))\")"))
 
         let guidanceBody = try XCTUnwrap(functionBody(named: "appleSetupGuidance", in: source))
         XCTAssertTrue(guidanceBody.contains("fallbackEngineText"))
         XCTAssertTrue(guidanceBody.contains("Text(fallbackEngineText)"))
-        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(\"如果本机 Apple 能力暂不可用，可以先切换到 API 兼容引擎\")"))
+        XCTAssertTrue(guidanceBody.contains(".accessibilityHint(localizer.t(L.Settings.fallbackEngineHint))"))
 
         let fallbackBody = try XCTUnwrap(functionBody(named: "fallbackEngineText", in: source))
-        XCTAssertTrue(fallbackBody.contains("可先改用 Anthropic-compatible 或 OpenAI-compatible"))
+        XCTAssertTrue(fallbackBody.contains("localizer.t(L.Settings.fallbackEngine)"))
         XCTAssertFalse(fallbackBody.contains("Apple 本机引擎"))
         XCTAssertFalse(fallbackBody.contains("PCC"))
         XCTAssertFalse(fallbackBody.localizedCaseInsensitiveContains("Cloud Pro"))
@@ -275,12 +377,12 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             .appendingPathComponent("SettingsView.swift"))
 
         let readinessBody = try XCTUnwrap(functionBody(named: "appleTranslationReadiness", in: source))
-        XCTAssertTrue(readinessBody.contains("let statusText = readiness.isReady ? \"当前可运行\" : \"需要处理\""))
-        XCTAssertTrue(readinessBody.contains("Text(\"当前引擎\")"))
+        XCTAssertTrue(readinessBody.contains("let statusText = readiness.isReady ? localizer.t(L.Settings.statusReady) : localizer.t(L.Settings.statusNeedsAction)"))
+        XCTAssertTrue(readinessBody.contains("Text(localizer.t(L.Settings.currentEngine))"))
         XCTAssertTrue(readinessBody.contains("Text(draft.aiEngine.displayName)"))
-        XCTAssertTrue(readinessBody.contains("Text(\"状态\")"))
+        XCTAssertTrue(readinessBody.contains("Text(localizer.t(L.Settings.status))"))
         XCTAssertTrue(readinessBody.contains("Text(statusText)"))
-        XCTAssertTrue(readinessBody.contains("Text(\"首要原因\")"))
+        XCTAssertTrue(readinessBody.contains("Text(localizer.t(L.Settings.primaryReason))"))
         XCTAssertTrue(readinessBody.contains("Text(readinessMessage(readiness))"))
         XCTAssertTrue(readinessBody.contains(".accessibilityValue(\"\\(draft.aiEngine.displayName)，\\(statusText)：\\(readinessMessage(readiness))\")"))
         XCTAssertFalse(readinessBody.contains("Text(\"中文字幕翻译状态\")"))
@@ -291,7 +393,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(guidanceBody.contains("Text(fallbackEngineText)"))
 
         let fallbackBody = try XCTUnwrap(functionBody(named: "fallbackEngineText", in: source))
-        XCTAssertTrue(fallbackBody.contains("Anthropic-compatible 或 OpenAI-compatible"))
+        XCTAssertTrue(fallbackBody.contains("localizer.t(L.Settings.fallbackEngine)"))
         XCTAssertFalse(fallbackBody.contains("Apple 本机引擎"))
         XCTAssertFalse(fallbackBody.contains("PCC"))
         XCTAssertFalse(fallbackBody.localizedCaseInsensitiveContains("Cloud Pro"))
@@ -314,12 +416,13 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
 
         XCTAssertTrue(componentRowsBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(componentRowsBody.contains(".accessibilityLabel(componentAccessibilityLabel(component))"))
-        XCTAssertTrue(componentRowsBody.contains(".accessibilityValue(component.isInstalled ? \"已就绪\" : \"待安装\")"))
+        XCTAssertTrue(componentRowsBody.contains(".accessibilityValue(componentReadyText(component))"))
         XCTAssertFalse(componentRowsBody.contains(".accessibilityHint("))
 
         let helperBody = try XCTUnwrap(functionBody(named: "componentAccessibilityLabel", in: source))
         XCTAssertTrue(helperBody.contains("component.id"))
-        XCTAssertTrue(helperBody.contains("component.purpose"))
+        XCTAssertTrue(helperBody.contains("componentPurposeText(component)"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Dependency.componentAccessibilityLabel"))
     }
 
     func testAppleSetupActionButtonsExposeSideEffectHelp() throws {
@@ -330,10 +433,10 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
 
         let guidanceBody = try XCTUnwrap(functionBody(named: "appleSetupGuidance", in: source))
         XCTAssertTrue(guidanceBody.contains("ForEach(guidance.actions)"))
-        XCTAssertTrue(guidanceBody.contains("Button(action.title)"))
+        XCTAssertTrue(guidanceBody.contains("Button(appleSetupActionTitle(action.kind))"))
         XCTAssertTrue(guidanceBody.contains("performAppleSetupAction(action)"))
 
-        let buttonStart = try XCTUnwrap(guidanceBody.range(of: "Button(action.title)"))
+        let buttonStart = try XCTUnwrap(guidanceBody.range(of: "Button(appleSetupActionTitle(action.kind))"))
         let buttonEnd = guidanceBody.range(
             of: ".buttonStyle(.bordered)",
             range: buttonStart.upperBound..<guidanceBody.endIndex
@@ -344,10 +447,9 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("private func appleSetupActionHelpText(_ kind: AppleTranslationSetupActionKind) -> String"))
         let helpTextBody = try XCTUnwrap(functionBody(named: "appleSetupActionHelpText", in: source))
-        XCTAssertTrue(helpTextBody.contains("只重新检查当前 Apple 翻译运行状态，不会下载语言包或模型"))
-        XCTAssertTrue(helpTextBody.contains("打开系统设置，由你在系统里下载语言包；App 不会自动下载"))
-        XCTAssertTrue(helpTextBody.contains("把当前设置草稿切换到 Anthropic-compatible"))
-        XCTAssertTrue(helpTextBody.contains("点击「完成」后才保存"))
+        XCTAssertTrue(helpTextBody.contains("localizer.t(L.Settings.appleActionRefreshHelp)"))
+        XCTAssertTrue(helpTextBody.contains("localizer.t(L.Settings.appleActionOpenLanguageSettingsHelp)"))
+        XCTAssertTrue(helpTextBody.contains("localizer.t(L.Settings.appleActionChooseDifferentEngineHelp)"))
         XCTAssertFalse(helpTextBody.contains("切回 Apple 引擎"))
 
         let appleIntelligenceCaseStart = try XCTUnwrap(
@@ -362,9 +464,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         let appleIntelligenceHelpSnippet = String(
             helpTextBody[appleIntelligenceCaseStart.lowerBound..<appleIntelligenceCaseEnd.lowerBound]
         )
-        XCTAssertTrue(appleIntelligenceHelpSnippet.contains("系统设置 > Apple Intelligence 与 Siri"))
-        XCTAssertTrue(appleIntelligenceHelpSnippet.contains("查看或启用 Apple Intelligence 和模型准备状态"))
-        XCTAssertTrue(appleIntelligenceHelpSnippet.contains("App 不会自动下载、替换模型或更改系统设置"))
+        XCTAssertTrue(appleIntelligenceHelpSnippet.contains("localizer.t(L.Settings.appleActionOpenAppleIntelligenceSettingsHelp)"))
         XCTAssertFalse(appleIntelligenceHelpSnippet.contains("Anthropic-compatible"))
     }
 

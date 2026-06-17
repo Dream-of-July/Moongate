@@ -4,6 +4,13 @@ import SwiftUI
 import MoongateCore
 #endif
 
+enum DependencyInstallFailure: Equatable {
+    case brewLaunchFailed(String)
+    case installCompletedButMissing
+    case installIncomplete(Int32)
+    case uninstallIncomplete(Int32)
+}
+
 /// 依赖组件安装：体检 → `brew install` 缺失项（流式日志）→ 完成后回到业务流程。
 /// Homebrew 不存在时不静默装（curl|bash 不可接受），引导用户去 brew.sh。
 @MainActor
@@ -15,7 +22,7 @@ final class DependencyInstaller: ObservableObject {
     @Published var hasChecked = false
     @Published var isRunning = false
     @Published var log = ""
-    @Published var errorText: String?
+    @Published var error: DependencyInstallFailure?
     /// 正在被 brew 安装/卸载的公式名集合：UI 据此让对应组件行显示旋转 loading。
     @Published var inFlightFormulas: Set<String> = []
 
@@ -59,7 +66,7 @@ final class DependencyInstaller: ObservableObject {
         guard !isRunning, let brew = DependencySetup.brewPath() else { return }
         guard !formulas.isEmpty else { return }
         isRunning = true
-        errorText = nil
+        error = nil
         // 安装时点亮缺失组件行的 loading；卸载时点亮已装组件行。
         inFlightFormulas = Set(formulas)
         log = "$ brew " + subcommand + " " + formulas.joined(separator: " ") + "\n"
@@ -89,7 +96,7 @@ final class DependencyInstaller: ObservableObject {
             process = task
         } catch {
             isRunning = false
-            errorText = "无法启动 Homebrew：\(error.localizedDescription)"
+            self.error = .brewLaunchFailed(error.localizedDescription)
         }
     }
 
@@ -114,13 +121,11 @@ final class DependencyInstaller: ObservableObject {
         inFlightFormulas = []
         if subcommand == "install" {
             if !allInstalled {
-                errorText = status == 0
-                    ? "安装命令执行完成，但仍有组件未就绪，请查看日志。"
-                    : "安装未完成（退出码 \(status)），请查看日志。"
+                error = status == 0 ? .installCompletedButMissing : .installIncomplete(status)
             }
         } else {
             if status != 0 {
-                errorText = "卸载未完成（退出码 \(status)），请查看日志。"
+                error = .uninstallIncomplete(status)
             }
         }
     }
@@ -130,12 +135,13 @@ struct DependencySetupSheet: View {
     @ObservedObject var model: ViewModel
     @StateObject private var installer = DependencyInstaller()
     @State private var showUninstallConfirm = false
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("安装依赖组件")
+            Text(localizer.t(L.Dependency.title))
                 .font(.title3.weight(.semibold))
-            Text("App 调用系统里的命令行工具完成下载与压制。你可以先查看缺失组件，再选择是否安装。")
+            Text(localizer.t(L.Dependency.description))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -145,8 +151,8 @@ struct DependencySetupSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                            .accessibilityLabel("正在检测依赖组件")
-                        Text("正在检测依赖组件…")
+                            .accessibilityLabel(localizer.t(L.Dependency.checkingAccessibility))
+                        Text(localizer.t(L.Dependency.checking))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -160,7 +166,7 @@ struct DependencySetupSheet: View {
                                 .frame(width: 18, height: 18)
                             Text(component.id)
                                 .font(.body.monospaced())
-                            Text(component.purpose)
+                            Text(componentPurposeText(component))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -190,7 +196,7 @@ struct DependencySetupSheet: View {
             if installer.brewAvailable {
                 if !installer.allInstalled {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("安装会调用 Homebrew 执行 brew install，并可能下载这些公式及其依赖：")
+                        Text(localizer.t(L.Dependency.installNotice))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -220,7 +226,7 @@ struct DependencySetupSheet: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(.quaternary.opacity(0.35))
                         )
-                        .accessibilityLabel("Homebrew 安装日志")
+                        .accessibilityLabel(localizer.t(L.Dependency.logAccessibility))
                         .onChange(of: installer.log) {
                             proxy.scrollTo("tail", anchor: .bottom)
                         }
@@ -228,22 +234,22 @@ struct DependencySetupSheet: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("这台 Mac 还没有 Homebrew（macOS 的包管理器），需要先装它：")
+                    Text(localizer.t(L.Dependency.noBrewTitle))
                         .font(.callout)
-                    Text("打开 brew.sh，复制首页的安装命令到「终端」执行；装好后回来点「重新检测」。")
+                    Text(localizer.t(L.Dependency.noBrewDescription))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("打开 brew.sh") {
+                    Button(localizer.t(L.Dependency.openBrew)) {
                         NSWorkspace.shared.open(URL(string: "https://brew.sh/zh-cn/")!)
                     }
                     .buttonStyle(.bordered)
-                    .help("用默认浏览器打开 Homebrew 网站。你需要手动安装 Homebrew，App 不会自动安装 Homebrew。")
-                    .accessibilityHint("会用默认浏览器打开 Homebrew 网站；你需要手动安装 Homebrew，App 不会自动安装 Homebrew。")
+                    .help(localizer.t(L.Dependency.openBrewHelp))
+                    .accessibilityHint(localizer.t(L.Dependency.openBrewHint))
                 }
             }
 
-            if let errorText = installer.errorText {
+            if let errorText = dependencyErrorText(installer.error) {
                 Text(errorText)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -251,35 +257,35 @@ struct DependencySetupSheet: View {
             }
 
             HStack {
-                Button("重新检测") {
+                Button(localizer.t(L.Dependency.refresh)) {
                     Task { await installer.refresh() }
                 }
                 .disabled(installer.isRunning || !installer.hasChecked)
-                .help("重新检查本机依赖状态，不安装或下载任何组件。")
-                .accessibilityHint("只重新检查本机依赖状态，不安装或下载任何组件。")
+                .help(localizer.t(L.Dependency.refreshHelp))
+                .accessibilityHint(localizer.t(L.Dependency.refreshHint))
                 if installer.hasChecked && installer.brewAvailable && installer.hasInstalled {
-                    Button("删除依赖", role: .destructive) {
+                    Button(localizer.t(L.Dependency.deleteDependencies), role: .destructive) {
                         showUninstallConfirm = true
                     }
                     .buttonStyle(.bordered)
                     .tint(.red)
                     .foregroundStyle(.red)
                     .disabled(installer.isRunning)
-                    .help("运行 brew uninstall 卸载已安装的依赖组件（yt-dlp / ffmpeg / deno）。")
-                    .accessibilityHint("会运行 brew uninstall 卸载已安装的依赖组件，删除前会再确认一次。")
+                    .help(localizer.t(L.Dependency.deleteHelp))
+                    .accessibilityHint(localizer.t(L.Dependency.deleteHint))
                 }
                 Spacer()
                 Button {
                     installer.cancel()
                     model.closeDependencySetup()
                 } label: {
-                    Text(installer.isRunning ? "取消安装并关闭" : "关闭")
+                    Text(installer.isRunning ? localizer.t(L.Dependency.cancelInstallAndClose) : localizer.t(L.Common.close))
                 }
                 .help(closeButtonHelpText)
                 .accessibilityHint(closeButtonHelpText)
                 if installer.hasChecked {
                     if installer.allInstalled {
-                        Button("完成") {
+                        Button(localizer.t(L.Dependency.done)) {
                             model.completeDependencySetup()
                         }
                         .buttonStyle(.borderedProminent)
@@ -291,17 +297,17 @@ struct DependencySetupSheet: View {
                                 HStack(spacing: 6) {
                                     ProgressView()
                                         .controlSize(.small)
-                                        .accessibilityLabel("正在安装缺失组件")
-                                    Text("安装中…")
+                                        .accessibilityLabel(localizer.t(L.Dependency.installingMissingAccessibility))
+                                    Text(localizer.t(L.Dependency.installing))
                                 }
                             } else {
-                                Text("用 Homebrew 安装缺失组件")
+                                Text(localizer.t(L.Dependency.installMissing))
                             }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(installer.isRunning)
-                        .help("运行 brew install 安装缺失组件，可能下载 Homebrew 公式及其依赖。")
-                        .accessibilityHint("会运行 brew install 安装缺失组件，可能下载 Homebrew 公式及其依赖。")
+                        .help(localizer.t(L.Dependency.installHelp))
+                        .accessibilityHint(localizer.t(L.Dependency.installHint))
                     }
                 }
             }
@@ -309,18 +315,27 @@ struct DependencySetupSheet: View {
         .padding(20)
         .frame(width: 480)
         .task { await installer.refresh() }
-        .alert("删除依赖组件？", isPresented: $showUninstallConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) {
+        .alert(localizer.t(L.Dependency.uninstallAlertTitle), isPresented: $showUninstallConfirm) {
+            Button(localizer.t(L.Common.cancel), role: .cancel) {}
+            Button(localizer.t(L.Dependency.delete), role: .destructive) {
                 installer.uninstall()
             }
         } message: {
-            Text("将运行 brew uninstall 卸载：\(installer.installedFormulaList)。卸载后这些功能（下载 / 字幕烧录）将不可用，需要时可重新安装。此操作不会删除你已经下载的视频文件。")
+            Text(localizer.t(L.Dependency.uninstallMessage, installer.installedFormulaList))
         }
     }
 
     private func componentAccessibilityLabel(_ component: DependencySetup.Component) -> String {
-        return "\(component.id)，\(component.purpose)"
+        localizer.t(L.Dependency.componentAccessibilityLabel, component.id, componentPurposeText(component))
+    }
+
+    private func componentPurposeText(_ component: DependencySetup.Component) -> String {
+        switch component.id {
+        case "yt-dlp": return localizer.t(L.Dependency.purposeYtDlp)
+        case "ffmpeg": return localizer.t(L.Dependency.purposeFfmpeg)
+        case "deno": return localizer.t(L.Dependency.purposeDeno)
+        default: return component.purpose
+        }
     }
 
     /// 组件行状态图标：进行中=旋转 loading；已装=绿勾；待装=橙色感叹号。
@@ -329,7 +344,7 @@ struct DependencySetupSheet: View {
         if installer.inFlightFormulas.contains(component.formula) {
             ProgressView()
                 .controlSize(.small)
-                .accessibilityLabel("正在处理")
+                .accessibilityLabel(localizer.t(L.Dependency.processingAccessibility))
         } else if component.isInstalled {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -342,14 +357,31 @@ struct DependencySetupSheet: View {
     }
 
     private func componentStatusText(_ component: DependencySetup.Component) -> String {
-        if installer.inFlightFormulas.contains(component.formula) { return "处理中…" }
-        return component.isInstalled ? "已安装" : "待安装"
+        if installer.inFlightFormulas.contains(component.formula) {
+            return localizer.t(L.Dependency.statusProcessing)
+        }
+        return component.isInstalled ? localizer.t(L.Dependency.statusInstalled) : localizer.t(L.Dependency.statusMissing)
     }
 
     private var closeButtonHelpText: String {
         if installer.isRunning {
-            return "终止当前 Homebrew 安装进程并关闭这个窗口；不会自动回滚 Homebrew 已经完成的改动。"
+            return localizer.t(L.Dependency.closeRunningHelp)
         }
-        return "关闭这个窗口，不安装或下载任何组件。"
+        return localizer.t(L.Dependency.closeIdleHelp)
+    }
+
+    private func dependencyErrorText(_ failure: DependencyInstallFailure?) -> String? {
+        switch failure {
+        case .none:
+            return nil
+        case .brewLaunchFailed(let reason):
+            return localizer.t(L.Dependency.brewLaunchFailed, reason)
+        case .installCompletedButMissing:
+            return localizer.t(L.Dependency.installCompletedButMissing)
+        case .installIncomplete(let status):
+            return localizer.t(L.Dependency.installIncomplete, Int(status))
+        case .uninstallIncomplete(let status):
+            return localizer.t(L.Dependency.uninstallIncomplete, Int(status))
+        }
     }
 }

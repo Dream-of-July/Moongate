@@ -12,6 +12,14 @@
     <sys:String x:Key="L.Common.Close">关闭</sys:String>
     <sys:String x:Key="L.Common.OperationFailedFmt">操作失败：{0}</sys:String>
 
+    <!-- 首启引导 -->
+    <sys:String x:Key="L.Onboarding.Title">欢迎使用月之门</sys:String>
+    <sys:String x:Key="L.Onboarding.Subtitle">先选好界面和译文语言。AI 配置可以之后再做，也可以只把它当作视频下载器使用。</sys:String>
+    <sys:String x:Key="L.Onboarding.AppLanguage">界面语言</sys:String>
+    <sys:String x:Key="L.Onboarding.TargetLanguage">翻译目标语言</sys:String>
+    <sys:String x:Key="L.Onboarding.AIOptional">不填写 API 也可以继续下载视频；需要字幕翻译或总结时再到设置配置。</sys:String>
+    <sys:String x:Key="L.Onboarding.Start">开始使用</sys:String>
+
     <!-- 主窗口 -->
     <sys:String x:Key="L.Main.Settings">设置</sys:String>
     <sys:String x:Key="L.Main.Parse">解析</sys:String>
@@ -25,6 +33,7 @@
     <sys:String x:Key="L.Loading.BatchFmt">批量解析中（{0}/{1}）</sys:String>
     <sys:String x:Key="L.Choosing.TitleFmt">这个页面里有 {0} 个视频</sys:String>
     <sys:String x:Key="L.Error.NotAUrl">这不是一个网址。请粘贴以 http 或 https 开头的视频链接。</sys:String>
+    <sys:String x:Key="L.Error.NoAvailableFormat">这个视频没有可下载的格式。</sys:String>
 
     <!-- ready 页 -->
     <sys:String x:Key="L.Ready.Enqueue">加入队列</sys:String>
@@ -36,7 +45,7 @@
     <sys:String x:Key="L.Ready.AutoTag">自动生成</sys:String>
     <sys:String x:Key="L.Ready.ProcessSection">字幕处理</sys:String>
     <sys:String x:Key="L.Mode.Off">不需要</sys:String>
-    <sys:String x:Key="L.Mode.SrtOnly">只生成中文字幕文件</sys:String>
+    <sys:String x:Key="L.Mode.SrtOnly">只生成译文字幕文件</sys:String>
     <sys:String x:Key="L.Mode.BurnIn">翻译并烧录进视频</sys:String>
     <sys:String x:Key="L.Mode.BurnOriginal">直接烧录字幕（不翻译）</sys:String>
     <sys:String x:Key="L.Ready.NotConfigured">未配置翻译服务</sys:String>
@@ -64,8 +73,8 @@
     <sys:String x:Key="L.Hint.SelectSubtitleFirst">先在上面勾选一条字幕</sys:String>
     <sys:String x:Key="L.Hint.WillTranslateFmt">将翻译：{0}</sys:String>
     <sys:String x:Key="L.Hint.WillBurnFmt">将烧录：{0}</sys:String>
-    <sys:String x:Key="L.Hint.ChineseSourceBurn">该字幕已是中文，将直接烧录（不翻译）</sys:String>
-    <sys:String x:Key="L.Hint.ChineseSourceUse">该字幕已是中文，将直接使用（不翻译）</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceBurn">该字幕已是目标语言，将直接烧录（不翻译）</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceUse">该字幕已是目标语言，将直接使用（不翻译）</sys:String>
 
     <!-- 失败页 -->
     <sys:String x:Key="L.Failed.GoLogin">去登录</sys:String>
@@ -126,11 +135,14 @@
     <sys:String x:Key="L.Settings.Title">设置</sys:String>
     <sys:String x:Key="L.Settings.General">通用</sys:String>
     <sys:String x:Key="L.Settings.Language">界面语言</sys:String>
+    <sys:String x:Key="L.Settings.TargetLanguage">翻译目标语言</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">跟随系统</sys:String>
     <sys:String x:Key="L.Settings.LangHint">切换语言立即生效；进行中任务的状态文案在下次刷新时切换。</sys:String>
     <sys:String x:Key="L.Settings.AIService">AI 服务</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">默认 AI 服务会被翻译和总结复用；需要不同模型时可在下方单独覆盖。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻译服务</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">智能翻译提示词</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">开启后，翻译前会先用总结模型分析字幕内容，并按内容类型选择更合适的翻译风格。</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻译跟随默认 AI 服务</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">默认复用上方服务。关闭后可给翻译单独指定模型或网关。</sys:String>
     <sys:String x:Key="L.Settings.Protocol">接口协议</sys:String>
@@ -155,9 +167,9 @@
     <sys:String x:Key="L.Settings.SummaryFollowsDefaultHint">默认使用上方服务。关闭后可给总结单独指定模型或网关。</sys:String>
     <sys:String x:Key="L.Settings.SummaryModelHint">总结会使用这里的模型；留空时总结按钮会显示未配置。</sys:String>
     <sys:String x:Key="L.Settings.SubtitleStyle">字幕样式</sys:String>
-    <sys:String x:Key="L.Settings.StyleLabel">中文字幕样式</sys:String>
-    <sys:String x:Key="L.Settings.StyleBilingual">双语（原文 + 中文）</sys:String>
-    <sys:String x:Key="L.Settings.StyleChineseOnly">仅中文</sys:String>
+    <sys:String x:Key="L.Settings.StyleLabel">译文字幕样式</sys:String>
+    <sys:String x:Key="L.Settings.StyleBilingual">双语（原文 + 译文）</sys:String>
+    <sys:String x:Key="L.Settings.StyleChineseOnly">仅译文</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">烧录画质</sys:String>
     <sys:String x:Key="L.Settings.EncodeBackend">编码方式</sys:String>
     <sys:String x:Key="L.Settings.EncodeAuto">自动</sys:String>

@@ -8,7 +8,7 @@ var packageProducts: [Product] = [
 ]
 
 var packageTargets: [Target] = [
-    // 移动端纯契约：不得依赖桌面 Process/Homebrew/AppKit/Windows 实现。
+    // 纯契约层：不依赖桌面 Process/Homebrew/AppKit/Windows 实现，供核心逻辑复用。
     .target(name: "MoongateMobileCore", path: "Sources/MoongateMobileCore"),
     // 核心逻辑：链接嗅探 + yt-dlp 封装 + 翻译 + 烧录，可被 App 和 CLI 共用
     .target(name: "MoongateCore", dependencies: ["MoongateMobileCore"], path: "Sources/MoongateCore"),
@@ -27,41 +27,7 @@ var packageTargets: [Target] = [
 
 #if os(macOS)
 packageProducts.append(
-    .library(name: "MoongateiOS", targets: ["MoongateiOS"])
-)
-
-packageProducts.append(
-    .executable(name: "MoongateiOSApp", targets: ["MoongateiOSApp"])
-)
-
-packageProducts.append(
     .executable(name: "Moongate", targets: ["Moongate"])
-)
-
-packageTargets.append(
-    // iOS 首版 reviewable shell：只依赖移动端纯契约和 mock 状态，不复用桌面 Process/Homebrew UI。
-    .target(
-        name: "MoongateiOS",
-        dependencies: ["MoongateMobileCore"],
-        path: "Sources/MoongateiOS"
-    )
-)
-
-packageTargets.append(
-    // iOS App host：只组合 iOS shell，后续由 Xcode/iOS 工程接入签名、权限和 entitlements。
-    .executableTarget(
-        name: "MoongateiOSApp",
-        dependencies: ["MoongateiOS"],
-        path: "Sources/MoongateiOSApp"
-    )
-)
-
-packageTargets.append(
-    .testTarget(
-        name: "MoongateiOSTests",
-        dependencies: ["MoongateiOS", "MoongateMobileCore"],
-        path: "Tests/MoongateiOSTests"
-    )
 )
 
 packageTargets.append(
@@ -76,7 +42,7 @@ packageTargets.append(
 
 let package = Package(
     name: "Moongate",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.macOS(.v14)],
     products: packageProducts,
     targets: packageTargets
 )

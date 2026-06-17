@@ -373,7 +373,7 @@ public sealed class MainViewModel : ObservableObject
         RaisePropertyChanged(nameof(SummaryUnavailableReason));
     }
 
-    // MARK: - 中文字幕
+    // MARK: - 字幕处理
 
     private ChineseSubtitleMode _chineseMode = ChineseSubtitleMode.Off;
     public ChineseSubtitleMode ChineseMode
@@ -425,12 +425,12 @@ public sealed class MainViewModel : ObservableObject
         return chosen.FirstOrDefault(subtitle => !subtitle.IsAuto) ?? chosen.FirstOrDefault();
     }
 
-    /// <summary>实际翻译源字幕是否已是中文（lang code 以 zh 开头）。中文源会跳过翻译、直接使用/烧录。</summary>
-    private bool TranslationSourceIsChinese()
+    /// <summary>实际翻译源字幕是否已与翻译目标语言同一脚本（同则跳过翻译、直接使用/烧录）。</summary>
+    private bool TranslationSourceMatchesTarget()
     {
         var source = TranslationSourceSubtitle();
         if (source is null) return false;
-        return source.Id.ToLowerInvariant().Split('-')[0] == "zh";
+        return TranslationLanguage.Matches(source.Id, Settings.TranslationTargetLanguage);
     }
 
     public string? ChineseHintText
@@ -458,7 +458,7 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>翻译类模式下源字幕已是中文的提示；直压模式本就不翻译，无需提示。</summary>
     public string? ChineseSourceNote =>
-        _chineseMode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn && TranslationSourceIsChinese()
+        _chineseMode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn && TranslationSourceMatchesTarget()
             ? (_chineseMode == ChineseSubtitleMode.BurnIn
                 ? Loc.S("L.Hint.ChineseSourceBurn")
                 : Loc.S("L.Hint.ChineseSourceUse"))
@@ -479,7 +479,7 @@ public sealed class MainViewModel : ObservableObject
 
     internal void OnSubtitleSelectionChanged()
     {
-        // 中文字幕依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
+        // 字幕处理依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
         if (!HasSubtitleSelected && _chineseMode != ChineseSubtitleMode.Off)
         {
             ChineseMode = ChineseSubtitleMode.Off;
@@ -748,7 +748,7 @@ public sealed class MainViewModel : ObservableObject
     // MARK: - 行为：批量入队
 
     /// <summary>批量模式：逐个解析（多候选页取第一个，即页面主视频），按最高画质自动入队。
-    /// 当前已选「中文字幕」模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。</summary>
+    /// 当前已选字幕处理模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。</summary>
     private void ProcessBatch(List<string> urls)
     {
         var mode = _chineseMode;
@@ -790,13 +790,13 @@ public sealed class MainViewModel : ObservableObject
                 if (token != _session) return;
                 info = PreferCandidateTitle(info, candidate);
                 var formatId = info.Formats.FirstOrDefault()?.Id
-                    ?? throw MoongateException.AnalyzeFailed("没有可用格式");
+                    ?? throw MoongateException.AnalyzeFailed(Loc.T("L.Error.NoAvailableFormat"));
                 if (Queue.HasOpenDuplicate(info.VideoId, info.SourceUrl, formatId))
                 {
                     duplicated++;
                     continue;
                 }
-                // 中文字幕模式开启时自动选一条字幕作翻译源（真实字幕优先）
+                // 字幕处理开启时自动选一条字幕作翻译源（真实字幕优先）
                 var subtitleLangs = new List<string>();
                 var autoSubtitleLangs = new List<string>();
                 if (mode != ChineseSubtitleMode.Off)
@@ -1174,7 +1174,7 @@ public sealed class MainViewModel : ObservableObject
     }
 }
 
-/// <summary>字幕多选里的一行。勾选状态变化回调主视图模型以联动「中文字幕」分组。</summary>
+/// <summary>字幕多选里的一行。勾选状态变化回调主视图模型以联动字幕处理分组。</summary>
 public sealed class SubtitleOptionViewModel : ObservableObject
 {
     private readonly MainViewModel _owner;

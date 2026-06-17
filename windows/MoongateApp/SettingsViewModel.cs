@@ -34,6 +34,7 @@ public sealed class SettingsViewModel : ObservableObject
         _aiAuthToken = current.AIAuthToken;
         _aiModel = current.AIModel;
         _translationFollowsDefault = current.TranslationFollowsDefault;
+        _smartTranslationPromptsEnabled = current.SmartTranslationPromptsEnabled;
         _provider = current.TranslationProvider;
         _baseUrl = current.TranslationBaseUrl;
         _authToken = current.TranslationAuthToken;
@@ -44,7 +45,9 @@ public sealed class SettingsViewModel : ObservableObject
         _summaryAuthToken = current.SummaryAuthToken;
         _summaryModel = current.SummaryModel;
         _styleIndex = current.SubtitleStyle == SubtitleStyle.ChineseOnly ? 1 : 0;
-        _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "en" => 2, _ => 0 };
+        _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "zh-Hant" => 2, "en" => 3, _ => 0 };
+        _targetLanguageIndex = current.TranslationTargetLanguage switch { "zh-Hant" => 1, "en" => 2, _ => 0 };
+        _onboardingCompleted = current.OnboardingCompleted;
         _limitBurnTo1080 = current.MaxBurnHeight is not null;
         _encodeBackend = current.EncodeBackend;
         _burnAlwaysH264 = current.BurnAlwaysH264;
@@ -164,6 +167,13 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     public bool ShowTranslationOverride => !TranslationFollowsDefault;
+
+    private bool _smartTranslationPromptsEnabled;
+    public bool SmartTranslationPromptsEnabled
+    {
+        get => _smartTranslationPromptsEnabled;
+        set => SetProperty(ref _smartTranslationPromptsEnabled, value);
+    }
 
     private TranslationProvider _provider;
     /// <summary>0 = Anthropic 兼容，1 = OpenAI 兼容。</summary>
@@ -493,8 +503,14 @@ public sealed class SettingsViewModel : ObservableObject
     public int StyleIndex { get => _styleIndex; set => SetProperty(ref _styleIndex, value); }
 
     private int _languageIndex;
-    /// <summary>界面语言：0 = 跟随系统（auto），1 = 简体中文，2 = English。点「完成」后生效。</summary>
+    /// <summary>界面语言：0 = 跟随系统（auto），1 = 简体中文，2 = 繁體中文，3 = English。点「完成」后生效。</summary>
     public int LanguageIndex { get => _languageIndex; set => SetProperty(ref _languageIndex, value); }
+
+    private int _targetLanguageIndex;
+    /// <summary>翻译目标语言：0 = 简体中文，1 = 繁體中文，2 = English。</summary>
+    public int TargetLanguageIndex { get => _targetLanguageIndex; set => SetProperty(ref _targetLanguageIndex, value); }
+
+    private readonly bool _onboardingCompleted;
 
     private bool _limitBurnTo1080;
     /// <summary>勾选 = MaxBurnHeight 1080；关闭 = null（保持源分辨率）。</summary>
@@ -652,6 +668,7 @@ public sealed class SettingsViewModel : ObservableObject
         AIModel = AIModel,
         AIAuthToken = AIAuthToken,
         TranslationFollowsDefault = TranslationFollowsDefault,
+        SmartTranslationPromptsEnabled = SmartTranslationPromptsEnabled,
         SummaryFollowsDefault = SummaryFollowsDefault,
         SummaryProvider = _summaryProvider,
         SummaryBaseUrl = SummaryBaseUrl,
@@ -663,7 +680,9 @@ public sealed class SettingsViewModel : ObservableObject
         BurnAlwaysH264 = BurnAlwaysH264,
         MaxConcurrentDownloads = MaxDownloads,
         MaxConcurrentBurns = MaxBurns,
-        AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "en", _ => "auto" },
+        AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "zh-Hant", 3 => "en", _ => "auto" },
+        TranslationTargetLanguage = TargetLanguageIndex switch { 1 => "zh-Hant", 2 => "en", _ => "zh-Hans" },
+        OnboardingCompleted = _onboardingCompleted,
     };
 
     public bool TrySave(out string? error)
@@ -698,8 +717,8 @@ public sealed class SettingsViewModel : ObservableObject
     ) => new()
     {
         TranslationProvider = provider,
-        TranslationBaseUrl = baseUrl,
-        TranslationModel = model,
+        TranslationBaseUrl = baseUrl.Trim(),
+        TranslationModel = model.Trim(),
         TranslationAuthToken = authToken,
         TranslationFollowsDefault = false,
     };

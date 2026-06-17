@@ -103,17 +103,17 @@ public sealed class DependencyManager
         foreach (var plan in plans)
         {
             ct.ThrowIfCancellationRequested();
-            progress?.Report(L10n.T($"正在下载 {plan.Name}…", $"Downloading {plan.Name}…"));
+            progress?.Report(L10n.T($"正在下载 {plan.Name}…", $"正在下載 {plan.Name}…", $"Downloading {plan.Name}…"));
             await DownloadAndInstallAsync(plan, ct).ConfigureAwait(false);
         }
-        progress?.Report(L10n.T("依赖组件已就绪", "All components are ready"));
+        progress?.Report(L10n.T("依赖组件已就绪", "依賴元件已就緒", "All components are ready"));
     }
 
     /// <summary>单独更新 yt-dlp（站点规则频繁变化，提供手动更新入口）。</summary>
     public async Task UpdateYtDlpAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_binDirectory);
-        progress?.Report(L10n.T("正在下载 yt-dlp…", "Downloading yt-dlp…"));
+        progress?.Report(L10n.T("正在下载 yt-dlp…", "正在下載 yt-dlp…", "Downloading yt-dlp…"));
         await DownloadAndInstallAsync(new DependencyDownload
         {
             Name = "yt-dlp",
@@ -121,7 +121,7 @@ public sealed class DependencyManager
             Kind = DependencyDownload.DownloadKind.Executable,
             ProvidesFiles = ["yt-dlp.exe"],
         }, ct).ConfigureAwait(false);
-        progress?.Report(L10n.T("yt-dlp 已更新", "yt-dlp updated"));
+        progress?.Report(L10n.T("yt-dlp 已更新", "yt-dlp 已更新", "yt-dlp updated"));
     }
 
     private async Task DownloadAndInstallAsync(DependencyDownload plan, CancellationToken ct)
@@ -149,6 +149,7 @@ public sealed class DependencyManager
                     {
                         throw new IOException(L10n.T(
                             $"{plan.Name} 下载不完整（{actual}/{total} 字节），可能是网络中断或代理抖动，请重试。",
+                            $"{plan.Name} 下載不完整（{actual}/{total} 位元組），可能是網路中斷或代理抖動，請重試。",
                             $"{plan.Name} download was incomplete ({actual}/{total} bytes); the network or proxy may have dropped. Please retry."));
                     }
                 }
@@ -213,6 +214,7 @@ public sealed class DependencyManager
         {
             throw new InvalidDataException(L10n.T(
                 $"压缩包里缺少预期文件：{string.Join(", ", remaining.Keys)}",
+                $"壓縮包裡缺少預期檔案：{string.Join(", ", remaining.Keys)}",
                 $"The archive is missing expected files: {string.Join(", ", remaining.Keys)}"));
         }
     }

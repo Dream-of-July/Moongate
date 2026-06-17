@@ -43,12 +43,12 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
 
         #if canImport(Translation)
         guard #available(macOS 26.0, iOS 26.0, *) else {
-            throw MoongateError.translateFailed("当前系统版本不支持 Apple Translation 执行。需要 macOS 26 或 iOS 26 及以上。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationUnsupportedOS))
         }
 
         if request.engine == .appleTranslationHighFidelity {
             guard #available(macOS 26.4, iOS 26.4, *) else {
-                throw MoongateError.translateFailed("Apple Translation 高保真模式需要 macOS 26.4 或 iOS 26.4 及以上。")
+                throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationHighFidelityUnsupportedOS))
             }
         }
 
@@ -65,14 +65,18 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
                 target: target
             )
         case .supported:
-            throw MoongateError.translateFailed("系统支持当前 Apple Translation 语言组合，但需要先在系统设置中下载对应语言包。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationNeedsLanguageDownload))
         case .unsupported:
-            throw MoongateError.translateFailed("当前 Apple Translation 语言组合暂不支持：\(sourceIdentifier) → \(targetIdentifier)。")
+            throw MoongateError.translateFailed(CoreL10n.t(
+                L.Core.appleTranslationUnsupportedPair,
+                sourceIdentifier,
+                targetIdentifier
+            ))
         @unknown default:
-            throw MoongateError.translateFailed("无法确认当前 Apple Translation 语言组合是否可用。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationUnknownPair))
         }
         #else
-        throw MoongateError.translateFailed("当前构建不包含 Translation.framework，无法执行 Apple Translation。")
+        throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationFrameworkMissing))
         #endif
     }
 
@@ -80,7 +84,7 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
         let identifier = context.sourceLanguage?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !identifier.isEmpty else {
-            throw MoongateError.translateFailed("Apple Translation 需要明确源语言。请先选择或推断源字幕语言后重试。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationNeedsSourceLanguage))
         }
         return identifier
     }
@@ -88,7 +92,7 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
     private static func requiredTargetLanguage(from context: TranslationContext) throws -> String {
         let identifier = context.targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !identifier.isEmpty else {
-            throw MoongateError.translateFailed("当前 Apple Translation 语言组合暂不支持：目标语言为空。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationEmptyTarget))
         }
         return identifier
     }
@@ -107,7 +111,7 @@ private func executeInstalledTranslation(
     switch request.engine {
     case .appleTranslationHighFidelity:
         guard #available(macOS 26.4, iOS 26.4, *) else {
-            throw MoongateError.translateFailed("Apple Translation 高保真模式需要 macOS 26.4 或 iOS 26.4 及以上。")
+            throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationHighFidelityUnsupportedOS))
         }
         session = TranslationSession(
             installedSource: source,
@@ -129,7 +133,7 @@ private func executeInstalledTranslation(
          .appleFoundationOnDevice,
          .appleFoundationPCC,
          .appleFoundationCloudPro:
-        throw MoongateError.translateFailed("当前翻译引擎不支持 Apple Translation 执行 adapter。")
+        throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationUnsupportedAdapter))
     }
 
     let translationRequests = request.segments.map { segment in
@@ -156,7 +160,10 @@ private func executeInstalledTranslation(
     } catch is CancellationError {
         throw MoongateError.cancelled
     } catch {
-        throw MoongateError.translateFailed("Apple Translation 执行失败：\(error.localizedDescription)")
+        throw MoongateError.translateFailed(CoreL10n.t(
+            L.Core.appleTranslationExecutionFailed,
+            error.localizedDescription
+        ))
     }
 }
 #endif

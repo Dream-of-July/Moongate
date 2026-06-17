@@ -14,6 +14,41 @@ public static partial class SrtTools
     [GeneratedRegex(@"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})")]
     private static partial Regex TimeLineRegex();
 
+    [GeneratedRegex(@"[\[\(（【]\s*([^\]\)）】]{1,48})\s*[\]\)）】]", RegexOptions.IgnoreCase)]
+    private static partial Regex NonSpeechMarkerRegex();
+
+    [GeneratedRegex(@"[\p{L}\p{Nd}]+")]
+    private static partial Regex WordTokenRegex();
+
+    private static readonly HashSet<string> NonSpeechMarkerTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
+        "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
+        "音乐", "音樂", "背景音乐", "背景音樂", "歌声", "歌聲",
+        "applause", "applauding", "clapping", "claps", "applausecontinues", "clappingcontinues",
+        "掌声", "掌聲", "掌声继续", "掌聲繼續", "鼓掌", "鼓掌声", "鼓掌聲", "拍手", "拍手声", "拍手聲",
+        "laughter", "laugh", "laughs", "laughing", "chuckle", "chuckles", "chuckling", "giggle",
+        "giggles", "giggling", "snicker", "snickers", "laughingcontinues",
+        "笑", "笑声", "笑聲", "笑声继续", "笑聲繼續", "大笑", "轻笑", "輕笑", "哄笑", "偷笑", "笑い", "笑い声",
+        "risa", "risas", "rire", "rires", "lachen", "gelächter", "웃음",
+        "cry", "crying", "sobbing", "sob", "sobs", "weeping", "sniffles", "sniffling",
+        "哭", "哭声", "哭聲", "哭泣", "啜泣", "抽泣", "llanto", "pleurs", "weinen",
+        "cheer", "cheers", "cheering", "crowdcheering", "audiencecheering", "欢呼", "歡呼", "喝彩",
+        "sigh", "sighs", "sighing", "叹气", "嘆氣", "叹息", "嘆息",
+        "cough", "coughs", "coughing", "咳嗽",
+        "sneeze", "sneezes", "sneezing", "喷嚏", "噴嚏", "打喷嚏", "打噴嚏",
+        "gasp", "gasps", "gasping", "breathing", "heavybreathing", "panting", "喘息", "喘气", "喘氣", "呼吸声", "呼吸聲",
+        "scream", "screams", "screaming", "yell", "yells", "groan", "groans", "groaning", "moan", "moans", "moaning",
+        "尖叫", "喊叫", "呻吟", "低吟",
+        "inaudible", "unintelligible", "silence", "silent", "noise", "noises", "static",
+        "backgroundnoise", "ambientnoise", "murmur", "murmurs", "murmuring",
+        "听不清", "聽不清", "无法听清", "無法聽清", "沉默", "静音", "靜音", "噪音", "杂音", "雜音", "背景音", "背景噪音",
+        "dooropens", "doorcloses", "phonerings", "phoneringing", "ringing", "footsteps", "steps",
+        "knocking", "knocks", "beep", "beeping", "bellrings", "alarm", "siren", "windblowing", "rainfalling",
+        "门开", "門開", "开门", "開門", "关门", "關門", "门关", "門關", "脚步", "腳步", "脚步声", "腳步聲",
+        "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲",
+    };
+
     /// <summary>
     /// 解析 SRT 文本为字幕条。按时间行锚定切条（而非按空行切块）：
     /// YouTube 滚动字幕的文本里常夹空行/纯空白行，按空行切块会把后半句当成
@@ -115,9 +150,11 @@ public static partial class SrtTools
             var start = SrtTimeToSeconds(input[i].Start);
             var end = SrtTimeToSeconds(input[i].End);
             if (start is null || end is null) continue;
-            timed.Add(new TimedCue(start.Value, Math.Max(end.Value, start.Value), input[i].Text, i));
+            var text = StripNonSpeechMarkers(input[i].Text);
+            if (text.Length == 0) continue;
+            timed.Add(new TimedCue(start.Value, Math.Max(end.Value, start.Value), text, i));
         }
-        if (timed.Count == 0) return input;
+        if (timed.Count == 0) return [];
         timed.Sort((x, y) => x.Start != y.Start ? x.Start.CompareTo(y.Start) : x.Order.CompareTo(y.Order));
 
         // (e) 滚动判定一：时间戳重叠（样式 A）——相邻条 start < 上一条 end 的比例 > 50%
@@ -197,8 +234,14 @@ public static partial class SrtTools
             curText = "";
         }
 
-        foreach (var t in timed)
+        const double softDuration = 6.0;
+        const int softCharacterBudget = 84;
+        const double hardDuration = 18.0;
+        const int hardCharacterBudget = 220;
+
+        for (var i = 0; i < timed.Count; i++)
         {
+            var t = timed[i];
             var piece = NormalizeWhitespace(t.Text);
             if (!hasCurrent)
             {
@@ -212,9 +255,15 @@ public static partial class SrtTools
                 curText = NormalizeWhitespace(curText + " " + piece);
                 curEnd = t.End;
             }
-            var longEnough = curEnd - curStart >= 6.0;
-            var charsEnough = curText.Length >= 84;
-            if (EndsSentence(curText) || longEnough || charsEnough)
+            var nextPiece = i + 1 < timed.Count ? NormalizeWhitespace(timed[i + 1].Text) : null;
+            double? nextGap = i + 1 < timed.Count ? timed[i + 1].Start - curEnd : null;
+            var hardLimitReached = curEnd - curStart >= hardDuration || curText.Length >= hardCharacterBudget;
+            var softLimitReached = curEnd - curStart >= softDuration || curText.Length >= softCharacterBudget;
+            var shouldHoldForContinuation = LooksLikeContinuation(curText, nextPiece);
+            if (EndsSentence(curText)
+                || nextGap is > 1.2
+                || hardLimitReached
+                || (softLimitReached && !shouldHoldForContinuation))
             {
                 Flush();
             }
@@ -248,11 +297,79 @@ public static partial class SrtTools
         return 0;
     }
 
-    private static string NormalizeWhitespace(string s) =>
-        string.Join(' ', s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    private static string NormalizeWhitespace(string s)
+    {
+        var collapsed = string.Join(' ', s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return RemoveSpacesBetweenCjkCharacters(collapsed);
+    }
+
+    private static string RemoveSpacesBetweenCjkCharacters(string text)
+    {
+        if (text.Length < 3) return text;
+        var builder = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (ch == ' ' && i > 0 && i < text.Length - 1 && IsCjkSubtitleCharacter(text[i - 1]) && IsCjkSubtitleCharacter(text[i + 1]))
+            {
+                continue;
+            }
+            builder.Append(ch);
+        }
+        return builder.ToString();
+    }
+
+    private static bool IsCjkSubtitleCharacter(char ch) =>
+        ch is >= '\u3400' and <= '\u4DBF'
+        or >= '\u4E00' and <= '\u9FFF'
+        or >= '\u3040' and <= '\u30FF'
+        or >= '\uAC00' and <= '\uD7AF';
+
+    private static string StripNonSpeechMarkers(string text)
+    {
+        var lines = new List<string>();
+        foreach (var rawLine in text.Split('\n'))
+        {
+            var line = NonSpeechMarkerRegex().Replace(rawLine, match =>
+            {
+                var marker = NormalizeNonSpeechMarker(match.Groups[1].Value);
+                return NonSpeechMarkerTerms.Contains(marker) ? " " : match.Value;
+            });
+            line = NormalizeWhitespace(line);
+            if (line.Length > 0) lines.Add(line);
+        }
+        return string.Join('\n', lines);
+    }
+
+    private static string NormalizeNonSpeechMarker(string raw)
+    {
+        var builder = new StringBuilder();
+        foreach (var ch in raw.ToLowerInvariant())
+        {
+            if (char.IsWhiteSpace(ch) || ch is '-' or '_' or '.' or '!' or '?' or '！' or '？') continue;
+            builder.Append(ch);
+        }
+        return builder.ToString();
+    }
 
     private static readonly HashSet<char> SentenceEnders = ['.', '!', '?', '。', '！', '？'];
     private static readonly HashSet<char> TrailingAllowed = ['"', '\'', '”', '’', ')', '）', '」', '』', ']'];
+    private static readonly HashSet<string> ContinuationStarts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "if", "that", "which", "who", "whom", "whose", "when", "where", "why", "how",
+        "and", "or", "but", "because", "so", "then", "than", "to", "of", "for", "with",
+        "as", "in", "on", "at", "by", "from", "do", "does", "did", "is", "are", "was",
+        "were", "be", "been", "being", "have", "has", "had", "can", "could", "would",
+        "will", "should", "may", "might", "must", "not",
+    };
+    private static readonly HashSet<string> ContinuationEnds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "the", "a", "an", "and", "or", "but", "if", "that", "which", "who", "what",
+        "when", "where", "why", "how", "to", "of", "for", "with", "from", "as",
+        "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+        "have", "has", "had", "can", "could", "would", "will", "should", "may",
+        "might", "must", "we", "you", "i", "they", "he", "she", "it",
+    };
 
     private static bool EndsSentence(string text)
     {
@@ -264,6 +381,20 @@ public static partial class SrtTools
         }
         return end > 0 && SentenceEnders.Contains(text[end - 1]);
     }
+
+    private static bool LooksLikeContinuation(string current, string? nextPiece)
+    {
+        if (nextPiece is null || EndsSentence(current)) return false;
+        var currentWords = WordTokens(current);
+        var nextWords = WordTokens(nextPiece);
+        if (currentWords.Count == 0 || nextWords.Count == 0) return false;
+        return ContinuationEnds.Contains(currentWords[^1]) || ContinuationStarts.Contains(nextWords[0]);
+    }
+
+    private static List<string> WordTokens(string text) =>
+        WordTokenRegex().Matches(text.ToLowerInvariant())
+            .Select(match => match.Value)
+            .ToList();
 
     /// <summary>
     /// 调试辅助：只清洗不翻译（解析 → CleanCues → 序列化），输出 "&lt;名&gt;.clean.srt"。
@@ -279,12 +410,14 @@ public static partial class SrtTools
         catch
         {
             throw MoongateException.TranslateFailed(L10n.T($"无法读取字幕文件：{Path.GetFileName(path)}",
+                $"無法讀取字幕檔：{Path.GetFileName(path)}",
                 $"Could not read the subtitle file: {Path.GetFileName(path)}"));
         }
         var parsed = ParseSrt(raw);
         if (parsed.Count == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("字幕文件里没有可识别的字幕内容。",
+                "字幕檔中沒有可辨識的字幕內容。",
                 "No recognizable subtitles in this file."));
         }
         var cleaned = CleanCues(parsed);
@@ -360,7 +493,7 @@ public static class TranslationApi
             || (url.Scheme != "http" && url.Scheme != "https")
             || string.IsNullOrEmpty(url.Host))
         {
-            throw MoongateException.TranslateFailed(L10n.T("服务地址无效", "Invalid service URL"));
+            throw MoongateException.TranslateFailed(L10n.T("服务地址无效", "服務地址無效", "Invalid service URL"));
         }
         return url;
     }
@@ -385,7 +518,7 @@ public static class TranslationApi
             // 非 JSON 响应：走 fallback
         }
         var fallback = body.Length > 200 ? body[..200].Trim() : body.Trim();
-        return decoded ?? (fallback.Length == 0 ? L10n.T("请求失败", "Request failed") : fallback);
+        return decoded ?? (fallback.Length == 0 ? L10n.T("请求失败", "請求失敗", "Request failed") : fallback);
     }
 
     internal static string RequestFailureMessage(int statusCode, string body, AppSettings settings)
@@ -394,14 +527,16 @@ public static class TranslationApi
         var lowerMessage = message.ToLowerInvariant();
         if (statusCode != 503 && !lowerMessage.Contains("no available accounts"))
         {
-            return L10n.T($"HTTP {statusCode}：{message}", $"HTTP {statusCode}: {message}");
+            return L10n.T($"HTTP {statusCode}：{message}", $"HTTP {statusCode}：{message}", $"HTTP {statusCode}: {message}");
         }
 
         var model = settings.TranslationModel.Trim();
         var modelTextZh = model.Length == 0 ? "已填写" : $"「{model}」";
+        var modelTextZhHant = model.Length == 0 ? "已填寫" : $"「{model}」";
         var modelTextEn = model.Length == 0 ? "(empty)" : $"\"{model}\"";
         return L10n.T(
             $"HTTP {statusCode}：网关没有可用账号或模型映射未命中。请确认模型名 {modelTextZh} 在公司网关里已登记——点「拉取模型」选一个网关实际提供的模型。原始错误：{message}",
+            $"HTTP {statusCode}：網關沒有可用帳號或模型映射未命中。請確認模型名稱 {modelTextZhHant} 已在公司網關登記，點「拉取模型」選一個網關實際提供的模型。原始錯誤：{message}",
             $"HTTP {statusCode}: the gateway has no available account or the model mapping was not found. Make sure model {modelTextEn} is registered on your gateway — use \"Fetch models\" to pick one it actually serves. Original error: {message}");
     }
 
@@ -421,12 +556,14 @@ public static class TranslationApi
         if (model.Length == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("尚未配置模型，请在设置里填写模型名称。",
+                "尚未設定模型，請在設定裡填寫模型名稱。",
                 "No model configured. Enter a model name in Settings."));
         }
         var token = NormalizedToken(settings.TranslationAuthToken);
         if (token.Length == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("尚未配置 API 凭证，请在设置里填写。",
+                "尚未設定 API 憑證，請在設定裡填寫。",
                 "No API credential configured. Enter it in Settings."));
         }
         return (model, token);
@@ -507,6 +644,7 @@ public static class TranslationApi
             // 落到下面的协议错误
         }
         throw MoongateException.TranslateFailed(L10n.T("服务响应不符合 Anthropic Messages 协议，请检查服务地址。",
+            "服務回應不符合 Anthropic Messages 協定，請檢查服務地址。",
             "The response does not match the Anthropic Messages protocol. Check the service URL."));
     }
 
@@ -555,6 +693,7 @@ public static class TranslationApi
         catch (JsonException)
         {
             throw MoongateException.TranslateFailed(L10n.T("服务响应不符合 OpenAI Responses 协议，请检查服务地址。",
+                "服務回應不符合 OpenAI Responses 協定，請檢查服務地址。",
                 "The response does not match the OpenAI Responses protocol. Check the service URL."));
         }
         using (doc)
@@ -563,6 +702,7 @@ public static class TranslationApi
             if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
             {
                 throw MoongateException.TranslateFailed(L10n.T("服务响应不符合 OpenAI Responses 协议，请检查服务地址。",
+                    "服務回應不符合 OpenAI Responses 協定，請檢查服務地址。",
                     "The response does not match the OpenAI Responses protocol. Check the service URL."));
             }
             var textParts = new List<string>();
@@ -584,6 +724,7 @@ public static class TranslationApi
             if (joined.Length == 0)
             {
                 throw MoongateException.TranslateFailed(L10n.T("OpenAI 响应里没有文本内容，请检查模型或服务地址。",
+                    "OpenAI 回應中沒有文字內容，請檢查模型或服務地址。",
                     "The OpenAI response contains no text. Check the model or service URL."));
             }
             var status = root.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
@@ -627,11 +768,13 @@ public static class TranslationApi
             {
                 // HttpClient 超时（非外部取消）
                 throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
+                    "無法連線到翻譯服務，請檢查服務地址與網路。",
                     "Could not reach the translation service. Check the service URL and your network."));
             }
             catch (HttpRequestException)
             {
                 throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
+                    "無法連線到翻譯服務，請檢查服務地址與網路。",
                     "Could not reach the translation service. Check the service URL and your network."));
             }
 
@@ -705,6 +848,7 @@ public static class TranslationApi
         {
             throw MoongateException.TranslateFailed(L10n.T(
                 "AI 没有返回可用的总结内容，请稍后重试或更换模型。",
+                "AI 沒有返回可用的摘要內容，請稍後重試或更換模型。",
                 "The AI returned no summary. Try again later or switch models."));
         }
         return text;
@@ -722,6 +866,7 @@ public static class TranslationApi
         if (token.Length == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("尚未配置 API 凭证，请先填写凭证再拉取模型。",
+                "尚未設定 API 憑證，請先填寫憑證再拉取模型。",
                 "No API credential configured. Enter it before fetching models."));
         }
         var url = EndpointUrl(settings.TranslationBaseUrl, "/v1/models");
@@ -758,6 +903,7 @@ public static class TranslationApi
         catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
         {
             throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
+                "無法連線到翻譯服務，請檢查服務地址與網路。",
                 "Could not reach the translation service. Check the service URL and your network."));
         }
 
@@ -769,6 +915,7 @@ public static class TranslationApi
         if (ids.Count == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("服务返回的模型列表为空，请手动填写模型名。",
+                "服務返回的模型清單為空，請手動填寫模型名稱。",
                 "The service returned an empty model list. Enter a model name manually."));
         }
         return ids;
@@ -849,6 +996,27 @@ public static class TranslationApi
 
 // MARK: - ConfiguredTranslator
 
+public enum TranslationPromptPreset
+{
+    General,
+    SongLyrics,
+    InterviewConversation,
+    TutorialHowTo,
+    LectureCourse,
+    NewsExplainer,
+    ReviewProduct,
+    VlogLifestyle,
+    ShortSocial,
+    DocumentaryNarrative,
+    GamingEntertainment,
+}
+
+public sealed record TranslationPromptAdvice(
+    string Summary,
+    string Context,
+    IReadOnlyList<string> Terms,
+    TranslationPromptPreset Preset);
+
 /// <summary>
 /// 通过设置里选择的协议翻译字幕。服务地址、模型、凭证全部来自 AppSettings。
 /// handler 供测试注入 fake HTTP。
@@ -863,10 +1031,109 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// <summary>最多同时在途的分块请求数。</summary>
     private const int MaxInFlight = 3;
 
-    private const string SystemPrompt =
-        "你是专业字幕翻译。把用户给出的字幕逐条翻译成简体中文。" +
-        "输入每行格式为 编号|原文。输出必须严格逐行 编号|中文译文，" +
-        "行数与输入一致，不要输出任何其他内容。口语自然、简洁，保留专有名词。";
+    /// <summary>翻译系统提示词。目标语言由设置决定（简体中文 / 繁體中文 / English），不再写死。</summary>
+    internal static string SystemPrompt(string targetLanguageDisplayName, TranslationPromptAdvice? advice = null)
+    {
+        var prompt = $"你是专业字幕翻译。把用户给出的字幕逐条翻译成{targetLanguageDisplayName}。" +
+            "输入每行格式为 编号|原文。输出必须严格逐行 编号|译文，" +
+            "行数与输入一致，不要输出任何其他内容。口语自然、简洁，保留专有名词。";
+        if (advice is null) return prompt;
+        prompt += $"\n\n翻译前上下文：\n内容摘要：{advice.Summary}";
+        if (advice.Context.Length > 0)
+        {
+            prompt += $"\n人物/场景/发生的事：{advice.Context}";
+        }
+        if (advice.Terms.Count > 0)
+        {
+            prompt += "\n专名参考：\n" + string.Join("\n", advice.Terms.Select(term => "- " + term));
+        }
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到某一行译文，仍按输入编号逐字逐句贴近原文翻译。";
+        prompt += advice.Preset switch
+        {
+            TranslationPromptPreset.SongLyrics =>
+                "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。",
+            TranslationPromptPreset.InterviewConversation =>
+                "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。",
+            TranslationPromptPreset.TutorialHowTo =>
+                "\n这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名和动作顺序清楚可跟做；语气保持简洁直接，技术词前后统一。",
+            TranslationPromptPreset.LectureCourse =>
+                "\n这段内容更像课程或讲座。翻译时优先保留概念层次、因果关系和术语一致性；表达可以更清楚，但不要把讲者的铺垫和重点压扁。",
+            TranslationPromptPreset.NewsExplainer =>
+                "\n这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间和因果关系要稳，避免额外立场。",
+            TranslationPromptPreset.ReviewProduct =>
+                "\n这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名和结论要清楚一致。",
+            TranslationPromptPreset.VlogLifestyle =>
+                "\n这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感和个人语气；不要过度正式，短句可以保持日常说话的节奏。",
+            TranslationPromptPreset.ShortSocial =>
+                "\n这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，但不要生造原文没有的信息。",
+            TranslationPromptPreset.DocumentaryNarrative =>
+                "\n这段内容更像纪录片或叙事旁白。翻译时保留画面感、时间线和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。",
+            TranslationPromptPreset.GamingEntertainment =>
+                "\n这段内容更像游戏或娱乐解说。翻译时保留即时反应、玩笑、术语和场面节奏；游戏名、角色名、机制名要一致，语气可以更有现场感。",
+            _ => "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。",
+        };
+        return prompt;
+    }
+
+    internal static TranslationPromptAdvice? ParseTranslationPromptAdvice(string text)
+    {
+        var trimmed = text.Trim();
+        string json;
+        if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
+        {
+            json = trimmed;
+        }
+        else
+        {
+            var start = trimmed.IndexOf('{');
+            var end = trimmed.LastIndexOf('}');
+            if (start < 0 || end < start) return null;
+            json = trimmed[start..(end + 1)];
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var summary = root.TryGetProperty("summary", out var s) && s.ValueKind == JsonValueKind.String
+                ? s.GetString()?.Trim() ?? "" : "";
+            var context = root.TryGetProperty("context", out var contextElement) && contextElement.ValueKind == JsonValueKind.String
+                ? contextElement.GetString()?.Trim() ?? "" : "";
+            var terms = new List<string>();
+            if (root.TryGetProperty("terms", out var termsElement) && termsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var termElement in termsElement.EnumerateArray())
+                {
+                    if (termElement.ValueKind != JsonValueKind.String) continue;
+                    var term = termElement.GetString()?.Trim() ?? "";
+                    if (term.Length == 0) continue;
+                    terms.Add(term);
+                    if (terms.Count >= 8) break;
+                }
+            }
+            var presetRaw = root.TryGetProperty("preset", out var p) && p.ValueKind == JsonValueKind.String
+                ? p.GetString() ?? "" : "";
+            if (summary.Length == 0) return null;
+            var preset = presetRaw.Trim() switch
+            {
+                "songLyrics" => TranslationPromptPreset.SongLyrics,
+                "interviewConversation" => TranslationPromptPreset.InterviewConversation,
+                "tutorialHowTo" => TranslationPromptPreset.TutorialHowTo,
+                "lectureCourse" => TranslationPromptPreset.LectureCourse,
+                "newsExplainer" => TranslationPromptPreset.NewsExplainer,
+                "reviewProduct" => TranslationPromptPreset.ReviewProduct,
+                "vlogLifestyle" => TranslationPromptPreset.VlogLifestyle,
+                "shortSocial" => TranslationPromptPreset.ShortSocial,
+                "documentaryNarrative" => TranslationPromptPreset.DocumentaryNarrative,
+                "gamingEntertainment" => TranslationPromptPreset.GamingEntertainment,
+                _ => TranslationPromptPreset.General,
+            };
+            return new TranslationPromptAdvice(summary, context, terms, preset);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     public ConfiguredTranslator(AppSettings settings, HttpMessageHandler? handler = null)
     {
@@ -893,16 +1160,19 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         catch
         {
             throw MoongateException.TranslateFailed(L10n.T($"无法读取字幕文件：{Path.GetFileName(srtFile)}",
+                $"無法讀取字幕檔：{Path.GetFileName(srtFile)}",
                 $"Could not read the subtitle file: {Path.GetFileName(srtFile)}"));
         }
         var parsed = SrtTools.ParseSrt(raw);
         if (parsed.Count == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("字幕文件里没有可识别的字幕内容。",
+                "字幕檔中沒有可辨識的字幕內容。",
                 "No recognizable subtitles in this file."));
         }
         // 翻译前清洗：消除 YouTube 自动字幕的重叠滚动碎句、按句合并，减少疯狂刷新。
         var cues = SrtTools.CleanCues(parsed);
+        var advice = await MakeTranslationPromptAdviceAsync(cues, ct).ConfigureAwait(false);
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
@@ -933,7 +1203,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             inFlight.Add(Task.Run(async () =>
             {
                 var mapping = await TranslateChunkAsync(
-                    cues, range.Start, range.Count, range.Start + 1, depth: 0, token).ConfigureAwait(false);
+                    cues, range.Start, range.Count, range.Start + 1, advice, depth: 0, token).ConfigureAwait(false);
                 return (range, mapping);
             }, token));
         }
@@ -969,12 +1239,14 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             if (!merged.TryGetValue(cueIndex + 1, out var rawChinese))
             {
                 throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                    "模型返回格式異常，缺少譯文行",
                     "Malformed model reply: translation lines are missing"));
             }
             var chinese = SanitizeTranslation(rawChinese);
             if (chinese.Length == 0)
             {
                 throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                    "模型返回格式異常，缺少譯文行",
                     "Malformed model reply: translation lines are missing"));
             }
             output[cueIndex].Text = style switch
@@ -985,10 +1257,12 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             };
         }
 
-        // 写 "<原文件名去.srt>.zh.srt"
+        // 写 "<原文件名去.srt>.<target>.srt"
         var name = Path.GetFileName(srtFile);
         var stem = name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
-        var outputPath = Path.Combine(Path.GetDirectoryName(srtFile) ?? ".", stem + ".zh.srt");
+        var outputPath = Path.Combine(
+            Path.GetDirectoryName(srtFile) ?? ".",
+            stem + TranslationLanguage.TranslatedSubtitleFileSuffix(_settings.TranslationTargetLanguage));
         try
         {
             await File.WriteAllTextAsync(outputPath, SrtTools.SerializeSrt(output), ct).ConfigureAwait(false);
@@ -1000,6 +1274,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         catch (Exception e)
         {
             throw MoongateException.TranslateFailed(L10n.T($"无法写入译文文件：{e.Message}",
+                $"無法寫入譯文檔案：{e.Message}",
                 $"Could not write the translated file: {e.Message}"));
         }
         return outputPath;
@@ -1011,7 +1286,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// 只要译文缺失行即视为模型返回格式异常，抛错而不是静默保留原文。
     /// </summary>
     private async Task<Dictionary<int, string>> TranslateChunkAsync(
-        IReadOnlyList<SubtitleCue> allCues, int offset, int count, int startNumber, int depth,
+        IReadOnlyList<SubtitleCue> allCues, int offset, int count, int startNumber,
+        TranslationPromptAdvice? advice, int depth,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -1019,7 +1295,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             .Select(i => $"{startNumber + i}|{Flattened(allCues[offset + i].Text)}"));
 
         var reply = await TranslationApi.SendConfiguredMessageAsync(
-            _settings, SystemPrompt, userContent, maxTokens: 8000, _handler, ct).ConfigureAwait(false);
+            _settings, SystemPrompt(TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage), advice),
+            userContent, maxTokens: 8000, _handler, ct).ConfigureAwait(false);
         if (reply.ReachedOutputLimit)
         {
             var half = count / 2;
@@ -1027,12 +1304,13 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             {
                 throw MoongateException.TranslateFailed(L10n.T(
                     "译文超出模型输出上限，请减小每块字幕条数或检查模型 max_tokens 限制",
+                    "譯文超出模型輸出上限，請減少每塊字幕條數或檢查模型 max_tokens 限制",
                     "Translation exceeded the model output limit. Reduce the chunk size or check the model's max_tokens limit"));
             }
             var mergedMap = await TranslateChunkAsync(
-                allCues, offset, half, startNumber, depth + 1, ct).ConfigureAwait(false);
+                allCues, offset, half, startNumber, advice, depth + 1, ct).ConfigureAwait(false);
             var second = await TranslateChunkAsync(
-                allCues, offset + half, count - half, startNumber + half, depth + 1, ct).ConfigureAwait(false);
+                allCues, offset + half, count - half, startNumber + half, advice, depth + 1, ct).ConfigureAwait(false);
             foreach (var pair in second) mergedMap[pair.Key] = pair.Value;
             return mergedMap;
         }
@@ -1042,10 +1320,48 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             .Count(n => !map.TryGetValue(n, out var v) || v.Length == 0);
         if (missing > 0)
         {
+            var half = count / 2;
+            if (depth < 2 && half >= 8)
+            {
+                var mergedMap = await TranslateChunkAsync(
+                    allCues, offset, half, startNumber, advice, depth + 1, ct).ConfigureAwait(false);
+                var second = await TranslateChunkAsync(
+                    allCues, offset + half, count - half, startNumber + half, advice, depth + 1, ct).ConfigureAwait(false);
+                foreach (var pair in second) mergedMap[pair.Key] = pair.Value;
+                return mergedMap;
+            }
             throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                "模型返回格式異常，缺少譯文行",
                 "Malformed model reply: translation lines are missing"));
         }
         return map;
+    }
+
+    private async Task<TranslationPromptAdvice?> MakeTranslationPromptAdviceAsync(
+        IReadOnlyList<SubtitleCue> cues,
+        CancellationToken ct)
+    {
+        if (!_settings.SmartTranslationPromptsEnabled) return null;
+        var system =
+            "你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：" +
+            "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"preset\":\"general|songLyrics|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\"}。" +
+            "summary 写整体内容；context 写会影响翻译的背景，不要编造字幕没有支持的信息；terms 只放字幕里出现或能高置信识别的专名、人物、组织、作品名、品牌、术语，不确定官方译名时保留原文写法并说明不确定。" +
+            "preset 选择最贴近的一个：歌曲/歌词/MV 用 songLyrics；访谈播客对话用 interviewConversation；教程操作演示用 tutorialHowTo；课程讲座用 lectureCourse；新闻评论解释用 newsExplainer；产品评测体验用 reviewProduct；vlog 生活记录用 vlogLifestyle；短视频社交平台内容用 shortSocial；纪录片旁白叙事用 documentaryNarrative；游戏或娱乐解说用 gamingEntertainment；无法判断用 general。不要输出 Markdown。";
+        var userContent = $"目标译文语言：{TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage)}\n" +
+            "字幕内容分析样本：\n" + SubtitleAnalysisSample(cues);
+        var reply = await TranslationApi.SendConfiguredMessageAsync(
+            _settings.ForSummary(), system, userContent, maxTokens: 1200, _handler, ct).ConfigureAwait(false);
+        return ParseTranslationPromptAdvice(reply.Text)
+            ?? throw MoongateException.TranslateFailed(L10n.T(
+                "智能翻译分析返回格式异常，请重试或关闭智能翻译提示词。",
+                "智慧翻譯分析返回格式異常，請重試或關閉智慧翻譯提示詞。",
+                "Smart translation analysis returned an invalid format. Try again or turn off smart translation prompts."));
+    }
+
+    private static string SubtitleAnalysisSample(IReadOnlyList<SubtitleCue> cues)
+    {
+        var text = string.Join("\n", cues.Take(120).Select(c => Flattened(c.Text)));
+        return text.Length > 6000 ? text[..6000] + "…（已截断）" : text;
     }
 
     /// <summary>
@@ -1071,7 +1387,21 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         }
         // 兜底：把残留的 " / " 折叠分隔符还原成自然停顿（正常译文不会出现）。
         t = t.Replace(" / ", "，");
+        t = RemoveChineseTerminalPeriod(t);
         return t.Trim();
+    }
+
+    private static string RemoveChineseTerminalPeriod(string text)
+    {
+        var t = text.Trim();
+        var closers = "";
+        while (t.Length > 0 && t[^1] is '"' or '\'' or '”' or '’' or ')' or '）' or '」' or '』' or ']' or '】')
+        {
+            closers = t[^1] + closers;
+            t = t[..^1];
+        }
+        if (t.EndsWith('。')) t = t[..^1];
+        return t + closers;
     }
 
     /// <summary>把模型回复按行解析为 [编号: 译文]；不合规的行忽略。</summary>

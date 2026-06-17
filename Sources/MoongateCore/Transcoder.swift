@@ -172,7 +172,11 @@ public struct Transcoder: Sendable {
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         guard let ffmpeg = FFmpegBurner.locateAnyFFmpeg() else {
-            throw MoongateError.burnFailed("找不到 ffmpeg，无法转码。请安装：brew install ffmpeg-full")
+            throw MoongateError.burnFailed(CoreL10n.text(
+                en: "Cannot find ffmpeg, so transcoding cannot continue. Install it with: brew install ffmpeg-full",
+                zhHans: "找不到 ffmpeg，无法转码。请安装：brew install ffmpeg-full",
+                zhHant: "找不到 ffmpeg，無法轉碼。請安裝：brew install ffmpeg-full"
+            ))
         }
         let x265 = FFmpegBurner.encoderAvailable("libx265", ffmpeg: ffmpeg)
         let hevcVT = FFmpegBurner.encoderAvailable("hevc_videotoolbox", ffmpeg: ffmpeg)
@@ -190,7 +194,11 @@ public struct Transcoder: Sendable {
            (resolvedVCodec ?? "").lowercased() != "h265",
            !hevcVT,
            !x265 {
-            throw MoongateError.burnFailed("当前 ffmpeg 缺少 HEVC 编码器（hevc_videotoolbox 或 libx265），无法转为 H.265。请安装完整 ffmpeg，或改选 H.264/原格式。")
+            throw MoongateError.burnFailed(CoreL10n.text(
+                en: "The current ffmpeg does not include an HEVC encoder (hevc_videotoolbox or libx265), so it cannot convert to H.265. Install the full ffmpeg build, or choose H.264/source format.",
+                zhHans: "当前 ffmpeg 缺少 HEVC 编码器（hevc_videotoolbox 或 libx265），无法转为 H.265。请安装完整 ffmpeg，或改选 H.264/原格式。",
+                zhHant: "目前 ffmpeg 缺少 HEVC 編碼器（hevc_videotoolbox 或 libx265），無法轉為 H.265。請安裝完整版 ffmpeg，或改選 H.264/來源格式。"
+            ))
         }
         let resolvedIsHDR = await FFmpegBurner.probeVideoHDRStatus(file: inputFile) ?? sourceIsHDR
         // 先用一次 plan 求目标容器扩展名（ffmpeg 按输出扩展名推断 muxer，临时文件必须带正确扩展名）。
@@ -257,11 +265,20 @@ public struct Transcoder: Sendable {
             }
             guard status == 0 else {
                 try? FileManager.default.removeItem(at: tmpOutput)
-                throw MoongateError.burnFailed("转码失败：\(tail.split(separator: "\n").last.map(String.init) ?? "未知错误")")
+                let reason = tail.split(separator: "\n").last.map(String.init) ?? CoreL10n.text(
+                    en: "Unknown error",
+                    zhHans: "未知错误",
+                    zhHant: "未知錯誤"
+                )
+                throw MoongateError.burnFailed("\(CoreL10n.text(en: "Transcoding failed", zhHans: "转码失败", zhHant: "轉碼失敗"))：\(reason)")
             }
         } catch is ProcessStalledError {
             try? FileManager.default.removeItem(at: tmpOutput)
-            throw MoongateError.burnFailed("转码进程长时间无输出，已中止（可重试）。")
+            throw MoongateError.burnFailed(CoreL10n.text(
+                en: "The transcoding process produced no output for too long and was stopped. You can retry.",
+                zhHans: "转码进程长时间无输出，已中止（可重试）。",
+                zhHant: "轉碼程序長時間沒有輸出，已中止（可重試）。"
+            ))
         }
         // 落地：就地替换或覆盖已存在的目标文件，再把临时文件移到最终名。
         try? FileManager.default.removeItem(at: output)
@@ -269,7 +286,7 @@ public struct Transcoder: Sendable {
             try FileManager.default.moveItem(at: tmpOutput, to: output)
         } catch {
             try? FileManager.default.removeItem(at: tmpOutput)
-            throw MoongateError.burnFailed("转码完成但无法保存输出文件：\(error.localizedDescription)")
+            throw MoongateError.burnFailed("\(CoreL10n.text(en: "Transcoding finished but the output file could not be saved", zhHans: "转码完成但无法保存输出文件", zhHant: "轉碼完成但無法儲存輸出檔"))：\(error.localizedDescription)")
         }
         progress(1)
         return output

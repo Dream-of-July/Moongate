@@ -8,7 +8,7 @@ public func makeBurner() -> any SubtitleBurner {
 
 // MARK: - FFmpegBurner
 
-/// ffmpeg subtitles 滤镜硬烧录中文字幕：libx264 + CRF 恒定质量（体积不超源），
+/// ffmpeg subtitles 滤镜硬烧录字幕：libx264 + CRF 恒定质量（体积不超源），
 /// 可选 scale 缩放到 maxHeight（避开 4K60 的 H.264 编码上限、又快又小）。
 public struct FFmpegBurner: SubtitleBurner {
 
@@ -148,9 +148,7 @@ public struct FFmpegBurner: SubtitleBurner {
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         guard let ffmpeg = Self.locate("ffmpeg") else {
-            throw MoongateError.burnFailed(
-                "当前 ffmpeg 不带字幕渲染组件（libass）。请安装完整版后重试：brew install ffmpeg-full"
-            )
+            throw MoongateError.burnFailed(Self.libassMissingMessage)
         }
         if control?.isCancelled == true { throw MoongateError.cancelled }
 
@@ -228,7 +226,7 @@ public struct FFmpegBurner: SubtitleBurner {
             throw error
         } catch {
             try? fm.removeItem(at: tempDir)
-            throw MoongateError.burnFailed("无法准备字幕临时文件：\(error.localizedDescription)")
+            throw MoongateError.burnFailed("\(CoreL10n.text(en: "Could not prepare the temporary subtitle file", zhHans: "无法准备字幕临时文件", zhHant: "無法準備字幕暫存檔"))：\(error.localizedDescription)")
         }
         defer { try? fm.removeItem(at: tempDir) }
 
@@ -288,7 +286,11 @@ public struct FFmpegBurner: SubtitleBurner {
                     }
                 }
             } catch is ProcessStalledError {
-                throw MoongateError.burnFailed("烧录进程超过 2 分钟没有任何输出，疑似挂死，已自动中止（可重试）。")
+                throw MoongateError.burnFailed(CoreL10n.text(
+                    en: "The burn-in process produced no output for more than 2 minutes and was stopped. You can retry.",
+                    zhHans: "烧录进程超过 2 分钟没有任何输出，疑似挂死，已自动中止（可重试）。",
+                    zhHant: "燒錄程序超過 2 分鐘沒有任何輸出，疑似卡住，已自動中止（可重試）。"
+                ))
             }
         }
 
@@ -330,22 +332,24 @@ public struct FFmpegBurner: SubtitleBurner {
             if control?.isCancelled == true { throw MoongateError.cancelled }
             let lower = stderrTail.lowercased()
             if lower.contains("error parsing filterchain") || lower.contains("no such filter") {
-                throw MoongateError.burnFailed(
-                    "当前 ffmpeg 不带字幕渲染组件（libass）。请安装完整版后重试：brew install ffmpeg-full"
-                )
+                throw MoongateError.burnFailed(Self.libassMissingMessage)
             }
             throw MoongateError.burnFailed(Self.lastLine(of: stderrTail))
         }
         let produced = tempDir.appendingPathComponent("out.mp4")
         guard fm.fileExists(atPath: produced.path) else {
-            throw MoongateError.burnFailed("ffmpeg 已退出，但没有生成输出文件。")
+            throw MoongateError.burnFailed(CoreL10n.text(
+                en: "ffmpeg exited but did not produce an output file.",
+                zhHans: "ffmpeg 已退出，但没有生成输出文件。",
+                zhHant: "ffmpeg 已退出，但沒有產生輸出檔。"
+            ))
         }
         progress(1)
 
-        // 6. 移到视频同目录："<原名>（中文字幕）.mp4"，重名时加 " 2"、" 3"…
+        // 6. 移到视频同目录："<原名>（字幕版）.mp4"，重名时加 " 2"、" 3"…
         let stem = video.deletingPathExtension().lastPathComponent
         let directory = video.deletingLastPathComponent()
-        let tag = outputTag ?? "（中文字幕）"
+        let tag = outputTag ?? CoreL10n.t(L.Queue.subtitleVersionTag)
         var destination = directory.appendingPathComponent("\(stem)\(tag).mp4")
         var serial = 2
         while fm.fileExists(atPath: destination.path) {
@@ -355,7 +359,7 @@ public struct FFmpegBurner: SubtitleBurner {
         do {
             try fm.moveItem(at: produced, to: destination)
         } catch {
-            throw MoongateError.burnFailed("无法移动输出文件：\(error.localizedDescription)")
+            throw MoongateError.burnFailed("\(CoreL10n.text(en: "Could not move the output file", zhHans: "无法移动输出文件", zhHant: "無法移動輸出檔"))：\(error.localizedDescription)")
         }
         return destination
     }
@@ -720,7 +724,16 @@ public struct FFmpegBurner: SubtitleBurner {
         let lines = stderr.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        return String((lines.last ?? "未知错误").prefix(200))
+        let fallback = CoreL10n.text(en: "Unknown error", zhHans: "未知错误", zhHant: "未知錯誤")
+        return String((lines.last ?? fallback).prefix(200))
+    }
+
+    private static var libassMissingMessage: String {
+        CoreL10n.text(
+            en: "The current ffmpeg build does not include subtitle rendering (libass). Install the full build and retry: brew install ffmpeg-full",
+            zhHans: "当前 ffmpeg 不带字幕渲染组件（libass）。请安装完整版后重试：brew install ffmpeg-full",
+            zhHant: "目前 ffmpeg 不含字幕渲染元件（libass）。請安裝完整版後重試：brew install ffmpeg-full"
+        )
     }
 
     // MARK: ASS 生成（双语两级字号，按视频长宽比自适应）

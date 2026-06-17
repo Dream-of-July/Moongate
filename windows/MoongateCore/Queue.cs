@@ -441,7 +441,8 @@ public sealed class QueueManager
         {
             try
             {
-                await AcquireSlotAsync(_downloadPool, id, generation, control, L10n.T("排队中：等待下载空位", "Queued: waiting for a download slot"), ct).ConfigureAwait(false);
+                await AcquireSlotAsync(_downloadPool, id, generation, control,
+                    L10n.T("排队中：等待下载空位", "排隊中：等待下載空位", "Queued: waiting for a download slot"), ct).ConfigureAwait(false);
                 try
                 {
                     Update(id, generation, item =>
@@ -526,7 +527,7 @@ public sealed class QueueManager
                         item.Stage = ItemStage.Cancelled;
                         item.IsPaused = false;
                         item.Progress = null;
-                        item.StatusText = L10n.T("已取消", "Cancelled");
+                        item.StatusText = L10n.T("已取消", "已取消", "Cancelled");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
@@ -539,7 +540,7 @@ public sealed class QueueManager
                         item.Stage = ItemStage.Failed(reason);
                         item.IsPaused = false;
                         item.Progress = null;
-                        item.StatusText = L10n.T($"失败：{reason}", $"Failed: {reason}");
+                        item.StatusText = L10n.T($"失败：{reason}", $"失敗：{reason}", $"Failed: {reason}");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
@@ -548,7 +549,7 @@ public sealed class QueueManager
             }
         }
 
-        // 下载完成，无需中文字幕：直接完成
+        // 下载完成，无需字幕处理：直接完成
         if (mode == ChineseSubtitleMode.Off)
         {
             FinishDone(id, generation, downloadFiles, null);
@@ -562,8 +563,8 @@ public sealed class QueueManager
         if (srtFile is null)
         {
             FinishDone(id, generation, downloadFiles, mode == ChineseSubtitleMode.BurnOriginal
-                ? L10n.T("没有字幕文件，已跳过烧录", "No subtitle file; burn-in skipped")
-                : L10n.T("没有字幕文件，已跳过翻译", "No subtitle file; translation skipped"));
+                ? L10n.T("没有字幕文件，已跳过烧录", "沒有字幕檔，已跳過燒錄", "No subtitle file; burn-in skipped")
+                : L10n.T("没有字幕文件，已跳过翻译", "沒有字幕檔，已跳過翻譯", "No subtitle file; translation skipped"));
             return;
         }
 
@@ -574,20 +575,20 @@ public sealed class QueueManager
             if (rawVideo is null)
             {
                 FinishDone(id, generation, downloadFiles,
-                    L10n.T("没有找到视频文件，已跳过烧录", "No video file found; burn-in skipped"));
+                    L10n.T("没有找到视频文件，已跳过烧录", "沒有找到影片檔，已跳過燒錄", "No video file found; burn-in skipped"));
                 return;
             }
             try
             {
                 await AcquireSlotAsync(_burnPool, id, generation, control,
-                    L10n.T("排队中：等待压制空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
+                    L10n.T("排队中：等待压制空位", "排隊中：等待壓製空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
                 try
                 {
                     Update(id, generation, item =>
                     {
                         item.Stage = ItemStage.Burning;
                         item.Progress = null;
-                        item.StatusText = L10n.T("直接烧录字幕（不翻译）", "Burning subtitle as-is (no translation)");
+                        item.StatusText = L10n.T("直接烧录字幕（不翻译）", "直接燒錄字幕（不翻譯）", "Burning subtitle as-is (no translation)");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
@@ -601,7 +602,7 @@ public sealed class QueueManager
                         }),
                         backend: settings.EncodeBackend,
                         alwaysH264: settings.BurnAlwaysH264,
-                        outputTag: L10n.T("（字幕版）", " (subtitled)"),
+                        outputTag: L10n.T("（字幕版）", "（字幕版）", " (subtitled)"),
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
                     Update(id, generation, item =>
@@ -611,7 +612,7 @@ public sealed class QueueManager
                         item.ResultFiles = files;
                     });
                     FinishDone(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles,
-                        L10n.T("已烧录字幕（未翻译）", "Subtitle burned in (no translation)"));
+                        L10n.T("已烧录字幕（未翻译）", "已燒錄字幕（未翻譯）", "Subtitle burned in (no translation)"));
                 }
                 finally
                 {
@@ -622,43 +623,47 @@ public sealed class QueueManager
             {
                 if (GenerationOf(id) != generation) return;
                 SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
-                    L10n.T("烧录", "burn-in"));
+                    L10n.T("烧录", "燒錄", "burn-in"));
             }
             return;
         }
 
-        // 成熟的中文软字幕：源字幕本身就是中文时直接当中文字幕用，跳过 LLM 翻译。
+        // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
         // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt" 解析。
-        var sourceIsChinese = IsChineseLang(preferredLang) || IsChineseLang(LangCode(srtFile));
-        if (sourceIsChinese)
+        var sourceMatchesTarget = TranslationLanguage.Matches(
+            preferredLang ?? LangCode(srtFile), settings.TranslationTargetLanguage);
+        if (sourceMatchesTarget)
         {
-            // srtOnly：原中文 srt 即结果（已在 downloadFiles 里），不再生成 .zh.srt。
+            // srtOnly：原目标语言 srt 即结果（已在 downloadFiles 里），不再生成译文副本。
             if (mode != ChineseSubtitleMode.BurnIn)
             {
                 FinishDone(id, generation, downloadFiles,
-                    L10n.T("使用视频自带中文字幕，已跳过翻译", "Using built-in Chinese subtitle; translation skipped"));
+                    L10n.T("使用视频自带目标语言字幕，已跳过翻译",
+                        "使用影片內建目標語言字幕，已跳過翻譯",
+                        "Using the video's target-language subtitle; translation skipped"));
                 return;
             }
-            // burnIn：直接拿原中文 srt 去烧录。
+            // burnIn：直接拿目标语言 srt 去烧录。
             var chineseVideo = downloadFiles.FirstOrDefault(f => VideoExtensions.Contains(ExtensionOf(f)));
             if (chineseVideo is null)
             {
                 FinishDone(id, generation, downloadFiles,
-                    L10n.T("没有找到视频文件，已跳过烧录", "No video file found; burn-in skipped"));
+                    L10n.T("没有找到视频文件，已跳过烧录", "沒有找到影片檔，已跳過燒錄", "No video file found; burn-in skipped"));
                 return;
             }
             try
             {
                 await AcquireSlotAsync(_burnPool, id, generation, control,
-                    L10n.T("排队中：等待压制空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
+                    L10n.T("排队中：等待压制空位", "排隊中：等待壓製空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
                 try
                 {
                     Update(id, generation, item =>
                     {
                         item.Stage = ItemStage.Burning;
                         item.Progress = null;
-                        item.StatusText = L10n.T("使用视频自带中文字幕，直接烧录（不翻译）",
-                            "Built-in Chinese subtitle; burning directly (no translation)");
+                        item.StatusText = L10n.T("使用视频自带目标语言字幕，直接烧录（不翻译）",
+                            "使用影片內建目標語言字幕，直接燒錄（不翻譯）",
+                            "Using the video's target-language subtitle; burning directly (no translation)");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
@@ -681,7 +686,9 @@ public sealed class QueueManager
                         item.ResultFiles = files;
                     });
                     FinishDone(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles,
-                        L10n.T("已烧录视频自带中文字幕", "Burned built-in Chinese subtitle"));
+                        L10n.T("已烧录视频自带目标语言字幕",
+                            "已燒錄影片內建目標語言字幕",
+                            "Burned the video's target-language subtitle"));
                 }
                 finally
                 {
@@ -692,7 +699,7 @@ public sealed class QueueManager
             {
                 if (GenerationOf(id) != generation) return;
                 SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
-                    L10n.T("烧录", "burn-in"));
+                    L10n.T("烧录", "燒錄", "burn-in"));
             }
             return;
         }
@@ -702,7 +709,7 @@ public sealed class QueueManager
         try
         {
             await AcquireSlotAsync(_translatePool, id, generation, control,
-                L10n.T("排队中：等待翻译空位", "Queued: waiting for a translation slot"), ct).ConfigureAwait(false);
+                L10n.T("排队中：等待翻译空位", "排隊中：等待翻譯空位", "Queued: waiting for a translation slot"), ct).ConfigureAwait(false);
             try
             {
                 Update(id, generation, item =>
@@ -741,7 +748,7 @@ public sealed class QueueManager
         catch (Exception error)
         {
             if (GenerationOf(id) != generation) return;
-            SettlePartial(id, generation, downloadFiles, error, L10n.T("翻译", "translation"));
+            SettlePartial(id, generation, downloadFiles, error, L10n.T("翻译", "翻譯", "translation"));
             return;
         }
 
@@ -755,14 +762,14 @@ public sealed class QueueManager
         if (video is null)
         {
             FinishDone(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles,
-                L10n.T("没有找到视频文件，已跳过烧录", "No video file found; burn-in skipped"));
+                L10n.T("没有找到视频文件，已跳过烧录", "沒有找到影片檔，已跳過燒錄", "No video file found; burn-in skipped"));
             return;
         }
 
         try
         {
             await AcquireSlotAsync(_burnPool, id, generation, control,
-                L10n.T("排队中：等待压制空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
+                L10n.T("排队中：等待压制空位", "排隊中：等待壓製空位", "Queued: waiting for an encoding slot"), ct).ConfigureAwait(false);
             try
             {
                 Update(id, generation, item =>
@@ -802,7 +809,7 @@ public sealed class QueueManager
         {
             if (GenerationOf(id) != generation) return;
             SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
-                L10n.T("烧录", "burn-in"));
+                L10n.T("烧录", "燒錄", "burn-in"));
         }
     }
 
@@ -858,8 +865,8 @@ public sealed class QueueManager
                 item.IsPaused = false;
                 item.Progress = null;
                 item.StatusText = files.Count == 0
-                    ? L10n.T("已取消", "Cancelled")
-                    : L10n.T("已取消，视频已保存", "Cancelled; downloaded video kept");
+                    ? L10n.T("已取消", "已取消", "Cancelled")
+                    : L10n.T("已取消，视频已保存", "已取消，影片已儲存", "Cancelled; downloaded video kept");
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
@@ -875,6 +882,7 @@ public sealed class QueueManager
                 item.Progress = null;
                 item.PartialFailure = true;
                 item.StatusText = L10n.T($"视频已下载，字幕{phase}失败：{reason}",
+                    $"影片已下載，字幕{phase}失敗：{reason}",
                     $"Video saved; subtitle {phase} failed: {reason}");
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
@@ -887,7 +895,7 @@ public sealed class QueueManager
                 item.Stage = ItemStage.Failed(reason);
                 item.IsPaused = false;
                 item.Progress = null;
-                item.StatusText = L10n.T($"失败：{reason}", $"Failed: {reason}");
+                item.StatusText = L10n.T($"失败：{reason}", $"失敗：{reason}", $"Failed: {reason}");
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
@@ -965,7 +973,7 @@ public sealed class QueueManager
             return;
         }
         // 让过位的：先重新领到槽位再恢复进程，避免恢复瞬间超出并发上限。
-        var resumeWaitingText = L10n.T("等待空位恢复…", "Waiting for a free slot to resume…");
+        var resumeWaitingText = L10n.T("等待空位恢复…", "等待空位恢復…", "Waiting for a free slot to resume…");
         Update(id, generation, item => item.StatusText = resumeWaitingText);
         _ = Task.Run(async () =>
         {
@@ -1054,7 +1062,7 @@ public sealed class QueueManager
             old.IsPostDownloadProcessing = false;
             old.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             old.PartialFailure = false;
-            old.StatusText = skipDownload ? null : L10n.T("重新下载并处理", "Re-downloading and processing");
+            old.StatusText = skipDownload ? null : L10n.T("重新下载并处理", "重新下載並處理", "Re-downloading and processing");
             if (!skipDownload) old.ResultFiles = [];
             newCt = old.Cts.Token;
         }
@@ -1134,8 +1142,8 @@ public sealed class QueueManager
 
     /// <summary>
     /// 按勾选语言挑翻译源字幕：大小写不敏感、允许前缀匹配。
-    /// preferredLang 命中时直接返回该文件（含 ".zh.srt"，以支持视频自带中文字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文（不以 ".zh.srt" 结尾）的 .srt，避免把上次译文当源二次翻译。
+    /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
+    /// 没有 preferredLang 时回退第一个非译文 .srt，避免把上次译文当源二次翻译。
     /// </summary>
     internal static string? PickSourceSubtitle(IReadOnlyList<string> files, string? preferredLang)
     {
@@ -1152,7 +1160,7 @@ public sealed class QueueManager
             if (matched is not null) return matched;
         }
         var nonTranslated = srtFiles
-            .Where(f => !Path.GetFileName(f).ToLowerInvariant().EndsWith(".zh.srt"))
+            .Where(f => !TranslationLanguage.IsTranslatedSubtitleFileName(f))
             .ToList();
         return nonTranslated.FirstOrDefault() ?? srtFiles.FirstOrDefault();
     }

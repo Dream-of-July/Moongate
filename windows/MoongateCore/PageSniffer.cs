@@ -54,6 +54,7 @@ public sealed class PageSniffer
         catch
         {
             throw MoongateException.SniffFailed(L10n.T("页面加载失败，请检查网络后重试。",
+                "頁面載入失敗，請檢查網路後重試。",
                 "The page failed to load. Check your network and retry."));
         }
         return await ExtractCandidatesAsync(html, pageUrl, ct).ConfigureAwait(false);
@@ -76,12 +77,14 @@ public sealed class PageSniffer
             && !(mime.Contains("html") || mime.Contains("text") || mime.Contains("xml")))
         {
             throw MoongateException.SniffFailed(L10n.T($"这个链接指向的是媒体文件而非网页（{mime}），无法嗅探。",
+                $"這個連結指向的是媒體檔案而非網頁（{mime}），無法嗅探。",
                 $"This link points to a media file, not a web page ({mime}); nothing to sniff."));
         }
         var data = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
         if (data.Length > 8 * 1024 * 1024)
         {
             throw MoongateException.SniffFailed(L10n.T($"页面过大（{data.Length / 1024 / 1024}MB），已停止嗅探。",
+                $"頁面過大（{data.Length / 1024 / 1024}MB），已停止嗅探。",
                 $"The page is too large ({data.Length / 1024 / 1024}MB); sniffing stopped."));
         }
         return System.Text.Encoding.UTF8.GetString(data);
@@ -227,12 +230,12 @@ public sealed class PageSniffer
             seenMedia.Add(urlString);
             var title = pageTitle ?? FileBaseName(urlString) ?? urlString;
             prepared.Add((0, offset, new VideoCandidate
-            {
-                Url = urlString,
-                Kind = VideoCandidate.CandidateKind.PageMain,
-                Title = title,
-                Detail = "assets.nintendo.com · mp4 直链",
-            }));
+                    {
+                        Url = urlString,
+                        Kind = VideoCandidate.CandidateKind.PageMain,
+                        Title = title,
+                        Detail = $"assets.nintendo.com · {L10n.T("mp4 直链", "mp4 直鏈", "mp4 direct link")}",
+                    }));
         }
 
         var youtubeOrdered = new List<(int Offset, string Id)>();
@@ -290,7 +293,9 @@ public sealed class PageSniffer
             {
                 Url = $"https://www.youtube.com/watch?v={id}",
                 Kind = VideoCandidate.CandidateKind.Youtube,
-                Title = youtubeTitles.TryGetValue(id, out var title) ? title : L10n.T($"YouTube 视频 {id}", $"YouTube video {id}"),
+                Title = youtubeTitles.TryGetValue(id, out var title)
+                    ? title
+                    : L10n.T($"YouTube 视频 {id}", $"YouTube 影片 {id}", $"YouTube video {id}"),
                 Detail = "YouTube",
             }));
         }
@@ -300,7 +305,7 @@ public sealed class PageSniffer
             {
                 Url = $"https://vimeo.com/{id}",
                 Kind = VideoCandidate.CandidateKind.Vimeo,
-                Title = L10n.T($"Vimeo 视频 {id}", $"Vimeo video {id}"),
+                Title = L10n.T($"Vimeo 视频 {id}", $"Vimeo 影片 {id}", $"Vimeo video {id}"),
                 Detail = "Vimeo",
             }));
         }

@@ -27,7 +27,7 @@ public struct PageSniffer {
         } catch let error as MoongateError {
             throw error
         } catch {
-            throw MoongateError.sniffFailed("页面加载失败，请检查网络后重试。")
+            throw MoongateError.sniffFailed(CoreL10n.t(L.Core.pageLoadFailed))
         }
         return await extractCandidates(from: html, pageURL: pageURL)
     }
@@ -44,10 +44,10 @@ public struct PageSniffer {
         // 会走到嗅探兜底）。非文本类型或超过 8MB 的响应不当 HTML 解析。
         if let mime = response.mimeType?.lowercased(),
            !(mime.contains("html") || mime.contains("text") || mime.contains("xml")) {
-            throw MoongateError.sniffFailed("这个链接指向的是媒体文件而非网页（\(mime)），无法嗅探。")
+            throw MoongateError.sniffFailed(CoreL10n.t(L.Core.pageMediaFileNotPage, mime))
         }
         guard data.count <= 8 * 1024 * 1024 else {
-            throw MoongateError.sniffFailed("页面过大（\(data.count / 1024 / 1024)MB），已停止嗅探。")
+            throw MoongateError.sniffFailed(CoreL10n.t(L.Core.pageTooLarge, data.count / 1024 / 1024))
         }
         return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
@@ -181,7 +181,7 @@ public struct PageSniffer {
                 url: urlString,
                 kind: .pageMain,
                 title: title,
-                detail: "assets.nintendo.com · mp4 直链"
+                detail: "assets.nintendo.com · \(CoreL10n.t(L.Core.directMP4Link))"
             )))
         }
 
@@ -231,7 +231,7 @@ public struct PageSniffer {
             prepared.append((2, offset, VideoCandidate(
                 url: "https://www.youtube.com/watch?v=\(id)",
                 kind: .youtube,
-                title: youtubeTitles[id] ?? "YouTube 视频 \(id)",
+                title: youtubeTitles[id] ?? CoreL10n.t(L.Core.youtubeVideoTitle, id),
                 detail: "YouTube"
             )))
         }
@@ -239,7 +239,7 @@ public struct PageSniffer {
             prepared.append((2, offset, VideoCandidate(
                 url: "https://vimeo.com/\(id)",
                 kind: .vimeo,
-                title: "Vimeo 视频 \(id)",
+                title: CoreL10n.t(L.Core.vimeoVideoTitle, id),
                 detail: "Vimeo"
             )))
         }

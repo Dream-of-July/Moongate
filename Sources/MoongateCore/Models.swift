@@ -18,23 +18,23 @@ public enum MoongateError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .binaryNotFound(let name):
-            return "找不到 \(name)。请确认已通过 Homebrew 安装（brew install \(name)）。"
+            return CoreL10n.t(L.Core.errorBinaryNotFound, name, name)
         case .sniffFailed(let reason):
-            return "没有在这个页面里找到可下载的视频。\(reason)"
+            return CoreL10n.t(L.Core.errorSniffFailed, reason)
         case .analyzeFailed(let reason):
-            return "解析视频信息失败：\(reason)"
+            return CoreL10n.t(L.Core.errorAnalyzeFailed, reason)
         case .updateFailed(let reason):
-            return "检查更新失败：\(reason)"
+            return CoreL10n.t(L.Core.errorUpdateFailed, reason)
         case .downloadFailed(let reason):
-            return "下载失败：\(reason)"
+            return CoreL10n.t(L.Core.errorDownloadFailed, reason)
         case .loginRequired(let site):
-            return "\(site) 需要登录后才能下载。点击「去登录」，在弹出的页面里登录账号后重试。"
+            return CoreL10n.t(L.Core.errorLoginRequired, site)
         case .translateFailed(let reason):
-            return "字幕翻译失败：\(reason)"
+            return CoreL10n.t(L.Core.errorTranslateFailed, reason)
         case .burnFailed(let reason):
-            return "字幕烧录失败：\(reason)"
+            return CoreL10n.t(L.Core.errorBurnFailed, reason)
         case .cancelled:
-            return "已取消"
+            return CoreL10n.t(L.Core.errorCancelled)
         }
     }
 }
@@ -97,7 +97,7 @@ public enum DynamicRange: String, Codable, Sendable, Equatable, CaseIterable {
         switch self {
         case .sdr: return nil
         case .hdr10: return "HDR"
-        case .dolbyVision: return "杜比视界"
+        case .dolbyVision: return CoreL10n.t(L.Core.dolbyVisionBadge)
         }
     }
 }
@@ -111,10 +111,10 @@ public enum OutputFormat: String, Codable, Sendable, Equatable, CaseIterable {
 
     public var displayName: String {
         switch self {
-        case .original: return "保持源格式"
-        case .mp4H264: return "MP4（H.264，兼容最好）"
-        case .mp4H265: return "MP4（H.265/HEVC，保 HDR）"
-        case .mkv: return "MKV（原编码换封装）"
+        case .original: return CoreL10n.t(L.Core.outputOriginal)
+        case .mp4H264: return CoreL10n.t(L.Core.outputH264)
+        case .mp4H265: return CoreL10n.t(L.Core.outputH265)
+        case .mkv: return CoreL10n.t(L.Core.outputMKV)
         }
     }
 }
@@ -276,7 +276,7 @@ public struct DownloadResult: Sendable {
     }
 }
 
-// MARK: - 中文字幕（翻译与烧录）
+// MARK: - 字幕翻译与烧录
 
 /// 烧录/输出字幕的样式
 public enum SubtitleStyle: String, Codable, Sendable {
@@ -397,7 +397,7 @@ public extension ContextualSubtitleTranslator {
 /// 字幕烧录器。默认实现 `FFmpegBurner`（Burner.swift）：ffmpeg subtitles 滤镜硬烧录。
 /// 用 `makeBurner()` 获取实例。
 public protocol SubtitleBurner: Sendable {
-    /// 把 subtitle 烧录进 video，输出 "<原名>（中文字幕).mp4" 风格的新文件（不覆盖原片）；
+    /// 把 subtitle 烧录进 video，输出 "<原名>（字幕版).mp4" 风格的新文件（不覆盖原片）；
     /// outputTag 非空时自定义文件名标签，例如直压原字幕模式用 "（字幕版）"。
     /// maxHeight 非空且源更高时缩放到该高度；progress 为 0...1。
     /// backend 决定用硬件（VideoToolbox）还是软件编码器；alwaysH264=true 时无视源编码强制 H.264（兼容优先）。

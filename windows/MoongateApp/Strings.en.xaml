@@ -12,6 +12,14 @@
     <sys:String x:Key="L.Common.Close">Close</sys:String>
     <sys:String x:Key="L.Common.OperationFailedFmt">Operation failed: {0}</sys:String>
 
+    <!-- First-run onboarding -->
+    <sys:String x:Key="L.Onboarding.Title">Welcome to Moongate</sys:String>
+    <sys:String x:Key="L.Onboarding.Subtitle">Choose the app language and subtitle target first. AI setup can wait, and Moongate still works as a video downloader.</sys:String>
+    <sys:String x:Key="L.Onboarding.AppLanguage">App language</sys:String>
+    <sys:String x:Key="L.Onboarding.TargetLanguage">Translation target</sys:String>
+    <sys:String x:Key="L.Onboarding.AIOptional">You can continue without an API key. Configure AI later when you need subtitle translation or summaries.</sys:String>
+    <sys:String x:Key="L.Onboarding.Start">Start using Moongate</sys:String>
+
     <!-- Main window -->
     <sys:String x:Key="L.Main.Settings">Settings</sys:String>
     <sys:String x:Key="L.Main.Parse">Parse</sys:String>
@@ -25,6 +33,7 @@
     <sys:String x:Key="L.Loading.BatchFmt">Parsing batch ({0}/{1})</sys:String>
     <sys:String x:Key="L.Choosing.TitleFmt">This page contains {0} videos</sys:String>
     <sys:String x:Key="L.Error.NotAUrl">That is not a URL. Paste a video link starting with http or https.</sys:String>
+    <sys:String x:Key="L.Error.NoAvailableFormat">No downloadable format is available for this video.</sys:String>
 
     <!-- Ready page -->
     <sys:String x:Key="L.Ready.Enqueue">Add to queue</sys:String>
@@ -36,7 +45,7 @@
     <sys:String x:Key="L.Ready.AutoTag">Auto</sys:String>
     <sys:String x:Key="L.Ready.ProcessSection">Subtitle processing</sys:String>
     <sys:String x:Key="L.Mode.Off">None</sys:String>
-    <sys:String x:Key="L.Mode.SrtOnly">Create a Chinese subtitle file only</sys:String>
+    <sys:String x:Key="L.Mode.SrtOnly">Create a translated subtitle file only</sys:String>
     <sys:String x:Key="L.Mode.BurnIn">Translate and burn into the video</sys:String>
     <sys:String x:Key="L.Mode.BurnOriginal">Burn subtitle as-is (no translation)</sys:String>
     <sys:String x:Key="L.Ready.NotConfigured">Translation service not configured</sys:String>
@@ -64,8 +73,8 @@
     <sys:String x:Key="L.Hint.SelectSubtitleFirst">Select a subtitle above first</sys:String>
     <sys:String x:Key="L.Hint.WillTranslateFmt">Will translate: {0}</sys:String>
     <sys:String x:Key="L.Hint.WillBurnFmt">Will burn: {0}</sys:String>
-    <sys:String x:Key="L.Hint.ChineseSourceBurn">This subtitle is already Chinese; it will be burned directly (no translation)</sys:String>
-    <sys:String x:Key="L.Hint.ChineseSourceUse">This subtitle is already Chinese; it will be used directly (no translation)</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceBurn">This subtitle is already in the target language; it will be burned directly (no translation)</sys:String>
+    <sys:String x:Key="L.Hint.ChineseSourceUse">This subtitle is already in the target language; it will be used directly (no translation)</sys:String>
 
     <!-- Failed page -->
     <sys:String x:Key="L.Failed.GoLogin">Sign in</sys:String>
@@ -126,11 +135,14 @@
     <sys:String x:Key="L.Settings.Title">Settings</sys:String>
     <sys:String x:Key="L.Settings.General">General</sys:String>
     <sys:String x:Key="L.Settings.Language">Language</sys:String>
+    <sys:String x:Key="L.Settings.TargetLanguage">Translation target</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">Follow system</sys:String>
     <sys:String x:Key="L.Settings.LangHint">Takes effect immediately; status text of running tasks switches on their next refresh.</sys:String>
     <sys:String x:Key="L.Settings.AIService">AI service</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">The default AI service is reused by translation and summaries; override below when a different model is needed.</sys:String>
     <sys:String x:Key="L.Settings.Translation">Translation service</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">Smart translation prompts</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">Analyzes subtitles before translation and chooses a translation style for the content type.</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">Translation follows the default AI service</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">Reuses the service above by default. Turn this off to give translation its own model or gateway.</sys:String>
     <sys:String x:Key="L.Settings.Protocol">API protocol</sys:String>
@@ -155,9 +167,9 @@
     <sys:String x:Key="L.Settings.SummaryFollowsDefaultHint">Uses the service above by default. Turn this off to give summaries their own model or gateway.</sys:String>
     <sys:String x:Key="L.Settings.SummaryModelHint">Summaries use this model; leave it empty and the summary button stays unconfigured.</sys:String>
     <sys:String x:Key="L.Settings.SubtitleStyle">Subtitle style</sys:String>
-    <sys:String x:Key="L.Settings.StyleLabel">Chinese subtitle style</sys:String>
-    <sys:String x:Key="L.Settings.StyleBilingual">Bilingual (original + Chinese)</sys:String>
-    <sys:String x:Key="L.Settings.StyleChineseOnly">Chinese only</sys:String>
+    <sys:String x:Key="L.Settings.StyleLabel">Translated subtitle style</sys:String>
+    <sys:String x:Key="L.Settings.StyleBilingual">Bilingual (original + translation)</sys:String>
+    <sys:String x:Key="L.Settings.StyleChineseOnly">Translation only</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">Burn-in quality</sys:String>
     <sys:String x:Key="L.Settings.EncodeBackend">Encoder</sys:String>
     <sys:String x:Key="L.Settings.EncodeAuto">Auto</sys:String>

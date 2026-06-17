@@ -68,7 +68,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>               <string>月之门</string>
     <key>CFBundleIconName</key>               <string>月之门</string>
     <key>CFBundlePackageType</key>            <string>APPL</string>
-    <key>CFBundleShortVersionString</key>     <string>0.6.1</string>
+    <key>CFBundleShortVersionString</key>     <string>0.7.0</string>
     <key>CFBundleVersion</key>                <string>1</string>
     <key>LSMinimumSystemVersion</key>         <string>14.0</string>
     <key>LSApplicationCategoryType</key>      <string>public.app-category.utilities</string>

@@ -24,6 +24,7 @@ public partial class MainWindow : Window
         DataObject.AddPastingHandler(UrlBox, OnUrlBoxPaste);
         Loaded += (_, _) =>
         {
+            ShowOnboardingIfNeeded();
             _vm.PrefillFromClipboardIfAppropriate();
             FocusUrlBox();
         };
@@ -100,6 +101,13 @@ public partial class MainWindow : Window
         window.ShowDialog();
         // 设置窗里点了「登录 ××」：先收起设置窗，再弹登录窗（对齐 macOS sheet 转场）。
         if (window.PendingLoginSite is { } site) OpenLoginWindow(site);
+    }
+
+    private void ShowOnboardingIfNeeded()
+    {
+        if (_vm.Settings.OnboardingCompleted) return;
+        var window = new OnboardingWindow(_vm) { Owner = this };
+        window.ShowDialog();
     }
 
     private void OpenLoginWindow(string site)

@@ -146,6 +146,63 @@ public class CleanCuesTests
         Assert.Equal("00:00:07,160", cue.End);
     }
 
+    [Fact]
+    public void CleanCues_DropsMultilingualNonSpeechMarkersBeforeTranslation()
+    {
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:01,000", "[Music]"),
+            Cue(2, "00:00:01,000", "00:00:02,000", "[音乐][笑]"),
+            Cue(3, "00:00:02,000", "00:00:03,000", "Welcome [Music] back."),
+            Cue(4, "00:00:03,000", "00:00:04,000", "(Applause)"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal(["Welcome back."], cleaned.Select(c => c.Text).ToArray());
+        Assert.DoesNotContain(cleaned, c =>
+            c.Text.Contains('[') || c.Text.Contains("Music") || c.Text.Contains("音乐"));
+    }
+
+    [Fact]
+    public void CleanCues_DropsBroaderNonSpeechMarkersWithoutRemovingDialogueParentheses()
+    {
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:01,000", "[Sighs]"),
+            Cue(2, "00:00:01,000", "00:00:02,000", "Start [door opens] now"),
+            Cue(3, "00:00:02,000", "00:00:03,000", "Keep (important note) here"),
+            Cue(4, "00:00:03,000", "00:00:04,000", "继续【掌声继续】讲"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal([
+            "Start now",
+            "Keep (important note) here",
+            "继续讲",
+        ], cleaned.Select(c => c.Text).ToArray());
+    }
+
+    [Fact]
+    public void CleanCues_AvoidsSoftBreakInsideAutoCaptionSentence()
+    {
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:04,000", "we know it what is the vision for what"),
+            Cue(2, "00:00:03,500", "00:00:08,000", "you see coming next we asked ourselves"),
+            Cue(3, "00:00:07,500", "00:00:12,000", "if it can do this how far can it go how"),
+            Cue(4, "00:00:11,500", "00:00:15,000", "do we get from the robots we have now?"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        var cue = Assert.Single(cleaned);
+        Assert.Equal(
+            "we know it what is the vision for what you see coming next we asked ourselves if it can do this how far can it go how do we get from the robots we have now?",
+            cue.Text);
+    }
+
     /// <summary>正常字幕 1:1 不变（不滚动 → 不合并、不改时间）。</summary>
     [Fact]
     public void CleanCues_NormalFile_Unchanged()

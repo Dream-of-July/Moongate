@@ -218,6 +218,30 @@ public class DetectLoginRequiredTests
     }
 
     [Fact]
+    public void Bilibili412WithoutSavedCookies_LoginRequired()
+    {
+        var error = YtDlpEngine.DetectLoginRequired(
+            "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed",
+            "https://www.bilibili.com/video/BV1x",
+            hasCookies: false);
+
+        Assert.NotNull(error);
+        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal("bilibili.com", error.Detail);
+    }
+
+    [Fact]
+    public void Bilibili412WithSavedCookies_NotLoginRequired()
+    {
+        var error = YtDlpEngine.DetectLoginRequired(
+            "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed",
+            "https://www.bilibili.com/video/BV1x",
+            hasCookies: true);
+
+        Assert.Null(error);
+    }
+
+    [Fact]
     public void InvalidUrl_EmptyHost_FallbackSiteName()
     {
         var error = YtDlpEngine.DetectLoginRequired("ERROR: login required", "not a url", hasCookies: false);
@@ -295,6 +319,116 @@ public class StderrSummaryTests
         Assert.True(YtDlpEngine.IsBilibiliHost("www.bilibili.com"));
         Assert.True(YtDlpEngine.IsBilibiliHost("b23.tv"));
         Assert.False(YtDlpEngine.IsBilibiliHost("youtube.com"));
+    }
+
+    [Theory]
+    [InlineData("www.tiktok.com")]
+    [InlineData("vt.tiktok.com")]
+    [InlineData("v.douyin.com")]
+    [InlineData("www.douyin.com")]
+    [InlineData("www.xiaohongshu.com")]
+    [InlineData("xhslink.com")]
+    public void NativeExtractorHost_IncludesShortVideoSites(string host)
+    {
+        Assert.True(YtDlpEngine.IsNativeExtractorHost(host));
+    }
+}
+
+[Collection(L10nLanguageCollection.Name)]
+public class EngineI18nTests
+{
+    [Fact]
+    public void DetectLoginRequired_UsesTraditionalChineseMessages()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            var expired = YtDlpEngine.DetectLoginRequired(
+                "ERROR: Sign in to confirm you're not a bot",
+                "https://www.youtube.com/watch?v=abc",
+                hasCookies: true);
+            Assert.NotNull(expired);
+            Assert.Equal(MoongateErrorKind.DownloadFailed, expired.Kind);
+            Assert.Contains("登入資訊可能已過期", expired.Detail);
+            Assert.DoesNotContain("登录信息可能已过期", expired.Detail);
+
+            var fallbackSite = YtDlpEngine.DetectLoginRequired(
+                "ERROR: login required",
+                "not a url",
+                hasCookies: false);
+            Assert.NotNull(fallbackSite);
+            Assert.Equal("該站點", fallbackSite.Detail);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
+    }
+
+    [Fact]
+    public void FriendlyDownloadReason_UsesTraditionalChineseMessages()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            var forbidden = YtDlpEngine.FriendlyDownloadReason("ERROR: HTTP Error 403: Forbidden");
+            Assert.StartsWith("資源拒絕存取（403）", forbidden);
+            Assert.Contains("ERROR: HTTP Error 403: Forbidden", forbidden);
+
+            var network = YtDlpEngine.FriendlyDownloadReason("ERROR: Connection reset by peer");
+            Assert.Contains("網路連線不穩定", network);
+            Assert.Contains("重試", network);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
+    }
+
+    [Fact]
+    public void AnalyzeAndRiskControlMessages_UseTraditionalChineseMessages()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            var risk = YtDlpEngine.RiskControlMessage(
+                "ERROR: HTTP Error 412: Precondition Failed",
+                "www.bilibili.com");
+            Assert.NotNull(risk);
+            Assert.Contains("HTTP 412", risk);
+            Assert.Contains("10–30 分鐘", risk);
+            Assert.DoesNotContain("安全风控", risk);
+
+            var genericRisk = YtDlpEngine.RiskControlMessage("ERROR: 412 precondition failed", "example.com");
+            Assert.NotNull(genericRisk);
+            Assert.Contains("訪問風控", genericRisk);
+
+            var analyze = YtDlpEngine.FriendlyAnalyzeMessage("ERROR: Requested format is not available");
+            Assert.Contains("暫時沒有返回可用的清晰度", analyze);
+            Assert.DoesNotContain("临时风控", analyze);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
+    }
+
+    [Fact]
+    public void SummarizeStderr_UnknownError_UsesTraditionalChinese()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            Assert.Equal("未知錯誤", YtDlpEngine.SummarizeStderr("  \n  "));
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
     }
 }
 

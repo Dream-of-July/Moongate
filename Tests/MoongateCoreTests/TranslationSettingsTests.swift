@@ -88,6 +88,128 @@ final class TranslationSettingsTests: XCTestCase {
         }
     }
 
+    func testSmartTranslationPromptSettingDefaultsOffAndRoundTrips() throws {
+        XCTAssertFalse(AppSettings().smartTranslationPromptsEnabled)
+        let settings = try decodeSettings("""
+        {
+          "smartTranslationPromptsEnabled": true
+        }
+        """)
+        XCTAssertTrue(settings.smartTranslationPromptsEnabled)
+
+        let encoded = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertTrue(decoded.smartTranslationPromptsEnabled)
+    }
+
+    func testSmartTranslationAdviceParsesLyricsAndChangesPrompt() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {
+          "summary":"这是一首关于告别的歌曲。",
+          "context":"YOASOBI 在 THE FIRST TAKE 中演唱，开场提到 Ayase、乐队成员和 Plusonica 合唱团。",
+          "terms":["Ayase：YOASOBI 成员/制作人","Plusonica：合唱团体，字幕中写作ぷらそにか时不要误拼为 Plasonica"],
+          "preset":"songLyrics"
+        }
+        """))
+
+        XCTAssertEqual(advice.preset, .songLyrics)
+        XCTAssertEqual(advice.terms.count, 2)
+        let prompt = ConfiguredTranslator.systemPrompt(
+            targetLanguageDisplayName: "简体中文",
+            advice: advice
+        )
+        XCTAssertTrue(prompt.contains("这是一首关于告别的歌曲。"))
+        XCTAssertTrue(prompt.contains("翻译前上下文"))
+        XCTAssertTrue(prompt.contains("Ayase"))
+        XCTAssertTrue(prompt.contains("Plusonica"))
+        XCTAssertTrue(prompt.contains("不要把上下文里没有对应原文的信息添加到某一行译文"))
+        XCTAssertTrue(prompt.contains("歌词"))
+        XCTAssertTrue(prompt.contains("画面感"))
+        XCTAssertTrue(prompt.contains("呼吸感"))
+        XCTAssertFalse(prompt.contains("不要擅自扩写"))
+    }
+
+    func testSmartTranslationAdviceKeepsLegacySummaryOnlyJSONCompatible() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {"summary":"测试摘要","preset":"songLyrics"}
+        """))
+
+        XCTAssertEqual(advice.summary, "测试摘要")
+        XCTAssertEqual(advice.context, "")
+        XCTAssertEqual(advice.terms, [])
+    }
+
+    func testSmartTranslationPromptPresetsCoverCommonVideoTypes() throws {
+        let presets: [(String, String)] = [
+            ("interviewConversation", "访谈"),
+            ("tutorialHowTo", "步骤"),
+            ("lectureCourse", "课程"),
+            ("newsExplainer", "客观"),
+            ("reviewProduct", "体验"),
+            ("vlogLifestyle", "口吻"),
+            ("shortSocial", "节奏"),
+            ("documentaryNarrative", "叙事"),
+            ("gamingEntertainment", "游戏")
+        ]
+
+        for (rawPreset, expectedHint) in presets {
+            let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+            {"summary":"测试摘要","preset":"\(rawPreset)"}
+            """), rawPreset)
+            let prompt = ConfiguredTranslator.systemPrompt(
+                targetLanguageDisplayName: "简体中文",
+                advice: advice
+            )
+
+            XCTAssertTrue(prompt.contains(expectedHint), rawPreset)
+            XCTAssertTrue(prompt.contains("测试摘要"), rawPreset)
+        }
+    }
+
+    func testSmartTranslationUnknownPresetFallsBackToGeneral() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {"summary":"测试摘要","preset":"unknownFuturePreset"}
+        """))
+
+        XCTAssertEqual(advice.preset, .general)
+    }
+
+    func testSettingsSingleLineFieldsAreTrimmedWhenRoundTripping() throws {
+        let settings = AppSettings(
+            translationBaseURL: " https://translation.example.com\n",
+            translationModel: "\ntranslation-model ",
+            translationAuthToken: "token",
+            aiBaseURL: "https://ai.example.com\n\n",
+            aiModel: " ai-model\n",
+            aiAuthToken: "ai-token",
+            summaryBaseURL: "\nhttps://summary.example.com ",
+            summaryModel: "summary-model\n",
+            summaryAuthToken: "summary-token"
+        )
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+
+        XCTAssertEqual(decoded.translationBaseURL, "https://translation.example.com")
+        XCTAssertEqual(decoded.translationModel, "translation-model")
+        XCTAssertEqual(decoded.aiBaseURL, "https://ai.example.com")
+        XCTAssertEqual(decoded.aiModel, "ai-model")
+        XCTAssertEqual(decoded.summaryBaseURL, "https://summary.example.com")
+        XCTAssertEqual(decoded.summaryModel, "summary-model")
+    }
+
+    func testTranslatedSubtitleSuffixFollowsTargetLanguage() {
+        XCTAssertEqual(TranslationLanguage.translatedSubtitleFileSuffix(for: "zh-Hans"), ".zh-Hans.srt")
+        XCTAssertEqual(TranslationLanguage.translatedSubtitleFileSuffix(for: "zh-Hant"), ".zh-Hant.srt")
+        XCTAssertEqual(TranslationLanguage.translatedSubtitleFileSuffix(for: "en"), ".en.srt")
+        XCTAssertTrue(TranslationLanguage.translatedSubtitleFileSuffixes.contains(".zh-Hans.srt"))
+        XCTAssertTrue(TranslationLanguage.translatedSubtitleFileSuffixes.contains(".zh-Hant.srt"))
+        XCTAssertTrue(TranslationLanguage.translatedSubtitleFileSuffixes.contains(".en.srt"))
+        XCTAssertTrue(TranslationLanguage.isTranslatedSubtitleFileName("video.en.zh-Hans.srt"))
+        XCTAssertTrue(TranslationLanguage.isTranslatedSubtitleFileName("video.zh-Hant.en.srt"))
+        XCTAssertFalse(TranslationLanguage.isTranslatedSubtitleFileName("video.en.srt"))
+        XCTAssertFalse(TranslationLanguage.isTranslatedSubtitleFileName("video.zh-Hans.srt"))
+    }
+
     func testAPICompatibleEnginesNeedConfigurationWhenCloudFieldsAreMissing() {
         let cloudEngines: [TranslationEngine] = [.anthropicCompatible, .openAICompatible]
 
@@ -535,6 +657,76 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(decoded.lastPreferHDR)
     }
 
+    // MARK: 0.7 多语言 / 翻译目标 / 引导（M1.5 跨平台 parity 门禁）
+
+    func testLanguageAndOnboardingSettingsSurviveCodableRoundTrip() throws {
+        var original = AppSettings()
+        original.appLanguage = "zh-Hant"
+        original.translationTargetLanguage = "en"
+        original.onboardingCompleted = true
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        XCTAssertEqual(decoded.appLanguage, "zh-Hant")
+        XCTAssertEqual(decoded.translationTargetLanguage, "en")
+        XCTAssertTrue(decoded.onboardingCompleted)
+    }
+
+    func testLegacySettingsWithoutLanguageKeysKeepTokenAndUseSafeDefaults() throws {
+        // 关键回归：旧 settings.json 没有 0.7 新键。解码必须保住已存的 API token，
+        // 并把三字段安全回退为默认——翻译目标默认 zh-Hans，保证升级后行为零变化。
+        let legacyJSON = """
+        {
+          "translationProvider": "anthropic",
+          "translationEngine": "anthropicCompatible",
+          "translationBaseURL": "https://api.anthropic.com",
+          "translationModel": "claude-haiku-4-5",
+          "translationAuthToken": "TEST_SECRET_VALUE_DO_NOT_STORE"
+        }
+        """
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(decoded.translationAuthToken, "TEST_SECRET_VALUE_DO_NOT_STORE", "升级不得清空已保存凭证")
+        XCTAssertEqual(decoded.appLanguage, "auto")
+        XCTAssertEqual(decoded.translationTargetLanguage, "zh-Hans")
+        XCTAssertFalse(decoded.onboardingCompleted)
+    }
+
+    func testMakeTranslationContextUsesConfiguredTargetLanguage() {
+        var settings = AppSettings()
+        settings.translationTargetLanguage = "zh-Hant"
+        let ctx = settings.makeTranslationContext(sourceLanguage: "en")
+        XCTAssertEqual(ctx.targetLanguage, "zh-Hant")
+        XCTAssertEqual(ctx.targetLanguageDisplayName, "繁體中文")
+    }
+
+    func testTranslationLanguageDisplayNamesCoverSupportedTargets() {
+        XCTAssertEqual(TranslationLanguage.displayName(for: "zh-Hans"), "简体中文")
+        XCTAssertEqual(TranslationLanguage.displayName(for: "zh-Hant"), "繁體中文")
+        XCTAssertEqual(TranslationLanguage.displayName(for: "en"), "English")
+    }
+
+    func testSourceMatchesTargetIsScriptAwareForChinese() {
+        // 同脚本才跳过翻译；简↔繁视为不同脚本，必须仍翻译。
+        XCTAssertTrue(TranslationLanguage.matches(source: "zh-Hans", target: "zh-Hans"))
+        XCTAssertTrue(TranslationLanguage.matches(source: "zh-CN", target: "zh-Hans"))
+        XCTAssertTrue(TranslationLanguage.matches(source: "zh-TW", target: "zh-Hant"))
+        XCTAssertFalse(TranslationLanguage.matches(source: "zh-Hans", target: "zh-Hant"))
+        XCTAssertFalse(TranslationLanguage.matches(source: "en", target: "zh-Hans"))
+        XCTAssertTrue(TranslationLanguage.matches(source: "en-US", target: "en"))
+        XCTAssertFalse(TranslationLanguage.matches(source: nil, target: "zh-Hans"))
+    }
+
+    func testEncodedSettingsUseAgreedCrossPlatformJSONKeys() throws {
+        // parity：Swift 侧必须用与 Windows ToJson 完全一致的 JSON key 名。
+        let data = try JSONEncoder().encode(AppSettings())
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        for key in ["appLanguage", "translationTargetLanguage", "onboardingCompleted"] {
+            XCTAssertTrue(json.contains("\"\(key)\""), "缺少跨平台约定 key: \(key)")
+        }
+    }
+
     func testLegacySettingsSeedDefaultAIConfigSoTranslationBehaviorIsUnchanged() throws {
         // 旧 settings.json 只有 translation* 字段、没有 ai*/summary*/follow 标志。
         // 解码后「有效翻译配置」必须等于旧 translation 配置，行为零回归。
@@ -704,6 +896,95 @@ final class TranslationSettingsTests: XCTestCase {
             cleaned.contains { $0.text.contains("how are you") },
             "合并结果应保留完整句尾"
         )
+    }
+
+    func testCleanCuesDropsMultilingualNonSpeechMarkersBeforeTranslation() {
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[Music]"),
+            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "[音乐][笑]"),
+            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "Welcome [Music] back."),
+            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "(Applause)")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.map(\.text), ["Welcome back."])
+        XCTAssertFalse(cleaned.contains { $0.text.contains("[") || $0.text.contains("Music") || $0.text.contains("音乐") })
+    }
+
+    func testCleanCuesDropsBroaderNonSpeechMarkersWithoutRemovingDialogueParentheses() {
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[Sighs]"),
+            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "Start [door opens] now"),
+            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "Keep (important note) here"),
+            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "继续【掌声继续】讲")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.map(\.text), [
+            "Start now",
+            "Keep (important note) here",
+            "继续讲"
+        ])
+    }
+
+    func testCleanCuesAvoidsSoftBreakInsideAutoCaptionSentence() {
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:04,000", text: "we know it what is the vision for what"),
+            SubtitleCue(index: 2, start: "00:00:03,500", end: "00:00:08,000", text: "you see coming next we asked ourselves"),
+            SubtitleCue(index: 3, start: "00:00:07,500", end: "00:00:12,000", text: "if it can do this how far can it go how"),
+            SubtitleCue(index: 4, start: "00:00:11,500", end: "00:00:15,000", text: "do we get from the robots we have now?")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(
+            cleaned[0].text,
+            "we know it what is the vision for what you see coming next we asked ourselves if it can do this how far can it go how do we get from the robots we have now?"
+        )
+    }
+
+    func testCloudTranslationRetriesMissingLinesBySplittingLongChunk() async throws {
+        TranslationRetryURLProtocol.reset()
+        URLProtocol.registerClass(TranslationRetryURLProtocol.self)
+        defer { URLProtocol.unregisterClass(TranslationRetryURLProtocol.self) }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-translation-retry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let source = tempDir.appendingPathComponent("long.en.srt")
+        let cues = (1...30).map {
+            SubtitleCue(
+                index: $0,
+                start: secondsToSRTTime(Double($0 * 10)),
+                end: secondsToSRTTime(Double($0 * 10 + 2)),
+                text: "Sentence \($0)."
+            )
+        }
+        try serializeSRT(cues).write(to: source, atomically: true, encoding: .utf8)
+        let settings = AppSettings(
+            translationEngine: .anthropicCompatible,
+            translationBaseURL: "https://translation-retry.example.com",
+            translationModel: "test-model",
+            translationAuthToken: "token"
+        )
+        let translator = ConfiguredTranslator(settings: settings)
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 30)
+        XCTAssertEqual(result.map(\.text), (1...30).map { "中\($0)" })
+        XCTAssertEqual(TranslationRetryURLProtocol.requestCount(), 3)
     }
 
 
@@ -1205,4 +1486,101 @@ private final class ModelListURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class TranslationRetryURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var requests: [URLRequest] = []
+
+    static func reset() {
+        lock.lock()
+        requests = []
+        lock.unlock()
+    }
+
+    static func requestCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests.count
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "translation-retry.example.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        Self.lock.unlock()
+
+        let content = Self.userContent(from: request)
+        let lineCount = content.split(separator: "\n", omittingEmptySubsequences: false).count
+        let replyText: String
+        if lineCount == 30 {
+            replyText = "1|中1"
+        } else {
+            replyText = content
+                .split(separator: "\n")
+                .map { line -> String in
+                    let number = line.split(separator: "|", maxSplits: 1).first ?? ""
+                    return "\(number)|中\(number)"
+                }
+                .joined(separator: "\n")
+        }
+        let body = """
+        {"content":[{"type":"text","text":\(Self.jsonString(replyText))}],"stop_reason":"end_turn"}
+        """
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(fileURLWithPath: "/"),
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func userContent(from request: URLRequest) -> String {
+        guard let body = bodyData(from: request),
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = object["messages"] as? [[String: Any]],
+              let content = messages.first?["content"] as? String else {
+            return ""
+        }
+        return content
+    }
+
+    private static func bodyData(from request: URLRequest) -> Data? {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let count = stream.read(buffer, maxLength: bufferSize)
+            if count < 0 { return nil }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
+    private static func jsonString(_ value: String) -> String {
+        let data = try! JSONEncoder().encode(value)
+        return String(decoding: data, as: UTF8.self)
+    }
 }

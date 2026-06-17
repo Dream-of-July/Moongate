@@ -238,6 +238,80 @@ public struct TranslationContext: Codable, Sendable, Equatable {
             .lowercased()
         return identifier.isEmpty ? nil : identifier
     }
+
+    /// LLM 提示词用的目标语言可读名（如「简体中文」「繁體中文」「English」）。
+    public var targetLanguageDisplayName: String {
+        TranslationLanguage.displayName(for: targetLanguage)
+    }
+
+    /// 源语言是否已与目标语言同一脚本（同则跳过翻译，直接使用/烧录原字幕）。
+    public var sourceMatchesTarget: Bool {
+        TranslationLanguage.matches(source: sourceLanguage, target: targetLanguage)
+    }
+}
+
+/// 翻译目标语言的归一与展示。区分 zh-Hans / zh-Hant，避免把"中文"当成单一目标。
+/// 跨平台共享（桌面 Translator、iOS、CLI 都从这里取目标语言文案与跳过判定）。
+public enum TranslationLanguage {
+    public static let translatedSubtitleFileSuffixes: Set<String> = [
+        ".zh-Hans.srt",
+        ".zh-Hant.srt",
+        ".en.srt",
+    ]
+
+    /// 目标语言代码 → LLM 提示词里的人类可读名。
+    public static func displayName(for code: String) -> String {
+        switch normalizedScript(code) {
+        case "zh-Hans": return "简体中文"
+        case "zh-Hant": return "繁體中文"
+        case "en": return "English"
+        default: return code
+        }
+    }
+
+    /// 把任意 BCP-47 风格代码归一到"脚本级"标识，区分简繁。
+    /// zh / zh-CN / zh-Hans → "zh-Hans"；zh-Hant / zh-TW / zh-HK / zh-MO → "zh-Hant"；其余取主语言子标签。
+    public static func normalizedScript(_ code: String) -> String {
+        let lower = code.lowercased()
+        if lower.hasPrefix("zh") {
+            if lower.contains("hant") || lower.contains("tw") || lower.contains("hk") || lower.contains("mo") {
+                return "zh-Hant"
+            }
+            return "zh-Hans"
+        }
+        return lower.split(separator: "-").first.map(String.init) ?? lower
+    }
+
+    public static func translatedSubtitleFileSuffix(for code: String) -> String {
+        ".\(normalizedScript(code)).srt"
+    }
+
+    public static func isTranslatedSubtitleFileName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        guard lower.hasSuffix(".srt") else { return false }
+        let stem = String(lower.dropLast(4))
+        let parts = stem.split(separator: ".").map(String.init)
+        guard parts.count >= 3, let source = parts.dropLast().last, let target = parts.last else {
+            return false
+        }
+        return isLikelyLanguageCode(source) && translatedSubtitleFileSuffixes.contains { suffix in
+            suffix.lowercased() == ".\(target).srt"
+        }
+    }
+
+    /// 源语言与目标语言是否同一脚本。源为空（未知）按"不匹配"处理，从而不跳过翻译。
+    public static func matches(source: String?, target: String) -> Bool {
+        guard let source, !source.isEmpty else { return false }
+        return normalizedScript(source) == normalizedScript(target)
+    }
+
+    private static func isLikelyLanguageCode(_ value: String) -> Bool {
+        let segments = value.split(separator: "-")
+        guard let primary = segments.first, primary.count >= 2, primary.count <= 3 else {
+            return false
+        }
+        return primary.allSatisfy(\.isLetter)
+    }
 }
 
 public struct TranslationReadinessIssue: Codable, Sendable, Equatable {

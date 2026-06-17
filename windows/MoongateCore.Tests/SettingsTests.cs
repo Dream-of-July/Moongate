@@ -2,6 +2,7 @@ using Moongate.Core;
 
 namespace MoongateCore.Tests;
 
+[Collection(L10nLanguageCollection.Name)]
 public class SettingsTests
 {
     [Fact]
@@ -49,6 +50,96 @@ public class SettingsTests
         var settings = AppSettings.FromJson("""{"translationModel": "claude"}""");
         Assert.Equal(EncodeBackend.Auto, settings.EncodeBackend);
         Assert.False(settings.BurnAlwaysH264);
+    }
+
+    [Fact]
+    public void SmartTranslationPrompts_RoundTripsAndDefaultsOff()
+    {
+        Assert.False(new AppSettings().SmartTranslationPromptsEnabled);
+        var settings = AppSettings.FromJson("""{"smartTranslationPromptsEnabled": true}""");
+        Assert.True(settings.SmartTranslationPromptsEnabled);
+        Assert.True(AppSettings.FromJson(settings.ToJson()).SmartTranslationPromptsEnabled);
+        Assert.Contains("\"smartTranslationPromptsEnabled\"", settings.ToJson());
+    }
+
+    [Fact]
+    public void SingleLineFields_AreTrimmedWhenRoundTripping()
+    {
+        var settings = new AppSettings
+        {
+            TranslationBaseUrl = " https://translation.example.com\n",
+            TranslationModel = "\ntranslation-model ",
+            TranslationAuthToken = "token",
+            AIBaseUrl = "https://ai.example.com\n\n",
+            AIModel = " ai-model\n",
+            AIAuthToken = "ai-token",
+            SummaryBaseUrl = "\nhttps://summary.example.com ",
+            SummaryModel = "summary-model\n",
+            SummaryAuthToken = "summary-token",
+        };
+
+        var back = AppSettings.FromJson(settings.ToJson());
+
+        Assert.Equal("https://translation.example.com", back.TranslationBaseUrl);
+        Assert.Equal("translation-model", back.TranslationModel);
+        Assert.Equal("https://ai.example.com", back.AIBaseUrl);
+        Assert.Equal("ai-model", back.AIModel);
+        Assert.Equal("https://summary.example.com", back.SummaryBaseUrl);
+        Assert.Equal("summary-model", back.SummaryModel);
+    }
+
+    /// <summary>0.7：界面语言/翻译目标/引导完成 round-trip。</summary>
+    [Fact]
+    public void Language_RoundTripsThroughJson()
+    {
+        var settings = new AppSettings
+        {
+            AppLanguage = "zh-Hant",
+            TranslationTargetLanguage = "en",
+            OnboardingCompleted = true,
+        };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.Equal("zh-Hant", back.AppLanguage);
+        Assert.Equal("en", back.TranslationTargetLanguage);
+        Assert.True(back.OnboardingCompleted);
+    }
+
+    /// <summary>关键回归：旧 settings.json 无 0.7 新键时保住 token，三字段取安全默认（翻译目标 zh-Hans）。</summary>
+    [Fact]
+    public void FromJson_MissingLanguageKeys_KeepTokenAndUseSafeDefaults()
+    {
+        var settings = AppSettings.FromJson("""
+        {
+          "translationProvider": "anthropic",
+          "translationEngine": "anthropicCompatible",
+          "translationBaseURL": "https://api.anthropic.com",
+          "translationModel": "claude-haiku-4-5",
+          "translationAuthToken": "TEST_SECRET_VALUE_DO_NOT_STORE"
+        }
+        """);
+        Assert.Equal("TEST_SECRET_VALUE_DO_NOT_STORE", settings.TranslationAuthToken);
+        Assert.Equal("auto", settings.AppLanguage);
+        Assert.Equal("zh-Hans", settings.TranslationTargetLanguage);
+        Assert.False(settings.OnboardingCompleted);
+    }
+
+    /// <summary>parity：未知 appLanguage/translationTargetLanguage 值容错回退（auto / zh-Hans）。</summary>
+    [Fact]
+    public void FromJson_UnknownLanguageValues_FallBackSafely()
+    {
+        var settings = AppSettings.FromJson("""{"appLanguage": "klingon", "translationTargetLanguage": "elvish"}""");
+        Assert.Equal("auto", settings.AppLanguage);
+        Assert.Equal("zh-Hans", settings.TranslationTargetLanguage);
+    }
+
+    /// <summary>parity：ToJson 必须用与 Swift 端完全一致的 JSON key 名。</summary>
+    [Fact]
+    public void ToJson_UsesAgreedCrossPlatformLanguageKeys()
+    {
+        var json = new AppSettings().ToJson();
+        Assert.Contains("\"appLanguage\"", json);
+        Assert.Contains("\"translationTargetLanguage\"", json);
+        Assert.Contains("\"onboardingCompleted\"", json);
     }
 
     [Fact]
@@ -302,6 +393,31 @@ public class SettingsTests
         Assert.Equal(CoreLanguage.Chinese, L10n.Language);
         Assert.Equal("你好", L10n.Pick(CoreLanguage.Chinese, "你好", "hello"));
         Assert.Equal("hello", L10n.Pick(CoreLanguage.English, "你好", "hello"));
+    }
+
+    [Fact]
+    public void L10n_PickSupportsTraditionalChinese()
+    {
+        Assert.Equal("你好", L10n.Pick(CoreLanguage.Chinese, "你好", "您好", "hello"));
+        Assert.Equal("您好", L10n.Pick(CoreLanguage.TraditionalChinese, "你好", "您好", "hello"));
+        Assert.Equal("hello", L10n.Pick(CoreLanguage.English, "你好", "您好", "hello"));
+    }
+
+    [Fact]
+    public void MoongateException_UsesTraditionalChineseErrorShells()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            Assert.Equal("下載失敗：網路中斷", MoongateException.DownloadFailed("網路中斷").Message);
+            Assert.Equal("字幕翻譯失敗：逾時", MoongateException.TranslateFailed("逾時").Message);
+            Assert.Equal("已取消", MoongateException.Cancelled().Message);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
     }
 
     [Fact]

@@ -11,7 +11,9 @@ public enum HardwareAccelerationFamily: String, Sendable, Equatable {
 
 /// 一条转码/压制计划实际使用的加速路径摘要。
 public struct PipelineAccelerationReport: Sendable, Equatable {
-    public static let compatibilityModeNotice = "遇到兼容性问题，实际耗时可能比预计更长。"
+    public static var compatibilityModeNotice: String {
+        CoreL10n.t(L.Core.compatibilityModeNotice)
+    }
 
     public var family: HardwareAccelerationFamily
     public var usesHardwareDecode: Bool

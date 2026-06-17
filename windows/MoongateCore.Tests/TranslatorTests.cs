@@ -287,6 +287,10 @@ public class ConfiguredTranslatorTests : IDisposable
         TranslationBaseUrl = "https://gateway.example.com",
         TranslationModel = "test-model",
         TranslationAuthToken = "tok",
+        AIProvider = TranslationProvider.Anthropic,
+        AIBaseUrl = "https://gateway.example.com",
+        AIModel = "test-model",
+        AIAuthToken = "tok",
     };
 
     private string WriteSrt(string name, IEnumerable<SubtitleCue> cues)
@@ -317,7 +321,7 @@ public class ConfiguredTranslatorTests : IDisposable
         });
 
     [Fact]
-    public async Task Translate_Bilingual_ChineseAboveOriginal_WritesZhSrt()
+    public async Task Translate_Bilingual_ChineseAboveOriginal_WritesTargetLanguageSrt()
     {
         var srt = WriteSrt("video.en.srt",
         [
@@ -331,7 +335,7 @@ public class ConfiguredTranslatorTests : IDisposable
         var translator = new ConfiguredTranslator(Settings, handler);
         var output = await translator.TranslateAsync(srt, SubtitleStyle.Bilingual, null, _ => { });
 
-        Assert.Equal(Path.Combine(_tempDir, "video.en.zh.srt"), output);
+        Assert.Equal(Path.Combine(_tempDir, "video.en.zh-Hans.srt"), output);
         var cues = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal(2, cues.Count);
         Assert.Equal("中1\nHello there.", cues[0].Text);  // 双语：中文在上、原文在下
@@ -354,6 +358,107 @@ public class ConfiguredTranslatorTests : IDisposable
 
         var cues = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal("中1", Assert.Single(cues).Text);
+    }
+
+    [Fact]
+    public async Task Translate_WithSmartPrompts_AnalyzesSubtitleThenUsesLyricsPreset()
+    {
+        var srt = WriteSrt("song.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "I still hear your song."),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "Under the city lights."),
+        ]);
+        var settings = Settings with { SmartTranslationPromptsEnabled = true };
+        var handler = new FakeHttpHandler();
+        handler.Responder = captured =>
+        {
+            if (captured.Body.Contains("preset", StringComparison.OrdinalIgnoreCase)
+                || captured.Body.Contains("字幕内容分析", StringComparison.Ordinal))
+            {
+                return FakeHttpHandler.Json(200, AnthropicReply(
+                    """
+                    {
+                      "summary":"这是一首夜色里的告别歌曲。",
+                      "context":"YOASOBI 在 THE FIRST TAKE 中演唱，开场提到 Ayase、乐队成员和 Plusonica 合唱团。",
+                      "terms":["Ayase：YOASOBI 成员/制作人","Plusonica：合唱团体，字幕中写作ぷらそにか时不要误拼为 Plasonica"],
+                      "preset":"songLyrics"
+                    }
+                    """));
+            }
+            return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+        };
+        var translator = new ConfiguredTranslator(settings, handler);
+
+        await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("字幕内容分析", RequestSystem(handler.Requests[0].Body));
+        var translateSystem = RequestSystem(handler.Requests[1].Body);
+        Assert.Contains("这是一首夜色里的告别歌曲。", translateSystem);
+        Assert.Contains("翻译前上下文", translateSystem);
+        Assert.Contains("Ayase", translateSystem);
+        Assert.Contains("Plusonica", translateSystem);
+        Assert.Contains("不要把上下文里没有对应原文的信息添加到某一行译文", translateSystem);
+        Assert.Contains("歌词", translateSystem);
+        Assert.Contains("画面感", translateSystem);
+        Assert.Contains("呼吸感", translateSystem);
+        Assert.DoesNotContain("不要擅自扩写", translateSystem);
+    }
+
+    [Fact]
+    public void SmartTranslationPromptAdvice_LegacySummaryOnlyJsonStaysCompatible()
+    {
+        var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+            """{"summary":"测试摘要","preset":"songLyrics"}""");
+        Assert.NotNull(advice);
+
+        Assert.Equal("测试摘要", advice.Summary);
+        Assert.Equal("", advice.Context);
+        Assert.Empty(advice.Terms);
+    }
+
+    [Fact]
+    public void SmartTranslationPromptPresets_CoverCommonVideoTypes()
+    {
+        var presets = new (string RawPreset, string ExpectedHint)[]
+        {
+            ("interviewConversation", "访谈"),
+            ("tutorialHowTo", "步骤"),
+            ("lectureCourse", "课程"),
+            ("newsExplainer", "客观"),
+            ("reviewProduct", "体验"),
+            ("vlogLifestyle", "口吻"),
+            ("shortSocial", "节奏"),
+            ("documentaryNarrative", "叙事"),
+            ("gamingEntertainment", "游戏"),
+        };
+
+        foreach (var (rawPreset, expectedHint) in presets)
+        {
+            var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+                $$"""{"summary":"测试摘要","preset":"{{rawPreset}}"}""");
+            Assert.NotNull(advice);
+            var prompt = ConfiguredTranslator.SystemPrompt("简体中文", advice);
+
+            Assert.Contains(expectedHint, prompt);
+            Assert.Contains("测试摘要", prompt);
+        }
+    }
+
+    [Fact]
+    public void SmartTranslationPromptPresets_UnknownPresetFallsBackToGeneral()
+    {
+        var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+            """{"summary":"测试摘要","preset":"unknownFuturePreset"}""");
+        Assert.NotNull(advice);
+
+        Assert.Equal(TranslationPromptPreset.General, advice.Preset);
+    }
+
+    private static string RequestSystem(string requestBody)
+    {
+        using var doc = JsonDocument.Parse(requestBody);
+        return doc.RootElement.GetProperty("system").GetString() ?? "";
     }
 
     /// <summary>译文被输出上限截断 → 30 条块减半成 15+15 重试；最终全部翻完。</summary>
@@ -392,6 +497,36 @@ public class ConfiguredTranslatorTests : IDisposable
         lock (progressLock)
         {
             Assert.Equal(1.0, progressValues[^1], precision: 9);
+        }
+    }
+
+    [Fact]
+    public async Task Translate_MissingLinesInLongChunk_RetriesWithHalvedChunks()
+    {
+        var cues = Enumerable.Range(1, 30).Select(i => new SubtitleCue(
+            i, SrtTools.SecondsToSrtTime(i * 10), SrtTools.SecondsToSrtTime(i * 10 + 2), $"Sentence {i}."));
+        var srt = WriteSrt("long-missing.srt", cues);
+
+        var handler = new FakeHttpHandler();
+        handler.Responder = captured =>
+        {
+            using var doc = JsonDocument.Parse(captured.Body);
+            var content = doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+            var lineCount = content.Split('\n').Length;
+            return lineCount == 30
+                ? FakeHttpHandler.Json(200, AnthropicReply("1|中1"))
+                : FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        Assert.Equal(3, handler.Requests.Count);
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(30, result.Count);
+        for (var i = 0; i < 30; i++)
+        {
+            Assert.Equal($"中{i + 1}", result[i].Text);
         }
     }
 
@@ -448,8 +583,16 @@ public class ConfiguredTranslatorTests : IDisposable
     [Fact]
     public void SanitizeTranslation_LeavesCleanTextUntouched()
     {
-        Assert.Equal("这样你就能坐在沙发上，连电视玩。",
-            ConfiguredTranslator.SanitizeTranslation("这样你就能坐在沙发上，连电视玩。"));
         Assert.Equal("这是 well-known 的事", ConfiguredTranslator.SanitizeTranslation("这是 well-known 的事"));
+    }
+
+    [Fact]
+    public void SanitizeTranslation_RemovesChineseTerminalPeriodButKeepsExpressivePunctuation()
+    {
+        Assert.Equal("这样你就能坐在沙发上，连电视玩",
+            ConfiguredTranslator.SanitizeTranslation("这样你就能坐在沙发上，连电视玩。"));
+        Assert.Equal("真的吗？", ConfiguredTranslator.SanitizeTranslation("真的吗？"));
+        Assert.Equal("太好了！", ConfiguredTranslator.SanitizeTranslation("太好了！"));
+        Assert.Equal("等等……", ConfiguredTranslator.SanitizeTranslation("等等……"));
     }
 }

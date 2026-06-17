@@ -114,8 +114,14 @@ public sealed record AppSettings
     public EncodeBackend EncodeBackend { get; init; } = EncodeBackend.Auto;
     /// <summary>烧录字幕时是否始终输出 H.264（兼容优先）。false=跟随源编码（HEVC 源保 HEVC）。默认 false。</summary>
     public bool BurnAlwaysH264 { get; init; }
-    /// <summary>界面语言："auto"（跟随系统）、"zh-Hans"、"en"。</summary>
+    /// <summary>界面语言："auto"（跟随系统）、"zh-Hans"、"zh-Hant"、"en"。与翻译目标语言相互独立。</summary>
     public string AppLanguage { get; init; } = "auto";
+    /// <summary>字幕翻译目标语言："zh-Hans" / "zh-Hant" / "en"。默认 zh-Hans 以保证老用户升级后行为不变。</summary>
+    public string TranslationTargetLanguage { get; init; } = "zh-Hans";
+    /// <summary>首启引导是否已完成。</summary>
+    public bool OnboardingCompleted { get; init; }
+    /// <summary>开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。</summary>
+    public bool SmartTranslationPromptsEnabled { get; init; }
 
     /// <summary>
     /// 实际压制并发上限：硬件后端可比兼容路径多放一路并行提高吞吐；
@@ -161,6 +167,8 @@ public sealed record AppSettings
         }
     }
 
+    private static string SingleLineField(string value) => value.Trim();
+
     /// <summary>容错解析：缺字段按默认，非法值回退默认，并发数读入时夹回合法区间。</summary>
     public static AppSettings FromJson(string json)
     {
@@ -172,23 +180,23 @@ public sealed record AppSettings
         static int? IntField(JsonElement root, string name) =>
             root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
 
-        var baseUrl = StringField(root, "translationBaseURL")
-            ?? TranslationProvider.Anthropic.DefaultBaseUrl();
-        var model = StringField(root, "translationModel") ?? "";
+        var baseUrl = SingleLineField(StringField(root, "translationBaseURL")
+            ?? TranslationProvider.Anthropic.DefaultBaseUrl());
+        var model = SingleLineField(StringField(root, "translationModel") ?? "");
         // provider 键缺失（旧版配置）时按 baseURL/模型名推断
         var provider = TranslationProviderExtensions.FromRawValue(StringField(root, "translationProvider"))
             ?? InferProvider(baseUrl, model);
         var translationEngineProvider = ProviderFromEngine(StringField(root, "translationEngine")) ?? provider;
         provider = translationEngineProvider;
         var aiProvider = ProviderFromEngine(StringField(root, "aiEngine")) ?? provider;
-        var aiBaseUrl = StringField(root, "aiBaseURL") ?? baseUrl;
-        var aiModel = StringField(root, "aiModel") ?? model;
+        var aiBaseUrl = SingleLineField(StringField(root, "aiBaseURL") ?? baseUrl);
+        var aiModel = SingleLineField(StringField(root, "aiModel") ?? model);
         var aiToken = StringField(root, "aiAuthToken")
             ?? StringField(root, "translationAuthToken")
             ?? "";
         var summaryProvider = ProviderFromEngine(StringField(root, "summaryEngine")) ?? aiProvider;
-        var summaryBaseUrl = StringField(root, "summaryBaseURL") ?? aiBaseUrl;
-        var summaryModel = StringField(root, "summaryModel") ?? aiModel;
+        var summaryBaseUrl = SingleLineField(StringField(root, "summaryBaseURL") ?? aiBaseUrl);
+        var summaryModel = SingleLineField(StringField(root, "summaryModel") ?? aiModel);
         var summaryToken = StringField(root, "summaryAuthToken") ?? aiToken;
         var style = StringField(root, "subtitleStyle") switch
         {
@@ -209,9 +217,22 @@ public sealed record AppSettings
         var appLanguage = StringField(root, "appLanguage") switch
         {
             "zh-Hans" => "zh-Hans",
+            "zh-Hant" => "zh-Hant",
             "en" => "en",
             _ => "auto",
         };
+        // 翻译目标语言：未知值回退 zh-Hans（保持老用户升级后行为不变）
+        var translationTargetLanguage = StringField(root, "translationTargetLanguage") switch
+        {
+            "zh-Hant" => "zh-Hant",
+            "en" => "en",
+            _ => "zh-Hans",
+        };
+        // 首启引导是否完成：缺键/非 true 一律 false
+        var onboardingCompleted = root.TryGetProperty("onboardingCompleted", out var obc)
+            && obc.ValueKind == JsonValueKind.True;
+        var smartTranslationPromptsEnabled = root.TryGetProperty("smartTranslationPromptsEnabled", out var stp)
+            && stp.ValueKind == JsonValueKind.True;
 
         // 编码后端：缺键默认 Auto；烧录始终 H.264 默认关（跟随源）。
         var encodeBackend = EncodeBackendExtensions.FromRawValue(StringField(root, "encodeBackend"));
@@ -243,6 +264,9 @@ public sealed record AppSettings
             EncodeBackend = encodeBackend,
             BurnAlwaysH264 = burnAlwaysH264,
             AppLanguage = appLanguage,
+            TranslationTargetLanguage = translationTargetLanguage,
+            OnboardingCompleted = onboardingCompleted,
+            SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
         };
     }
 
@@ -253,18 +277,18 @@ public sealed record AppSettings
         {
             ["translationProvider"] = TranslationProvider.RawValue(),
             ["translationEngine"] = EngineRawValue(TranslationProvider),
-            ["translationBaseURL"] = TranslationBaseUrl,
-            ["translationModel"] = TranslationModel,
+            ["translationBaseURL"] = SingleLineField(TranslationBaseUrl),
+            ["translationModel"] = SingleLineField(TranslationModel),
             ["translationAuthToken"] = TranslationAuthToken,
             ["aiEngine"] = EngineRawValue(AIProvider),
-            ["aiBaseURL"] = AIBaseUrl,
-            ["aiModel"] = AIModel,
+            ["aiBaseURL"] = SingleLineField(AIBaseUrl),
+            ["aiModel"] = SingleLineField(AIModel),
             ["aiAuthToken"] = AIAuthToken,
             ["translationFollowsDefault"] = TranslationFollowsDefault,
             ["summaryFollowsDefault"] = SummaryFollowsDefault,
             ["summaryEngine"] = EngineRawValue(SummaryProvider),
-            ["summaryBaseURL"] = SummaryBaseUrl,
-            ["summaryModel"] = SummaryModel,
+            ["summaryBaseURL"] = SingleLineField(SummaryBaseUrl),
+            ["summaryModel"] = SingleLineField(SummaryModel),
             ["summaryAuthToken"] = SummaryAuthToken,
             ["subtitleStyle"] = SubtitleStyle == SubtitleStyle.ChineseOnly ? "chineseOnly" : "bilingual",
             ["maxBurnHeight"] = MaxBurnHeight,
@@ -273,6 +297,9 @@ public sealed record AppSettings
             ["encodeBackend"] = EncodeBackend.RawValue(),
             ["burnAlwaysH264"] = BurnAlwaysH264,
             ["appLanguage"] = AppLanguage,
+            ["translationTargetLanguage"] = TranslationTargetLanguage,
+            ["onboardingCompleted"] = OnboardingCompleted,
+            ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
         };
         return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
     }
@@ -310,12 +337,19 @@ public sealed record AppSettings
     /// <summary>把翻译有效配置投影成 TranslationApi 可直接使用的设置对象。</summary>
     public AppSettings ForTranslation()
     {
-        if (!TranslationFollowsDefault) return this;
+        if (!TranslationFollowsDefault)
+        {
+            return this with
+            {
+                TranslationBaseUrl = SingleLineField(TranslationBaseUrl),
+                TranslationModel = SingleLineField(TranslationModel),
+            };
+        }
         return this with
         {
             TranslationProvider = AIProvider,
-            TranslationBaseUrl = AIBaseUrl,
-            TranslationModel = AIModel,
+            TranslationBaseUrl = SingleLineField(AIBaseUrl),
+            TranslationModel = SingleLineField(AIModel),
             TranslationAuthToken = AIAuthToken,
         };
     }
@@ -330,8 +364,8 @@ public sealed record AppSettings
         return this with
         {
             TranslationProvider = provider,
-            TranslationBaseUrl = baseUrl,
-            TranslationModel = model,
+            TranslationBaseUrl = SingleLineField(baseUrl),
+            TranslationModel = SingleLineField(model),
             TranslationAuthToken = token,
         };
     }

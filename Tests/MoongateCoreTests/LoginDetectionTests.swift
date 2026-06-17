@@ -1,8 +1,7 @@
 import XCTest
 @testable import MoongateCore
 
-/// 验证「未登录导致失败」会被识别为 .loginRequired（failed 页据此显示「去登录」按钮），
-/// 而风控（412）不应误判为需要登录（登录解决不了，反而加重风控）。
+/// 验证「未登录导致失败」会被识别为 .loginRequired（failed 页据此显示「去登录」按钮）。
 final class LoginDetectionTests: XCTestCase {
 
     private func isLoginRequired(_ error: MoongateError?) -> Bool {
@@ -46,13 +45,29 @@ final class LoginDetectionTests: XCTestCase {
         XCTAssertTrue(isLoginRequired(error))
     }
 
-    func testBilibili412RiskControlIsNotTreatedAsLogin() {
-        // 412 风控不含登录关键词：不应当成需要登录（弹登录无用且加重风控）。
+    func testBilibili412WithoutSavedCookiesPromptsLogin() {
+        // B 站首次未登录直接贴链接时常以 412 表现，用户需要的是登录引导/WebView。
         let stderr = "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed"
-        let loginError = YtDlpEngine._testLoginRequired(stderr: stderr, url: "https://www.bilibili.com/video/BV1")
+        let loginError = YtDlpEngine._testLoginRequired(
+            stderr: stderr,
+            url: "https://www.bilibili.com/video/BV1",
+            hasCookies: false
+        )
+        XCTAssertTrue(isLoginRequired(loginError))
+        if case .loginRequired(let site) = loginError {
+            XCTAssertEqual(site, "bilibili.com")
+        }
+    }
+
+    func testBilibili412WithSavedCookiesKeepsRiskControlHint() {
+        let stderr = "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed"
+        let loginError = YtDlpEngine._testLoginRequired(
+            stderr: stderr,
+            url: "https://www.bilibili.com/video/BV1",
+            hasCookies: true
+        )
         XCTAssertFalse(isLoginRequired(loginError))
 
-        // 但应被风控检测识别，给诚实提示。
         let riskMessage = YtDlpEngine._testRiskControlMessage(stderr: stderr, host: "www.bilibili.com")
         XCTAssertNotNil(riskMessage)
         XCTAssertTrue(riskMessage?.contains("风控") == true)
@@ -62,5 +77,19 @@ final class LoginDetectionTests: XCTestCase {
         let stderr = "ERROR: Unable to download webpage: <urlopen error timed out>"
         XCTAssertFalse(isLoginRequired(YtDlpEngine._testLoginRequired(stderr: stderr, url: "https://www.bilibili.com/video/BV1")))
         XCTAssertNil(YtDlpEngine._testRiskControlMessage(stderr: stderr, host: "www.bilibili.com"))
+    }
+
+    func testNativeExtractorHostsIncludeShortVideoSites() {
+        for host in [
+            "www.tiktok.com",
+            "vt.tiktok.com",
+            "v.douyin.com",
+            "www.douyin.com",
+            "www.xiaohongshu.com",
+            "xhslink.com",
+        ] {
+            XCTAssertTrue(YtDlpEngine._testIsNativeExtractorHost(host), host)
+        }
+        XCTAssertFalse(YtDlpEngine._testIsNativeExtractorHost("example.com"))
     }
 }

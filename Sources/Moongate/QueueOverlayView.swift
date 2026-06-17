@@ -10,6 +10,7 @@ struct QueueOverlayView: View {
     @ObservedObject var queue: QueueManager
     @Binding var expanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -60,13 +61,13 @@ struct QueueOverlayView: View {
     }
 
     private var handleLabel: String {
-        if openCount == 0 { return "全部完成" }
-        if queue.pausedOpenTaskCount == openCount { return "\(openCount) 个已暂停" }
-        return "\(openCount) 个进行中"
+        if openCount == 0 { return localizer.t(L.Queue.allDone) }
+        if queue.pausedOpenTaskCount == openCount { return localizer.t(L.Queue.pausedCount, openCount) }
+        return localizer.t(L.Queue.inProgressCount, openCount)
     }
 
     private var progressAccessibilityValue: String {
-        if openCount == 0 { return "全部已结束" }
+        if openCount == 0 { return localizer.t(L.Queue.allEnded) }
         let percent = Int((overallProgress * 100).rounded())
         return "\(percent)%"
     }
@@ -91,9 +92,9 @@ struct QueueOverlayView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("展开下载队列")
-        .accessibilityLabel("展开下载队列：\(handleLabel)")
-        .accessibilityValue("进度 \(progressAccessibilityValue)")
+        .help(localizer.t(L.Queue.openQueue))
+        .accessibilityLabel(localizer.t(L.Queue.openQueueWithLabel, handleLabel))
+        .accessibilityValue(localizer.t(L.Queue.progressValue, progressAccessibilityValue))
     }
 }
 
@@ -102,6 +103,7 @@ struct ProgressRingView: View {
     let progress: Double
     let finished: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         ZStack {
@@ -121,12 +123,12 @@ struct ProgressRingView: View {
         }
         .frame(width: 18, height: 18)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("下载队列整体进度")
+        .accessibilityLabel(localizer.t(L.Queue.overallProgress))
         .accessibilityValue(progressAccessibilityValue)
     }
 
     private var progressAccessibilityValue: String {
-        if finished { return "全部已结束" }
+        if finished { return localizer.t(L.Queue.allEnded) }
         let percent = Int((min(1, max(0, progress)) * 100).rounded())
         return "\(percent)%"
     }

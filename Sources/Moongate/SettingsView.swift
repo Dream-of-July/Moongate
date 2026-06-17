@@ -11,6 +11,7 @@ import MoongateCore
 /// 草稿模式：输入框绑定 draft，点「完成」才回写并保存；取消 / Esc 不落任何修改。
 struct SettingsView: View {
     @ObservedObject var model: ViewModel
+    @EnvironmentObject private var localizer: Localizer
 
     typealias TestState = APIConnectionTestState
     typealias ModelFetchState = APIModelFetchState
@@ -34,13 +35,7 @@ struct SettingsView: View {
     @State private var draftRuntimeReadinessTask: Task<Void, Never>?
     @State private var appleTranslationSourceLanguage = "en"
 
-    private let appleTranslationSourceLanguages = [
-        ("en", "英语"),
-        ("ja", "日语"),
-        ("ko", "韩语"),
-        ("zh-Hans", "简体中文"),
-        ("zh-Hant", "繁体中文")
-    ]
+    private let appleTranslationSourceLanguages = ["en", "ja", "ko", "zh-Hans", "zh-Hant"]
 
     init(model: ViewModel) {
         self.model = model
@@ -50,6 +45,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
+                languageSection
                 dependencySection
                 translationSection
                 translationConfigSection
@@ -65,6 +61,12 @@ struct SettingsView: View {
             .onChange(of: draft.aiBaseURL) { resetTestState(); resetModelFetch() }
             .onChange(of: draft.aiModel) { resetTestState() }
             .onChange(of: draft.aiAuthToken) { resetTestState(); resetModelFetch() }
+            .onChange(of: draft.appLanguage) {
+                localizer.setLanguage(AppLanguage(rawValue: draft.appLanguage) ?? .auto)
+            }
+            .onChange(of: draft.translationTargetLanguage) {
+                refreshDraftRuntimeReadiness()
+            }
             .onChange(of: appleTranslationSourceLanguage) { refreshDraftRuntimeReadiness() }
             Divider()
             bottomBar
@@ -88,6 +90,28 @@ struct SettingsView: View {
             draftRuntimeReadinessTask?.cancel()
             // 未点「完成」时回滚为磁盘值；已保存时 reload 等价于当前值，无副作用。
             model.settings = AppSettings.load()
+            localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+        }
+    }
+
+    // MARK: - 语言
+
+    private var languageSection: some View {
+        Section(localizer.t(L.Settings.languageSection)) {
+            Picker(localizer.t(L.Settings.appLanguage), selection: $draft.appLanguage) {
+                Text(localizer.t(L.Settings.followSystem)).tag("auto")
+                Text(localizer.t(L.Settings.langHans)).tag("zh-Hans")
+                Text(localizer.t(L.Settings.langHant)).tag("zh-Hant")
+                Text(localizer.t(L.Settings.langEn)).tag("en")
+            }
+            Picker(localizer.t(L.Settings.targetLanguage), selection: $draft.translationTargetLanguage) {
+                Text(localizer.t(L.Settings.langHans)).tag("zh-Hans")
+                Text(localizer.t(L.Settings.langHant)).tag("zh-Hant")
+                Text(localizer.t(L.Settings.langEn)).tag("en")
+            }
+            Text(localizer.t(L.Settings.languageHelp))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -98,8 +122,10 @@ struct SettingsView: View {
     }
 
     private var dependencySummaryText: String {
-        if !dependencyChecked { return "检测中…" }
-        return DependencySetup.needsSetup(dependencyComponents) ? "有组件未就绪" : "全部就绪"
+        if !dependencyChecked { return localizer.t(L.Dependency.summaryChecking) }
+        return DependencySetup.needsSetup(dependencyComponents)
+            ? localizer.t(L.Dependency.summaryMissing)
+            : localizer.t(L.Dependency.summaryReady)
     }
 
     private var dependencySection: some View {
@@ -108,8 +134,8 @@ struct SettingsView: View {
                 if !dependencyChecked {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                            .accessibilityLabel("正在检测依赖组件")
-                        Text("正在检测…")
+                            .accessibilityLabel(localizer.t(L.Dependency.checkingAccessibility))
+                        Text(localizer.t(L.Dependency.summaryChecking))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -122,26 +148,26 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(component.id)
                                     .font(.body.monospaced())
-                                Text(component.purpose)
+                                Text(componentPurposeText(component))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(component.isInstalled ? "已就绪" : "待安装")
+                            Text(componentReadyText(component))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel(componentAccessibilityLabel(component))
-                        .accessibilityValue(component.isInstalled ? "已就绪" : "待安装")
+                        .accessibilityValue(componentReadyText(component))
                     }
 
                     HStack(spacing: 10) {
-                        Button("重新检测") {
+                        Button(localizer.t(L.Dependency.refresh)) {
                             Task { await refreshDependencies() }
                         }
                         .buttonStyle(.bordered)
-                        Button(DependencySetup.needsSetup(dependencyComponents) ? "查看/安装缺失组件" : "打开配置") {
+                        Button(DependencySetup.needsSetup(dependencyComponents) ? localizer.t(L.Dependency.setupMissing) : localizer.t(L.Dependency.setupReady)) {
                             requestDependencySetup()
                         }
                         .buttonStyle(.borderedProminent)
@@ -153,14 +179,14 @@ struct SettingsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: dependencyAllReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                         .foregroundStyle(dependencyAllReady ? .green : (dependencyChecked ? .orange : .secondary))
-                    Text("依赖组件")
+                    Text(localizer.t(L.Dependency.sectionTitle))
                     Spacer()
                     Text(dependencySummaryText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("依赖组件")
+                .accessibilityLabel(localizer.t(L.Dependency.sectionTitle))
                 .accessibilityValue(dependencySummaryText)
             }
         }
@@ -179,18 +205,31 @@ struct SettingsView: View {
     }
 
     private func componentAccessibilityLabel(_ component: DependencySetup.Component) -> String {
-        return "\(component.id)，\(component.purpose)"
+        localizer.t(L.Dependency.componentAccessibilityLabel, component.id, componentPurposeText(component))
+    }
+
+    private func componentPurposeText(_ component: DependencySetup.Component) -> String {
+        switch component.id {
+        case "yt-dlp": return localizer.t(L.Dependency.purposeYtDlp)
+        case "ffmpeg": return localizer.t(L.Dependency.purposeFfmpeg)
+        case "deno": return localizer.t(L.Dependency.purposeDeno)
+        default: return component.purpose
+        }
+    }
+
+    private func componentReadyText(_ component: DependencySetup.Component) -> String {
+        component.isInstalled ? localizer.t(L.Dependency.statusReady) : localizer.t(L.Dependency.statusPending)
     }
 
     // MARK: - AI 设置（翻译/总结共享的默认配置 + 各自跟随/单独开关）
 
     private var translationSection: some View {
-        Section("AI 设置") {
-            Text("这里配置默认 AI 服务。翻译与总结默认都用它，也可在下方各自单独配置。")
+        Section(localizer.t(L.Settings.aiSettingsSection)) {
+            Text(localizer.t(L.Settings.aiSettingsDescription))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Picker("AI 引擎", selection: translationEngineBinding) {
+            Picker(localizer.t(L.Settings.aiEngine), selection: translationEngineBinding) {
                 ForEach(TranslationEngine.allCases, id: \.rawValue) { engine in
                     Text(engine.displayName).tag(engine)
                 }
@@ -206,17 +245,22 @@ struct SettingsView: View {
     // MARK: - AI 翻译（默认跟随，可单独配置）
 
     private var translationConfigSection: some View {
-        Section("AI 翻译") {
-            Picker("配置方式", selection: Binding(
+        Section(localizer.t(L.Settings.aiTranslationSection)) {
+            Toggle(localizer.t(L.Settings.smartTranslationPrompts), isOn: $draft.smartTranslationPromptsEnabled)
+            Text(localizer.t(L.Settings.smartTranslationPromptsHelp))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker(localizer.t(L.Settings.configMode), selection: Binding(
                 get: { draft.translationFollowsDefault },
                 set: { draft.translationFollowsDefault = $0 }
             )) {
-                Text("跟随 AI 设置").tag(true)
-                Text("单独配置").tag(false)
+                Text(localizer.t(L.Settings.followAISettings)).tag(true)
+                Text(localizer.t(L.Settings.configureSeparately)).tag(false)
             }
             .pickerStyle(.menu)
             if !draft.translationFollowsDefault {
-                Picker("翻译引擎", selection: $draft.translationEngine) {
+                Picker(localizer.t(L.Settings.translationEngine), selection: $draft.translationEngine) {
                     ForEach(TranslationEngine.allCases, id: \.rawValue) { engine in
                         Text(engine.displayName).tag(engine)
                     }
@@ -233,10 +277,10 @@ struct SettingsView: View {
                             authToken: draft.translationAuthToken
                         ) },
                         baseURLPrompt: baseURLPrompt(for: draft.translationEngine),
-                        modelPrompt: "可先留空，填完地址和凭证后选择"
+                        modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
                     )
                 } else {
-                    Text("本地引擎无需填写服务地址与凭证。")
+                    Text(localizer.t(L.Settings.localEngineNoCredentials))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -247,18 +291,18 @@ struct SettingsView: View {
     // MARK: - AI 总结（默认跟随，可单独配置）
 
     private var summarySection: some View {
-        Section("AI 总结") {
-            Picker("配置方式", selection: Binding(
+        Section(localizer.t(L.Settings.aiSummarySection)) {
+            Picker(localizer.t(L.Settings.configMode), selection: Binding(
                 get: { draft.summaryFollowsDefault },
                 set: { draft.summaryFollowsDefault = $0 }
             )) {
-                Text("跟随 AI 设置").tag(true)
-                Text("单独配置").tag(false)
+                Text(localizer.t(L.Settings.followAISettings)).tag(true)
+                Text(localizer.t(L.Settings.configureSeparately)).tag(false)
             }
             .pickerStyle(.menu)
             if draft.summaryFollowsDefault {
                 if !draft.aiEngine.canGenerateText {
-                    Text("默认引擎不能生成总结，请改用云端 API / 本地 Apple Intelligence，或改为单独配置。")
+                    Text(localizer.t(L.Settings.defaultEngineCannotSummarize))
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -271,13 +315,13 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var summaryOverrideEditor: some View {
-        Picker("总结引擎", selection: $draft.summaryEngine) {
+        Picker(localizer.t(L.Settings.summaryEngine), selection: $draft.summaryEngine) {
             ForEach(TranslationEngine.allCases, id: \.rawValue) { engine in
                 Text(engine.displayName).tag(engine)
             }
         }
         if !draft.summaryEngine.canGenerateText {
-            Text("该引擎只能翻译、不能生成总结，请改选云端 API 或本地 Apple Intelligence。")
+            Text(localizer.t(L.Settings.engineCannotSummarize))
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
@@ -293,10 +337,10 @@ struct SettingsView: View {
                     authToken: draft.summaryAuthToken
                 ) },
                 baseURLPrompt: baseURLPrompt(for: draft.summaryEngine),
-                modelPrompt: "可先留空，填完地址和凭证后选择"
+                modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
             )
         } else {
-            Text("本地引擎无需填写服务地址与凭证。")
+            Text(localizer.t(L.Settings.localEngineNoCredentials))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -309,17 +353,17 @@ struct SettingsView: View {
             .foregroundStyle(.secondary)
             .lineLimit(2)
         TextField(
-            "服务地址",
+            localizer.t(L.Settings.serviceURL),
             text: $draft.aiBaseURL,
             prompt: Text(baseURLPrompt)
         )
         .autocorrectionDisabled()
         VStack(alignment: .leading, spacing: 4) {
-            SecureField("API 凭证", text: $draft.aiAuthToken)
+            SecureField(localizer.t(L.Settings.apiCredential), text: $draft.aiAuthToken)
             Text(credentialSummaryText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            DisclosureGroup("高级说明") {
+            DisclosureGroup(localizer.t(L.Settings.advancedDetails)) {
                 Text(credentialDetailText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -330,7 +374,7 @@ struct SettingsView: View {
         }
         // 模型：先填地址+凭证，点「拉取模型」从服务端取真实可用列表再选。
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button("拉取模型") { fetchModels() }
+            Button(localizer.t(L.Settings.fetchModels)) { fetchModels() }
                 .buttonStyle(.bordered)
                 .disabled(modelFetchState == .fetching
                     || draft.aiBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -340,9 +384,9 @@ struct SettingsView: View {
                 EmptyView()
             case .fetching:
                 ProgressView().controlSize(.small)
-                    .accessibilityLabel("正在拉取模型")
+                    .accessibilityLabel(localizer.t(L.Settings.fetchingModels))
             case .loaded(let models):
-                Text("已拉取 \(models.count) 个模型")
+                Text(localizer.t(L.Settings.fetchedModels, models.count))
                     .font(.caption).foregroundStyle(.secondary)
             case .failure(let message):
                 Text(message)
@@ -354,21 +398,21 @@ struct SettingsView: View {
             // 手填了列表外的模型名时，把它并入选项，避免 Picker 选中值无对应 tag
             let current = draft.aiModel
             let options = (current.isEmpty || models.contains(current)) ? models : models + [current]
-            Picker("选择模型", selection: $draft.aiModel) {
-                Text("请选择").tag("")
+            Picker(localizer.t(L.Settings.selectModel), selection: $draft.aiModel) {
+                Text(localizer.t(L.Settings.pleaseSelect)).tag("")
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
             .pickerStyle(.menu)
         }
         // 拉不到列表时仍允许手填
         TextField(
-            "模型名（也可手动填写）",
+            localizer.t(L.Settings.modelName),
             text: $draft.aiModel,
             prompt: Text(modelPrompt)
         )
         .autocorrectionDisabled()
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button("测试连接") {
+            Button(localizer.t(L.Settings.testConnection)) {
                 runConnectionTest()
             }
             .buttonStyle(.bordered)
@@ -379,9 +423,9 @@ struct SettingsView: View {
             case .testing:
                 ProgressView()
                     .controlSize(.small)
-                    .accessibilityLabel("正在测试连接")
+                    .accessibilityLabel(localizer.t(L.Settings.testingConnection))
             case .success:
-                Text("连接正常")
+                Text(localizer.t(L.Settings.connectionOK))
                     .font(.caption)
                     .foregroundStyle(.green)
             case .failure(let message):
@@ -401,32 +445,32 @@ struct SettingsView: View {
             engine: draft.aiEngine,
             readiness: readiness
         )
-        let statusText = readiness.isReady ? "当前可运行" : "需要处理"
+        let statusText = readiness.isReady ? localizer.t(L.Settings.statusReady) : localizer.t(L.Settings.statusNeedsAction)
         return VStack(alignment: .leading, spacing: 6) {
             Text(draft.aiEngine.readinessGuidance)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if shouldShowAppleTranslationSourceLanguagePicker {
-                Picker("源语言", selection: $appleTranslationSourceLanguage) {
-                    ForEach(appleTranslationSourceLanguages, id: \.0) { language in
-                        Text(language.1).tag(language.0)
+                Picker(localizer.t(L.Settings.sourceLanguage), selection: $appleTranslationSourceLanguage) {
+                    ForEach(appleTranslationSourceLanguages, id: \.self) { code in
+                        Text(appleTranslationSourceLanguageLabel(code)).tag(code)
                     }
                 }
                 .pickerStyle(.menu)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("当前引擎")
+                    Text(localizer.t(L.Settings.currentEngine))
                         .foregroundStyle(.secondary)
                     Text(draft.aiEngine.displayName)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("状态")
+                    Text(localizer.t(L.Settings.status))
                         .foregroundStyle(.secondary)
                     Text(statusText)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("首要原因")
+                    Text(localizer.t(L.Settings.primaryReason))
                         .foregroundStyle(.secondary)
                     Text(readinessMessage(readiness))
                         .foregroundStyle(.secondary)
@@ -436,7 +480,7 @@ struct SettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
             // 只把只读状态合并成单个朗读元素；源语言 Picker 与恢复按钮必须保持可独立聚焦/激活。
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Apple 翻译引擎状态")
+            .accessibilityLabel(localizer.t(L.Settings.appleTranslationStatus))
             .accessibilityValue("\(draft.aiEngine.displayName)，\(statusText)：\(readinessMessage(readiness))")
             if !readiness.isReady {
                 appleSetupGuidance(guidance)
@@ -457,13 +501,13 @@ struct SettingsView: View {
 
     private func appleTranslationReadinessContext() -> TranslationContext {
         guard shouldShowAppleTranslationSourceLanguagePicker else {
-            return TranslationContext(sourceLanguage: nil, targetLanguage: "zh-Hans")
+            return draft.makeTranslationContext(sourceLanguage: nil)
         }
-        return TranslationContext(sourceLanguage: appleTranslationSourceLanguage, targetLanguage: "zh-Hans")
+        return draft.makeTranslationContext(sourceLanguage: appleTranslationSourceLanguage)
     }
 
     private var fallbackEngineText: String {
-        "可先改用 Anthropic-compatible 或 OpenAI-compatible 翻译引擎。"
+        localizer.t(L.Settings.fallbackEngine)
     }
 
     private func appleSetupGuidance(_ guidance: AppleTranslationSetupGuidance) -> some View {
@@ -483,11 +527,11 @@ struct SettingsView: View {
             }
             Text(fallbackEngineText)
                 .foregroundStyle(.secondary)
-                .accessibilityHint("如果本机 Apple 能力暂不可用，可以先切换到 API 兼容引擎")
+                .accessibilityHint(localizer.t(L.Settings.fallbackEngineHint))
             if !guidance.actions.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(guidance.actions) { action in
-                        Button(action.title) {
+                        Button(appleSetupActionTitle(action.kind)) {
                             performAppleSetupAction(action)
                         }
                         .help(appleSetupActionHelpText(action.kind))
@@ -504,7 +548,7 @@ struct SettingsView: View {
     private var baseURLPrompt: String {
         switch apiProvider {
         case .anthropic:
-            return "Anthropic 兼容地址或企业网关地址"
+            return localizer.t(L.Settings.baseURLPromptAnthropic)
         case .openai:
             return "https://api.openai.com"
         }
@@ -513,22 +557,22 @@ struct SettingsView: View {
     private var modelPrompt: String {
         switch apiProvider {
         case .anthropic:
-            return "可先留空，填完地址和凭证后选择"
+            return localizer.t(L.Settings.modelPromptEmpty)
         case .openai:
-            return "可先留空，填完地址和凭证后选择"
+            return localizer.t(L.Settings.modelPromptEmpty)
         }
     }
 
     private var credentialSummaryText: String {
-        "凭证只保存在本机设置中。只有点击「拉取模型」或「测试连接」时，才会发送到你填写的服务地址。"
+        localizer.t(L.Settings.credentialSummary)
     }
 
     private var credentialDetailText: String {
         switch apiProvider {
         case .anthropic:
-            return "公司网关按 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 填写；DeepSeek 映射也选这个协议。"
+            return localizer.t(L.Settings.credentialDetailAnthropic)
         case .openai:
-            return "OpenAI 使用 Responses API。服务地址填 https://api.openai.com；凭证填 OpenAI API key，不要带 Bearer 前缀。"
+            return localizer.t(L.Settings.credentialDetailOpenAI)
         }
     }
 
@@ -552,7 +596,7 @@ struct SettingsView: View {
     /// 服务地址提示语：按引擎对应的协议给出。
     private func baseURLPrompt(for engine: TranslationEngine) -> String {
         switch engine.legacyProvider ?? .anthropic {
-        case .anthropic: return "Anthropic 兼容地址或企业网关地址"
+        case .anthropic: return localizer.t(L.Settings.baseURLPromptAnthropic)
         case .openai: return "https://api.openai.com"
         }
     }
@@ -599,11 +643,11 @@ struct SettingsView: View {
     }
 
     private func readinessMessage(_ readiness: TranslationReadiness) -> String {
-        if readiness.isReady { return "当前可运行" }
+        if readiness.isReady { return localizer.t(L.Settings.statusReady) }
         return readiness.issues
             .min { readinessIssuePriority($0.kind) < readinessIssuePriority($1.kind) }?
             .message
-            ?? "当前翻译引擎不可运行。"
+            ?? localizer.t(L.Settings.readinessUnavailable)
     }
 
     private func readinessIssuePriority(_ kind: TranslationReadinessIssue.Kind) -> Int {
@@ -641,13 +685,43 @@ struct SettingsView: View {
     private func appleSetupActionHelpText(_ kind: AppleTranslationSetupActionKind) -> String {
         switch kind {
         case .refreshReadiness:
-            return "只重新检查当前 Apple 翻译运行状态，不会下载语言包或模型"
+            return localizer.t(L.Settings.appleActionRefreshHelp)
         case .openLanguageSettings:
-            return "打开系统设置，由你在系统里下载语言包；App 不会自动下载"
+            return localizer.t(L.Settings.appleActionOpenLanguageSettingsHelp)
         case .openAppleIntelligenceSettings:
-            return "打开系统设置 > Apple Intelligence 与 Siri，由你查看或启用 Apple Intelligence 和模型准备状态；App 不会自动下载、替换模型或更改系统设置"
+            return localizer.t(L.Settings.appleActionOpenAppleIntelligenceSettingsHelp)
         case .chooseDifferentEngine:
-            return "把当前设置草稿切换到 Anthropic-compatible；点击「完成」后才保存并生效"
+            return localizer.t(L.Settings.appleActionChooseDifferentEngineHelp)
+        }
+    }
+
+    private func appleSetupActionTitle(_ kind: AppleTranslationSetupActionKind) -> String {
+        switch kind {
+        case .refreshReadiness:
+            return localizer.t(L.Settings.appleActionRefresh)
+        case .openLanguageSettings:
+            return localizer.t(L.Settings.appleActionOpenLanguageSettings)
+        case .openAppleIntelligenceSettings:
+            return localizer.t(L.Settings.appleActionOpenAppleIntelligenceSettings)
+        case .chooseDifferentEngine:
+            return localizer.t(L.Settings.appleActionChooseDifferentEngine)
+        }
+    }
+
+    private func appleTranslationSourceLanguageLabel(_ code: String) -> String {
+        switch code {
+        case "en":
+            return localizer.t(L.Settings.sourceEnglish)
+        case "ja":
+            return localizer.t(L.Settings.sourceJapanese)
+        case "ko":
+            return localizer.t(L.Settings.sourceKorean)
+        case "zh-Hans":
+            return localizer.t(L.Settings.langHans)
+        case "zh-Hant":
+            return localizer.t(L.Settings.langHant)
+        default:
+            return code
         }
     }
 
@@ -671,9 +745,9 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var updateSection: some View {
-        Section("更新") {
+        Section(localizer.t(L.Update.sectionTitle)) {
             HStack {
-                Text("当前版本")
+                Text(localizer.t(L.Update.currentVersion))
                 Spacer()
                 Text("v\(updater.currentVersion)")
                     .foregroundStyle(.secondary)
@@ -682,29 +756,29 @@ struct SettingsView: View {
             case .idle, .upToDate:
                 HStack {
                     if case .upToDate = updater.state {
-                        Label("已是最新版本", systemImage: "checkmark.circle.fill")
+                        Label(localizer.t(L.Update.upToDate), systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .font(.callout)
                     }
                     Spacer()
-                    Button("检查更新") { updater.check() }
+                    Button(localizer.t(L.Update.check)) { updater.check() }
                         .buttonStyle(.bordered)
                 }
             case .checking:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                        .accessibilityLabel("正在检查更新")
-                    Text("正在检查更新…")
+                        .accessibilityLabel(localizer.t(L.Update.checkingAccessibility))
+                    Text(localizer.t(L.Update.checking))
                         .font(.callout).foregroundStyle(.secondary)
                     Spacer()
                 }
             case .available(let info):
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("发现新版本 v\(info.version.description)", systemImage: "arrow.down.circle.fill")
+                    Label(localizer.t(L.Update.available, info.version.description), systemImage: "arrow.down.circle.fill")
                         .foregroundStyle(.blue)
                         .font(.callout.weight(.medium))
                     if !info.notes.isEmpty {
-                        DisclosureGroup("更新说明") {
+                        DisclosureGroup(localizer.t(L.Update.releaseNotes)) {
                             Text(info.notes)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -715,20 +789,20 @@ struct SettingsView: View {
                         .font(.caption)
                     }
                     HStack {
-                        Button("下载并更新") { updater.downloadAndInstall(info) }
+                        Button(localizer.t(L.Update.downloadAndInstall)) { updater.downloadAndInstall(info) }
                             .buttonStyle(.borderedProminent)
-                        Button("打开发布页") { NSWorkspace.shared.open(updater.releasesPageURL) }
+                        Button(localizer.t(L.Update.openReleases)) { NSWorkspace.shared.open(updater.releasesPageURL) }
                             .buttonStyle(.bordered)
                         Spacer()
                     }
                 }
             case .downloading(let fraction):
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("正在下载更新…\(Int(fraction * 100))%")
+                    Text(localizer.t(L.Update.downloadingPercent, Int(fraction * 100)))
                         .font(.callout).foregroundStyle(.secondary)
                     ProgressView(value: fraction)
-                        .accessibilityLabel("更新下载进度")
-                    Button("取消") { updater.cancel() }
+                        .accessibilityLabel(localizer.t(L.Update.downloadProgress))
+                    Button(localizer.t(L.Common.cancel)) { updater.cancel() }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .font(.caption)
@@ -736,8 +810,8 @@ struct SettingsView: View {
             case .installing:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                        .accessibilityLabel("正在安装更新")
-                    Text("正在安装，应用稍后会自动重启…")
+                        .accessibilityLabel(localizer.t(L.Update.installingAccessibility))
+                    Text(localizer.t(L.Update.installing))
                         .font(.callout).foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -747,9 +821,9 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("重试") { updater.check() }
+                        Button(localizer.t(L.Common.retry)) { updater.check() }
                             .buttonStyle(.bordered)
-                        Button("去 GitHub 下载") { NSWorkspace.shared.open(updater.releasesPageURL) }
+                        Button(localizer.t(L.Update.openGitHubDownload)) { NSWorkspace.shared.open(updater.releasesPageURL) }
                             .buttonStyle(.bordered)
                         Spacer()
                     }
@@ -761,10 +835,10 @@ struct SettingsView: View {
     // MARK: - 性能
 
     private var performanceSection: some View {
-        Section("性能") {
+        Section(localizer.t(L.Settings.performanceSection)) {
             Stepper(value: $draft.maxConcurrentDownloads, in: 1...5) {
                 HStack {
-                    Text("同时下载数")
+                    Text(localizer.t(L.Settings.concurrentDownloads))
                     Spacer()
                     Text("\(draft.maxConcurrentDownloads)")
                         .foregroundStyle(.secondary)
@@ -773,14 +847,14 @@ struct SettingsView: View {
             }
             Stepper(value: $draft.maxConcurrentBurns, in: 1...3) {
                 HStack {
-                    Text("同时压制数")
+                    Text(localizer.t(L.Settings.concurrentBurns))
                     Spacer()
                     Text("\(draft.maxConcurrentBurns)")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
             }
-            Text("超出上限的任务显示「排队中」自动等待；暂停一个任务会把空位让给下一个。遇到兼容性问题时，实际耗时可能比预计更长。保存后即对新开始的阶段生效。")
+            Text(localizer.t(L.Settings.performanceHelp))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -818,7 +892,7 @@ struct SettingsView: View {
                 } else {
                     reason = error.localizedDescription
                 }
-                testState = .failure("连接失败：\(reason)")
+                testState = .failure(localizer.t(L.Settings.connectionFailed, reason))
             }
         }
     }
@@ -850,7 +924,7 @@ struct SettingsView: View {
                 } else {
                     reason = error.localizedDescription
                 }
-                modelFetchState = .failure("拉取失败：\(reason)")
+                modelFetchState = .failure(localizer.t(L.Settings.fetchFailed, reason))
             }
         }
     }
@@ -867,10 +941,10 @@ struct SettingsView: View {
     // MARK: - 字幕样式
 
     private var styleSection: some View {
-        Section("字幕样式") {
-            Picker("中文字幕样式", selection: $draft.subtitleStyle) {
-                Text("双语（原文 + 中文）").tag(SubtitleStyle.bilingual)
-                Text("仅中文").tag(SubtitleStyle.chineseOnly)
+        Section(localizer.t(L.Settings.styleSection)) {
+            Picker(localizer.t(L.Settings.subtitleStyle), selection: $draft.subtitleStyle) {
+                Text(localizer.t(L.Settings.subtitleStyleBilingual)).tag(SubtitleStyle.bilingual)
+                Text(localizer.t(L.Settings.subtitleStyleChineseOnly)).tag(SubtitleStyle.chineseOnly)
             }
         }
     }
@@ -878,8 +952,8 @@ struct SettingsView: View {
     // MARK: - 烧录画质
 
     private var burnQualitySection: some View {
-        Section("烧录与转码") {
-            Picker("编码方式", selection: $draft.encodeBackend) {
+        Section(localizer.t(L.Settings.burnSection)) {
+            Picker(localizer.t(L.Settings.encodeBackend), selection: $draft.encodeBackend) {
                 ForEach(EncodeBackend.allCases, id: \.rawValue) { backend in
                     Text(backend.displayName).tag(backend)
                 }
@@ -889,27 +963,27 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("烧录编码", selection: Binding(
+            Picker(localizer.t(L.Settings.burnEncoding), selection: Binding(
                 get: { draft.burnAlwaysH264 },
                 set: { draft.burnAlwaysH264 = $0 }
             )) {
-                Text("跟随源（HEVC 源保 HEVC）").tag(false)
-                Text("始终 H.264（兼容最好）").tag(true)
+                Text(localizer.t(L.Settings.followSourceHEVC)).tag(false)
+                Text(localizer.t(L.Settings.alwaysH264)).tag(true)
             }
-            Text("「始终 H.264」体积略大但几乎所有设备/网页都能播；「跟随源」保留 HEVC/HDR 画质与更小体积。HDR 源在跟随源时保留 HDR。")
+            Text(localizer.t(L.Settings.burnEncodingHelp))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 4) {
                 Toggle(
-                    "高清视频烧录时缩放到 1080p（更快更省空间，推荐）",
+                    localizer.t(L.Settings.scaleHD1080),
                     isOn: Binding(
                         get: { draft.maxBurnHeight != nil },
                         set: { draft.maxBurnHeight = $0 ? 1080 : nil }
                     )
                 )
-                Text("关闭则按源分辨率烧录（4K 会明显更慢、文件更大）。此设置只影响烧录字幕，不影响普通下载。")
+                Text(localizer.t(L.Settings.scaleHD1080Help))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -919,31 +993,31 @@ struct SettingsView: View {
     private var encodeBackendHint: String {
         switch draft.encodeBackend {
         case .auto:
-            return "优先用 Mac 的硬件媒体引擎编码。遇到源文件或系统兼容性问题时，实际耗时可能比预计更长。"
+            return localizer.t(L.Settings.encodeAutoHint)
         case .hardware:
-            return "优先使用硬件媒体引擎（VideoToolbox）。个别老机型或特殊格式可能需要兼容处理，实际耗时可能更长。"
+            return localizer.t(L.Settings.encodeHardwareHint)
         case .software:
-            return "使用兼容性更稳定的编码路径。同等体积画质更稳，但 4K 和 HDR 任务通常更慢。"
+            return localizer.t(L.Settings.encodeSoftwareHint)
         }
     }
 
     // MARK: - 站点登录
 
     private var loginSection: some View {
-        Section("站点登录") {
+        Section(localizer.t(L.Settings.loginSection)) {
             Text(loginStatusText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button("登录 YouTube") {
+                Button(localizer.t(L.Settings.loginYouTube)) {
                     requestLogin(site: "youtube.com")
                 }
-                Button("登录哔哩哔哩") {
+                Button(localizer.t(L.Settings.loginBilibili)) {
                     requestLogin(site: "bilibili.com")
                 }
             }
             HStack(spacing: 10) {
-                Button("清除本 App 登录信息", role: .destructive) {
+                Button(localizer.t(L.Settings.clearAppLogin), role: .destructive) {
                     showClearConfirm = true
                 }
                 .accessibilityHint(clearLoginHelpText)
@@ -956,13 +1030,13 @@ struct SettingsView: View {
                 }
             }
             .confirmationDialog(
-                "清除本 App 保存的登录信息？",
+                localizer.t(L.Settings.clearLoginDialogTitle),
                 isPresented: $showClearConfirm
             ) {
-                Button("清除登录信息", role: .destructive) {
+                Button(localizer.t(L.Settings.clearLoginAction), role: .destructive) {
                     clearAllLogins()
                 }
-                Button("取消", role: .cancel) {}
+                Button(localizer.t(L.Common.cancel), role: .cancel) {}
             } message: {
                 Text(clearLoginHelpText)
             }
@@ -970,15 +1044,23 @@ struct SettingsView: View {
     }
 
     private var clearLoginHelpText: String {
-        "只清除本 App 保存的站点登录信息，不会退出浏览器或系统账号；需要重新登录才能下载会员/受限视频。"
+        localizer.t(L.Settings.clearLoginHelp)
     }
 
     private var loginStatusText: String {
-        guard let cookieDate else { return "尚未登录任何站点" }
+        guard let cookieDate else { return localizer.t(L.Settings.loginNone) }
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
-        return "已保存登录信息（\(formatter.string(from: cookieDate))导出）"
+        formatter.locale = Locale(identifier: settingsDateLocaleIdentifier)
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return localizer.t(L.Settings.loginSaved, formatter.string(from: cookieDate))
+    }
+
+    private var settingsDateLocaleIdentifier: String {
+        switch localizer.resolved {
+        case .en: return "en_US"
+        case .zhHans: return "zh_CN"
+        case .zhHant: return "zh_TW"
+        }
     }
 
     /// 登录状态行的数据源：cookies.txt 的修改日期。
@@ -1010,7 +1092,7 @@ struct SettingsView: View {
                       WKWebsiteDataTypeIndexedDBDatabases, WKWebsiteDataTypeSessionStorage],
             modifiedSince: .distantPast
         ) {
-            clearFeedback = "已清除"
+            clearFeedback = localizer.t(L.Settings.cleared)
             refreshLoginStatus()
         }
     }
@@ -1026,12 +1108,12 @@ struct SettingsView: View {
                     .lineLimit(2)
             }
             Spacer()
-            Button("取消") {
+            Button(localizer.t(L.Common.cancel)) {
                 model.showSettings = false
             }
             .buttonStyle(.bordered)
             .keyboardShortcut(.cancelAction)
-            Button("完成") {
+            Button(localizer.t(L.Common.done)) {
                 model.settings = draft
                 if model.saveSettings() {
                     model.showSettings = false
@@ -1077,15 +1159,16 @@ struct APIConfigEditor: View {
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: APIModelFetchState = .idle
     @State private var modelFetchTask: Task<Void, Never>?
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
-        TextField("服务地址", text: $baseURL, prompt: Text(baseURLPrompt))
+        TextField(localizer.t(L.Settings.serviceURL), text: $baseURL, prompt: Text(baseURLPrompt))
             .autocorrectionDisabled()
             .onChange(of: baseURL) { resetTestState(); resetModelFetch() }
-        SecureField("API 凭证", text: $authToken)
+        SecureField(localizer.t(L.Settings.apiCredential), text: $authToken)
             .onChange(of: authToken) { resetTestState(); resetModelFetch() }
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button("拉取模型") { fetchModels() }
+            Button(localizer.t(L.Settings.fetchModels)) { fetchModels() }
                 .buttonStyle(.bordered)
                 .disabled(modelFetchState == .fetching
                     || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1095,9 +1178,9 @@ struct APIConfigEditor: View {
                 EmptyView()
             case .fetching:
                 ProgressView().controlSize(.small)
-                    .accessibilityLabel("正在拉取模型")
+                    .accessibilityLabel(localizer.t(L.Settings.fetchingModels))
             case .loaded(let models):
-                Text("已拉取 \(models.count) 个模型")
+                Text(localizer.t(L.Settings.fetchedModels, models.count))
                     .font(.caption).foregroundStyle(.secondary)
             case .failure(let message):
                 Text(message)
@@ -1108,17 +1191,17 @@ struct APIConfigEditor: View {
         if case .loaded(let models) = modelFetchState, !models.isEmpty {
             let current = model
             let options = (current.isEmpty || models.contains(current)) ? models : models + [current]
-            Picker("选择模型", selection: $model) {
-                Text("请选择").tag("")
+            Picker(localizer.t(L.Settings.selectModel), selection: $model) {
+                Text(localizer.t(L.Settings.pleaseSelect)).tag("")
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
             .pickerStyle(.menu)
         }
-        TextField("模型名（也可手动填写）", text: $model, prompt: Text(modelPrompt))
+        TextField(localizer.t(L.Settings.modelName), text: $model, prompt: Text(modelPrompt))
             .autocorrectionDisabled()
             .onChange(of: model) { resetTestState() }
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button("测试连接") { runConnectionTest() }
+            Button(localizer.t(L.Settings.testConnection)) { runConnectionTest() }
                 .buttonStyle(.bordered)
                 .disabled(testState == .testing
                     || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1129,9 +1212,9 @@ struct APIConfigEditor: View {
                 EmptyView()
             case .testing:
                 ProgressView().controlSize(.small)
-                    .accessibilityLabel("正在测试连接")
+                    .accessibilityLabel(localizer.t(L.Settings.testingConnection))
             case .success:
-                Text("连接正常").font(.caption).foregroundStyle(.green)
+                Text(localizer.t(L.Settings.connectionOK)).font(.caption).foregroundStyle(.green)
             case .failure(let message):
                 Text(message).font(.caption).foregroundStyle(.red).lineLimit(3)
             }
@@ -1167,7 +1250,7 @@ struct APIConfigEditor: View {
                 if !model.isEmpty, !models.contains(model) { model = "" }
             } catch {
                 guard !Task.isCancelled else { return }
-                modelFetchState = .failure("拉取失败：\(Self.reason(error))")
+                modelFetchState = .failure(localizer.t(L.Settings.fetchFailed, Self.reason(error)))
             }
         }
     }
@@ -1183,7 +1266,7 @@ struct APIConfigEditor: View {
                 testState = .success
             } catch {
                 guard !Task.isCancelled else { return }
-                testState = .failure("连接失败：\(Self.reason(error))")
+                testState = .failure(localizer.t(L.Settings.connectionFailed, Self.reason(error)))
             }
         }
     }

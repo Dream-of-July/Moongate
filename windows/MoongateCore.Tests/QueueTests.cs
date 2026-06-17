@@ -62,7 +62,7 @@ internal sealed class FakeTranslator : ISubtitleTranslator
     {
         Interlocked.Increment(ref CallCount);
         if (ThrowOnTranslate is { } e) return Task.FromException<string>(e);
-        var output = OnTranslate?.Invoke(srtFile) ?? srtFile[..^4] + ".zh.srt";
+        var output = OnTranslate?.Invoke(srtFile) ?? srtFile[..^4] + ".zh-Hans.srt";
         return Task.FromResult(output);
     }
 }
@@ -81,10 +81,11 @@ internal sealed class FakeBurner : ISubtitleBurner
         Interlocked.Increment(ref CallCount);
         LastOutputTag = outputTag;
         lock (Burns) Burns.Add((video, subtitle));
-        return Task.FromResult(video[..^4] + "（中文字幕）.mp4");
+        return Task.FromResult(video[..^4] + (outputTag ?? "（字幕版）") + ".mp4");
     }
 }
 
+[Collection(L10nLanguageCollection.Name)]
 public class QueueManagerTests
 {
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)
@@ -271,7 +272,7 @@ public class QueueManagerTests
             "/tmp/downloads/v [a].zh-Hans.srt");
 
         await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
-        Assert.Equal("使用视频自带中文字幕，已跳过翻译", queue.Item(id)!.StatusText);
+        Assert.Equal("使用视频自带目标语言字幕，已跳过翻译", queue.Item(id)!.StatusText);
         Assert.Equal(0, translator.CallCount);  // 从未调用翻译
         Assert.False(queue.Item(id)!.PartialFailure);
     }
@@ -297,9 +298,9 @@ public class QueueManagerTests
         Assert.Equal(0, translator.CallCount);
         Assert.Equal(1, burner.CallCount);
         Assert.Equal(("/tmp/downloads/v [a].mp4", "/tmp/downloads/v [a].zh.srt"), burner.Burns[0]);
-        Assert.Equal("已烧录视频自带中文字幕", queue.Item(id)!.StatusText);
+        Assert.Equal("已烧录视频自带目标语言字幕", queue.Item(id)!.StatusText);
         // 烧录产物排在结果第一位
-        Assert.Equal("/tmp/downloads/v [a]（中文字幕）.mp4", queue.Item(id)!.ResultFiles[0]);
+        Assert.Equal("/tmp/downloads/v [a]（字幕版）.mp4", queue.Item(id)!.ResultFiles[0]);
     }
 
     /// <summary>partialFailure：视频已下载但翻译失败 → Done + 部分失败标记（可重试字幕处理）。</summary>
@@ -364,9 +365,36 @@ public class QueueManagerTests
         Assert.Equal(0, translator.CallCount);
     }
 
+    [Fact]
+    public async Task TraditionalChinese_NoSubtitleFile_UsesTraditionalNotice()
+    {
+        var previous = L10n.Language;
+        L10n.Language = CoreLanguage.TraditionalChinese;
+        try
+        {
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var queue = new QueueManager(engine, _ => translator, settings: Settings());
+
+            var id = queue.Enqueue(
+                Info("a"), Request("a", subtitleLangs: ["en"]),
+                ChineseSubtitleMode.SrtOnly, Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete("/tmp/downloads/v [a].mp4");
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            Assert.Equal("沒有字幕檔，已跳過翻譯", queue.Item(id)!.StatusText);
+            Assert.Equal(0, translator.CallCount);
+        }
+        finally
+        {
+            L10n.Language = previous;
+        }
+    }
+
     /// <summary>翻译成功路径：译文加入产物列表。</summary>
     [Fact]
-    public async Task TranslateSucceeds_ZhSrtAppended()
+    public async Task TranslateSucceeds_TargetLanguageSrtAppended()
     {
         var engine = new FakeEngine();
         var translator = new FakeTranslator();
@@ -383,7 +411,7 @@ public class QueueManagerTests
         await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
         var item = queue.Item(id)!;
         Assert.Equal(1, translator.CallCount);
-        Assert.Contains("/tmp/downloads/v [a].en.zh.srt", item.ResultFiles);
+        Assert.Contains("/tmp/downloads/v [a].en.zh-Hans.srt", item.ResultFiles);
         Assert.False(item.PartialFailure);
         Assert.Null(item.StatusText);
     }
@@ -427,6 +455,20 @@ public class QueueManagerTests
         // 只有译文时兜底返回它
         Assert.Equal("/d/v [a].zh.srt", QueueManager.PickSourceSubtitle(["/d/v [a].zh.srt"], null));
         Assert.Null(QueueManager.PickSourceSubtitle(["/d/v.mp4"], "en"));
+    }
+
+    [Fact]
+    public void PickSourceSubtitle_ExcludesTranslatedOutputsForAllSupportedTargets()
+    {
+        string[] files =
+        [
+            "/d/v [a].en.srt",
+            "/d/v [a].en.zh-Hans.srt",
+            "/d/v [a].en.zh-Hant.srt",
+            "/d/v [a].en.en.srt",
+        ];
+
+        Assert.Equal("/d/v [a].en.srt", QueueManager.PickSourceSubtitle(files, null));
     }
 
     [Fact]

@@ -12,12 +12,12 @@ enum ChineseSubtitleMode: String, CaseIterable, Codable {
     case burnIn
     case burnOriginal
 
-    var label: String {
+    var localizationKey: String {
         switch self {
-        case .off: return "不需要"
-        case .srtOnly: return "只生成中文字幕文件"
-        case .burnIn: return "翻译并烧录进视频"
-        case .burnOriginal: return "直接烧录字幕（不翻译）"
+        case .off: return L.Ready.subtitleModeOff
+        case .srtOnly: return L.Ready.subtitleModeSrtOnly
+        case .burnIn: return L.Ready.subtitleModeBurnIn
+        case .burnOriginal: return L.Ready.subtitleModeBurnOriginal
         }
     }
 
@@ -56,7 +56,7 @@ final class ViewModel: ObservableObject {
     }
     @Published var selectedSubtitleIDs: Set<String> = [] {
         didSet {
-            // 中文字幕依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
+            // 字幕处理依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
             if selectedSubtitleIDs.isEmpty, chineseMode != .off {
                 chineseMode = .off
             }
@@ -67,14 +67,21 @@ final class ViewModel: ObservableObject {
     @Published var chineseMode: ChineseSubtitleMode = .off {
         didSet { persistCurrentDownloadOptions() }
     }
+    /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
+    /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
+    static var persistedAppLanguage: String { AppSettings.load().appLanguage }
+
     @Published var settings = AppSettings.load() {
         didSet {
+            CoreL10n.sync(from: settings)
             queue.syncConcurrency(from: settings)
             refreshTranslationRuntimeReadiness()
             refreshSummaryRuntimeReadiness()
         }
     }
     @Published var showSettings = false
+    /// 首启引导：选择 App 语言与默认译文目标；不强制配置 API。
+    @Published var showOnboarding = false
     /// 非 nil 时弹出站点登录窗（值为站点 host，如 "youtube.com"）
     @Published var loginSite: String?
     /// 失败原因是需要登录时记录站点，failed 页据此把主按钮换成「去登录」
@@ -141,6 +148,7 @@ final class ViewModel: ObservableObject {
         self.queue = queue ?? QueueManager(engine: engine)
         self.updater = updater ?? UpdateService()
         self.runtimeReadinessEvaluator = runtimeReadinessEvaluator
+        CoreL10n.sync(from: settings)
     }
 
     // MARK: - 派生状态
@@ -158,7 +166,10 @@ final class ViewModel: ObservableObject {
 
     func onAppear() {
         prefillFromClipboardIfAppropriate()
-        showDependencySetupIfNeededOnStartup()
+        showOnboardingIfNeeded()
+        if settings.onboardingCompleted {
+            showDependencySetupIfNeededOnStartup()
+        }
         checkForUpdatesIfNeeded()
         refreshTranslationRuntimeReadiness()
         refreshSummaryRuntimeReadiness()
@@ -190,7 +201,7 @@ final class ViewModel: ObservableObject {
         guard !isParsing else { return }
         guard let clip = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty else {
-            enqueueNotice = "剪贴板里没有内容"
+            enqueueNotice = CoreL10n.t(L.Main.clipboardEmpty)
             return
         }
         urlText = clip
@@ -219,7 +230,7 @@ final class ViewModel: ObservableObject {
             failedNeedsLogin = nil
             failedNeedsDependency = false
             queueExpanded = false
-            stage = .failed("这不是一个网址。请粘贴以 http 或 https 开头的视频链接。")
+            stage = .failed(CoreL10n.t(L.Main.invalidURL))
             return
         }
         session += 1
@@ -268,7 +279,7 @@ final class ViewModel: ObservableObject {
             name = String(name.prefix(80)).trimmingCharacters(in: .whitespaces)
         }
         while name.hasSuffix(".") { name.removeLast() }
-        return name.isEmpty ? "视频" : name
+        return name.isEmpty ? CoreL10n.t(L.Main.defaultVideoFolderName) : name
     }
 
     /// 从粘贴文本里提取全部 http(s) 链接，保序去重。
@@ -298,7 +309,7 @@ final class ViewModel: ObservableObject {
     )
 
     /// 批量模式：逐个解析（多候选页取第一个，即页面主视频），按最高画质自动入队。
-    /// 当前已选「中文字幕」模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。
+    /// 当前已选字幕处理模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。
     private func processBatch(_ urls: [String]) {
         let mode = chineseMode
         guard dependenciesReady(for: mode) else { return }
@@ -320,7 +331,7 @@ final class ViewModel: ObservableObject {
             var failedHosts: [String] = []
             for (index, urlString) in urls.enumerated() {
                 guard token == self.session else { return }
-                self.batchStatusText = "批量解析中（\(index + 1)/\(urls.count)）"
+                self.batchStatusText = CoreL10n.t(L.Main.batchParsing, index + 1, urls.count)
                 do {
                     let found = try await self.engine.resolveCandidates(for: urlString)
                     guard token == self.session else { return }
@@ -337,7 +348,7 @@ final class ViewModel: ObservableObject {
                         )
                     }
                     guard let formatID = info.formats.first?.id else {
-                        throw MoongateError.analyzeFailed("没有可用格式")
+                        throw MoongateError.analyzeFailed(CoreL10n.t(L.Main.noAvailableFormat))
                     }
                     if self.queue.hasOpenDuplicate(
                         videoID: info.videoID, sourceURL: info.sourceURL, formatID: formatID
@@ -345,7 +356,7 @@ final class ViewModel: ObservableObject {
                         duplicated += 1
                         continue
                     }
-                    // 中文字幕模式开启时自动选一条字幕作翻译源（真实字幕优先）
+                    // 字幕处理开启时自动选一条字幕作翻译源（真实字幕优先）
                     var subtitleLangs: [String] = []
                     var autoSubtitleLangs: [String] = []
                     if mode != .off,
@@ -362,9 +373,8 @@ final class ViewModel: ObservableObject {
                         subtitleLangs: subtitleLangs,
                         autoSubtitleLangs: autoSubtitleLangs
                     ) {
-                        let translationContext = TranslationContext(
-                            sourceLanguage: subtitleLangs.first ?? autoSubtitleLangs.first,
-                            targetLanguage: "zh-Hans"
+                        let translationContext = currentSettings.makeTranslationContext(
+                            sourceLanguage: subtitleLangs.first ?? autoSubtitleLangs.first
                         )
                         guard await blockIfTranslationNotReady(
                             for: mode,
@@ -408,11 +418,12 @@ final class ViewModel: ObservableObject {
             self.selectedSubtitleIDs = []
             self.chineseMode = .off
             self.stage = .idle
-            var parts: [String] = ["已加入 \(added) 个任务"]
-            if duplicated > 0 { parts.append("\(duplicated) 个已在队列") }
+            var parts: [String] = [CoreL10n.t(L.Main.batchAdded, added)]
+            if duplicated > 0 { parts.append(CoreL10n.t(L.Main.batchDuplicateCount, duplicated)) }
             if !failedHosts.isEmpty {
                 let sample = failedHosts.prefix(2).joined(separator: "、")
-                parts.append("\(failedHosts.count) 个解析失败：\(sample)\(failedHosts.count > 2 ? " 等" : "")")
+                let suffix = failedHosts.count > 2 ? CoreL10n.t(L.Main.batchFailedSuffix) : ""
+                parts.append(CoreL10n.t(L.Main.batchFailedCount, failedHosts.count, sample, suffix))
             }
             self.enqueueNotice = parts.joined(separator: "；")
             self.queueExpanded = true
@@ -487,9 +498,8 @@ final class ViewModel: ObservableObject {
 
         guard dependenciesReady(for: mode) else { return }
         if shouldRequireTranslationReadiness(for: mode, info: info) {
-            let translationContext = TranslationContext(
-                sourceLanguage: translationSourceSubtitle(in: info)?.id,
-                targetLanguage: "zh-Hans"
+            let translationContext = currentSettings.makeTranslationContext(
+                sourceLanguage: translationSourceSubtitle(in: info)?.id
             )
             guard await blockIfTranslationNotReady(
                 for: mode,
@@ -504,7 +514,7 @@ final class ViewModel: ObservableObject {
         guard let formatID = selectedFormatIDSnapshot ?? info.formats.first?.id else { return }
         // 去重：队列里已有同源未完成任务时不再起新任务，只给一行提示。
         if queue.hasOpenDuplicate(videoID: info.videoID, sourceURL: info.sourceURL, formatID: formatID) {
-            enqueueNotice = "该视频已在队列中"
+            enqueueNotice = CoreL10n.t(L.Main.videoAlreadyQueued)
             return
         }
         let chosen = info.subtitles.filter { selectedSubtitleIDsSnapshot.contains($0.id) }
@@ -541,7 +551,7 @@ final class ViewModel: ObservableObject {
         retryAction = nil
         failedNeedsLogin = nil
         failedNeedsDependency = false
-        enqueueNotice = "已加入队列：\(info.title)"
+        enqueueNotice = CoreL10n.t(L.Main.enqueuedTitle, info.title)
         // 入队即铺满队列（新任务落位可见），重新聚焦输入框方便直接粘贴下一条。
         queueExpanded = true
         requestUrlFocus += 1
@@ -609,15 +619,15 @@ final class ViewModel: ObservableObject {
         return chosen.first(where: { !$0.isAuto }) ?? chosen.first
     }
 
-    /// 实际翻译源字幕是否已是中文（lang code 以 zh 开头）。中文源会跳过翻译、直接使用/烧录。
-    func translationSourceIsChinese(in info: VideoInfo) -> Bool {
+    /// 实际翻译源字幕是否已与翻译目标语言同一脚本（同则跳过翻译、直接使用/烧录）。
+    /// 例：目标=简中且源=zh-Hans → 跳过；目标=繁中且源=zh-Hans → 不跳过（仍要简转繁翻译）。
+    func translationSourceMatchesTarget(in info: VideoInfo) -> Bool {
         guard let source = translationSourceSubtitle(in: info) else { return false }
-        let prefix = source.id.lowercased().split(separator: "-").first.map(String.init)
-        return prefix == "zh"
+        return TranslationLanguage.matches(source: source.id, target: settings.translationTargetLanguage)
     }
 
     func shouldRequireTranslationReadiness(for mode: ChineseSubtitleMode, info: VideoInfo) -> Bool {
-        mode.requiresTranslation && !translationSourceIsChinese(in: info)
+        mode.requiresTranslation && !translationSourceMatchesTarget(in: info)
     }
 
     private func shouldRequireTranslationReadiness(
@@ -627,14 +637,14 @@ final class ViewModel: ObservableObject {
         autoSubtitleLangs: [String]
     ) -> Bool {
         mode.requiresTranslation
-            && !translationSourceIsChinese(
+            && !translationSourceMatchesTarget(
                 in: info,
                 subtitleLangs: subtitleLangs,
                 autoSubtitleLangs: autoSubtitleLangs
             )
     }
 
-    private func translationSourceIsChinese(
+    private func translationSourceMatchesTarget(
         in info: VideoInfo,
         subtitleLangs: [String],
         autoSubtitleLangs: [String]
@@ -642,12 +652,7 @@ final class ViewModel: ObservableObject {
         let sourceID = subtitleLangs.first ?? autoSubtitleLangs.first
         guard let sourceID else { return false }
         guard info.subtitles.contains(where: { $0.id == sourceID }) else { return false }
-        return Self.isChineseLanguageID(sourceID)
-    }
-
-    private static func isChineseLanguageID(_ id: String) -> Bool {
-        let prefix = id.lowercased().split(separator: "-").first.map(String.init)
-        return prefix == "zh"
+        return TranslationLanguage.matches(source: sourceID, target: settings.translationTargetLanguage)
     }
 
     func backToList() {
@@ -694,7 +699,7 @@ final class ViewModel: ObservableObject {
         guard mode.requiresBurner else { return true }
         let missing = DependencySetup.missing
         guard missing.contains(where: { $0.id == "ffmpeg" }) else { return true }
-        settingsNotice = "请先安装支持字幕烧录的完整版 ffmpeg"
+        settingsNotice = CoreL10n.t(L.Settings.installFfmpegFullNotice)
         showDependencySetup = true
         return false
     }
@@ -721,9 +726,9 @@ final class ViewModel: ObservableObject {
     }
 
     private func translationReadinessMessage(for readiness: TranslationReadiness) -> String {
-        guard !readiness.isReady else { return "翻译服务已就绪" }
+        guard !readiness.isReady else { return CoreL10n.t(L.Settings.statusReady) }
         let message = readiness.issues.map(\.message).joined(separator: " ")
-        return message.isEmpty ? "当前翻译引擎不可运行。" : message
+        return message.isEmpty ? CoreL10n.t(L.Settings.readinessUnavailable) : message
     }
 
     private func blockIfTranslationNotReady(for mode: ChineseSubtitleMode) -> Bool {
@@ -796,11 +801,11 @@ final class ViewModel: ObservableObject {
         } else {
             sourceLanguage = nil
         }
-        return TranslationContext(sourceLanguage: sourceLanguage, targetLanguage: "zh-Hans")
+        return settings.makeTranslationContext(sourceLanguage: sourceLanguage)
     }
 
     private func summaryReadinessContext() -> TranslationContext {
-        TranslationContext(sourceLanguage: nil, targetLanguage: "zh-Hans")
+        settings.makeTranslationContext(sourceLanguage: nil)
     }
 
     // MARK: - AI 内容总结
@@ -809,11 +814,11 @@ final class ViewModel: ObservableObject {
     var summaryUnavailableReason: String? {
         let config = settings.effectiveSummaryConfig
         if !config.engine.canGenerateText {
-            return "当前总结引擎只能翻译、不能生成总结。请在设置的「AI 设置」里为总结选择支持文本生成的引擎。"
+            return CoreL10n.t(L.Summary.unavailableEngine)
         }
         let summarySettings = settings.applyingTranslationConfig(config)
         if !summarySettings.isTranslationConfigured {
-            return "总结尚未配置完整。请在设置的「AI 设置」里填写服务地址、模型和凭证。"
+            return CoreL10n.t(L.Summary.notConfigured)
         }
         let context = summaryReadinessContext()
         let readiness = runtimeSummaryReadinessContext == context
@@ -888,8 +893,40 @@ final class ViewModel: ObservableObject {
                 DependencySetup.check()
             }.value
             guard let self, DependencySetup.needsSetup(components) else { return }
-            self.settingsNotice = "请先完成依赖组件配置"
+            self.settingsNotice = CoreL10n.t(L.Dependency.setupRequiredNotice)
             self.showDependencySetup = true
+        }
+    }
+
+    private func showOnboardingIfNeeded() {
+        guard !settings.onboardingCompleted else { return }
+        showOnboarding = true
+    }
+
+    @discardableResult
+    func completeOnboarding(
+        appLanguage: AppLanguage,
+        translationTargetLanguage: String,
+        useLocalTranslation: Bool
+    ) -> Bool {
+        var draft = settings
+        draft.appLanguage = appLanguage.rawValue
+        draft.translationTargetLanguage = translationTargetLanguage
+        draft.onboardingCompleted = true
+        if useLocalTranslation {
+            draft.translationEngine = .appleTranslationLowLatency
+            draft.translationFollowsDefault = false
+        }
+        do {
+            try draft.save()
+            settings = draft
+            settingsNotice = nil
+            showOnboarding = false
+            showDependencySetupIfNeededOnStartup()
+            return true
+        } catch {
+            settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)
+            return false
         }
     }
 
@@ -903,7 +940,7 @@ final class ViewModel: ObservableObject {
             settingsNotice = nil
             return true
         } catch {
-            settingsNotice = "设置保存失败：\(error.localizedDescription)"
+            settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)
             return false
         }
     }

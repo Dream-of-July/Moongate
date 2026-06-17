@@ -5,18 +5,19 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let source = try queueSectionSource()
         let body = try XCTUnwrap(functionBody(named: "body", in: source))
 
+        XCTAssertTrue(source.contains("@EnvironmentObject private var localizer: Localizer"))
         XCTAssertTrue(body.contains(".accessibilityElement(children: .combine)"))
-        XCTAssertTrue(body.contains(".accessibilityLabel(\"下载队列\")"))
+        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Queue.title))"))
         XCTAssertTrue(body.contains(".accessibilityValue(queueHeaderAccessibilityValue)"))
         XCTAssertTrue(body.contains("queue.clearFinished()"))
         XCTAssertTrue(body.contains("onCollapse()"))
 
         let summaryBody = try XCTUnwrap(functionBody(named: "queueHeaderAccessibilityValue", in: source))
-        XCTAssertTrue(summaryBody.contains("\\(queue.items.count) 个任务"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Queue.taskCount, queue.items.count)"))
         XCTAssertTrue(summaryBody.contains("queue.openTaskCount"))
         XCTAssertTrue(summaryBody.contains("queue.pausedOpenTaskCount"))
-        XCTAssertTrue(summaryBody.contains("全部已结束"))
-        XCTAssertTrue(summaryBody.contains("全部暂停"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Queue.headerAllFinished"))
+        XCTAssertTrue(summaryBody.contains("localizer.t(L.Queue.headerAllPaused"))
         XCTAssertFalse(summaryBody.contains("queue.clearFinished()"))
         XCTAssertFalse(summaryBody.contains("onCollapse"))
         XCTAssertFalse(summaryBody.contains("removeItem"))
@@ -30,20 +31,20 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let body = try XCTUnwrap(functionBody(named: "body", in: source))
 
         XCTAssertTrue(body.contains("if queue.hasFinishedItems"))
-        XCTAssertTrue(body.contains("Button(\"清除已结束任务\")"))
+        XCTAssertTrue(body.contains("Button(localizer.t(L.Queue.clearFinished))"))
         XCTAssertTrue(body.contains("queue.clearFinished()"))
         XCTAssertTrue(body.contains(".help(clearFinishedHelpText)"))
         XCTAssertTrue(body.contains(".accessibilityHint(clearFinishedHelpText)"))
 
         let helpBody = try XCTUnwrap(functionBody(named: "clearFinishedHelpText", in: source))
-        XCTAssertTrue(helpBody.contains("从队列移除已完成、失败或已取消的任务"))
-        XCTAssertTrue(helpBody.contains("不会删除已下载文件"))
+        XCTAssertTrue(helpBody.contains("localizer.t(L.Queue.clearFinishedHint)"))
     }
 
     func testQueueItemActionsExposeSideEffectAccessibilityHints() throws {
         let source = try queueItemSource()
         let iconButtonBody = try XCTUnwrap(functionBody(named: "iconButton", in: source))
 
+        XCTAssertTrue(source.contains("@EnvironmentObject private var localizer: Localizer"))
         XCTAssertTrue(
             source.contains("private func iconButton(_ systemName: String, help: String, hint: String, action: @escaping () -> Void)"),
             "iconButton should require an action-specific accessibility hint."
@@ -53,19 +54,19 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             "iconButton should expose the supplied hint to assistive technologies."
         )
         XCTAssertTrue(
-            source.contains("help: \"移除\", hint: \"只从队列移除这个任务，不删除已下载文件\""),
+            source.contains("help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint)"),
             "Remove actions should explain that downloaded files are not deleted."
         )
         XCTAssertTrue(
-            source.contains("help: \"在访达中显示\", hint: \"打开包含结果文件的位置\""),
+            source.contains("help: localizer.t(L.Queue.revealInFinder), hint: localizer.t(L.Queue.revealInFinderHint)"),
             "Reveal actions should explain that Finder opens the containing location."
         )
         XCTAssertTrue(
-            source.contains("help: \"取消\", hint: \"停止这个任务的后续下载或处理\""),
+            source.contains("help: localizer.t(L.Queue.cancelAction), hint: localizer.t(L.Queue.cancelHint)"),
             "Cancel should explain that later download or processing work stops."
         )
         XCTAssertTrue(
-            source.contains("help: \"重试字幕处理\", hint: \"只重新执行字幕翻译或烧录，不重新下载视频\""),
+            source.contains("help: localizer.t(L.Queue.retrySubtitle), hint: localizer.t(L.Queue.retrySubtitleHint)"),
             "Subtitle retry should explain that video download is not repeated."
         )
     }
@@ -92,6 +93,14 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("postDownloadProcessingKind = nil"))
     }
 
+    func testTranslatedSubtitleSourceFilterUsesAllTargetLanguageSuffixes() throws {
+        let source = try queueManagerSource()
+        let pickerBody = try XCTUnwrap(functionBody(named: "pickSourceSubtitle", in: source))
+
+        XCTAssertTrue(pickerBody.contains("TranslationLanguage.isTranslatedSubtitleFileName"))
+        XCTAssertFalse(pickerBody.contains("hasSuffix(\".zh.srt\")"))
+    }
+
     func testQueueItemShowsTranscodingPercentInsteadOfGenericProcessing() throws {
         let source = try queueItemSource()
         let statusBody = try XCTUnwrap(functionBody(named: "statusText", in: source))
@@ -101,10 +110,10 @@ final class MacOSQueueBoundaryTests: XCTestCase {
 
         XCTAssertTrue(statusBody.contains("postDownloadProcessingText"))
         XCTAssertTrue(helperBody.contains("case .transcoding"))
-        XCTAssertTrue(helperBody.contains("转码中 \\(Int(p * 100))%"))
-        XCTAssertTrue(helperBody.contains("转码中…"))
-        XCTAssertTrue(accessibilityNameBody.contains("转码进度"))
-        XCTAssertTrue(accessibilityValueBody.contains("转码中，进度不确定"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Queue.transcodingPercent, Int(p * 100))"))
+        XCTAssertTrue(helperBody.contains("localizer.t(L.Queue.transcoding)"))
+        XCTAssertTrue(accessibilityNameBody.contains("localizer.t(L.Queue.transcodeProgress)"))
+        XCTAssertTrue(accessibilityValueBody.contains("localizer.t(L.Queue.progressIndeterminateTranscoding)"))
     }
 
     private func queueManagerSource() throws -> String {

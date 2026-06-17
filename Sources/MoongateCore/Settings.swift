@@ -59,6 +59,20 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 上次是否优先下载 HDR。
     public var lastPreferHDR: Bool
 
+    // MARK: 界面与翻译语言（0.7）
+    /// 界面语言。"auto"=跟随系统 UI 语言 / "zh-Hans" / "zh-Hant" / "en"。与翻译目标语言相互独立。
+    public var appLanguage: String
+    /// 字幕翻译目标语言。"zh-Hans" / "zh-Hant" / "en"。默认 zh-Hans 以保证老用户升级后行为不变。
+    public var translationTargetLanguage: String
+    /// 首启引导是否已完成。
+    public var onboardingCompleted: Bool
+    /// 开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。
+    public var smartTranslationPromptsEnabled: Bool
+
+    private static func normalizedSingleLineField(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public init(
         translationProvider: TranslationProvider = .anthropic,
         translationEngine: TranslationEngine? = nil,
@@ -84,24 +98,32 @@ public struct AppSettings: Codable, Sendable, Equatable {
         lastSubtitleMode: String? = nil,
         lastSubtitleLangs: [String] = [],
         lastOutputFormat: OutputFormat? = nil,
-        lastPreferHDR: Bool = false
+        lastPreferHDR: Bool = false,
+        appLanguage: String = "auto",
+        translationTargetLanguage: String = "zh-Hans",
+        onboardingCompleted: Bool = false,
+        smartTranslationPromptsEnabled: Bool = false
     ) {
         let resolvedEngine = translationEngine ?? TranslationEngine.compatible(with: translationProvider)
+        let normalizedTranslationBaseURL = Self.normalizedSingleLineField(translationBaseURL)
+        let normalizedTranslationModel = Self.normalizedSingleLineField(translationModel)
+        let normalizedAIBaseURL = aiBaseURL.map(Self.normalizedSingleLineField)
+        let normalizedAIModel = aiModel.map(Self.normalizedSingleLineField)
         self.translationProvider = resolvedEngine.legacyProvider ?? translationProvider
         self.translationEngine = resolvedEngine
-        self.translationBaseURL = translationBaseURL
-        self.translationModel = translationModel
+        self.translationBaseURL = normalizedTranslationBaseURL
+        self.translationModel = normalizedTranslationModel
         self.translationAuthToken = translationAuthToken
         // 默认 AI 配置缺省时用翻译配置播种，保证「跟随默认」时行为与旧版翻译一致。
         self.aiEngine = aiEngine ?? resolvedEngine
-        self.aiBaseURL = aiBaseURL ?? translationBaseURL
-        self.aiModel = aiModel ?? translationModel
+        self.aiBaseURL = normalizedAIBaseURL ?? normalizedTranslationBaseURL
+        self.aiModel = normalizedAIModel ?? normalizedTranslationModel
         self.aiAuthToken = aiAuthToken ?? translationAuthToken
         self.translationFollowsDefault = translationFollowsDefault
         self.summaryFollowsDefault = summaryFollowsDefault
         self.summaryEngine = summaryEngine ?? (aiEngine ?? resolvedEngine)
-        self.summaryBaseURL = summaryBaseURL ?? (aiBaseURL ?? translationBaseURL)
-        self.summaryModel = summaryModel ?? (aiModel ?? translationModel)
+        self.summaryBaseURL = summaryBaseURL.map(Self.normalizedSingleLineField) ?? (normalizedAIBaseURL ?? normalizedTranslationBaseURL)
+        self.summaryModel = summaryModel.map(Self.normalizedSingleLineField) ?? (normalizedAIModel ?? normalizedTranslationModel)
         self.summaryAuthToken = summaryAuthToken ?? (aiAuthToken ?? translationAuthToken)
         self.subtitleStyle = subtitleStyle
         self.maxBurnHeight = maxBurnHeight
@@ -113,6 +135,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.lastSubtitleLangs = lastSubtitleLangs
         self.lastOutputFormat = lastOutputFormat
         self.lastPreferHDR = lastPreferHDR
+        self.appLanguage = appLanguage
+        self.translationTargetLanguage = translationTargetLanguage
+        self.onboardingCompleted = onboardingCompleted
+        self.smartTranslationPromptsEnabled = smartTranslationPromptsEnabled
     }
 
     // MARK: 存储位置
@@ -145,13 +171,18 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
         case lastSubtitleMode, lastSubtitleLangs, lastOutputFormat, lastPreferHDR
+        case appLanguage, translationTargetLanguage, onboardingCompleted, smartTranslationPromptsEnabled
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        translationBaseURL = try c.decodeIfPresent(String.self, forKey: .translationBaseURL)
-            ?? TranslationProvider.anthropic.defaultBaseURL
-        translationModel = try c.decodeIfPresent(String.self, forKey: .translationModel) ?? ""
+        translationBaseURL = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .translationBaseURL)
+                ?? TranslationProvider.anthropic.defaultBaseURL
+        )
+        translationModel = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .translationModel) ?? ""
+        )
         let rawProvider = try c.decodeIfPresent(String.self, forKey: .translationProvider)
         let inferredProvider = rawProvider.flatMap { TranslationProvider(rawValue: $0) }
             ?? Self.inferProvider(baseURL: translationBaseURL, model: translationModel)
@@ -164,8 +195,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // AI 默认配置：旧 settings.json 没有 ai* 字段时用翻译配置播种，保证「跟随默认」行为不变。
         let rawAIEngine = try c.decodeIfPresent(String.self, forKey: .aiEngine)
         aiEngine = rawAIEngine.flatMap { TranslationEngine(rawValue: $0) } ?? translationEngine
-        aiBaseURL = try c.decodeIfPresent(String.self, forKey: .aiBaseURL) ?? translationBaseURL
-        aiModel = try c.decodeIfPresent(String.self, forKey: .aiModel) ?? translationModel
+        aiBaseURL = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .aiBaseURL) ?? translationBaseURL
+        )
+        aiModel = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .aiModel) ?? translationModel
+        )
         aiAuthToken = try c.decodeIfPresent(String.self, forKey: .aiAuthToken) ?? translationAuthToken
         translationFollowsDefault = try c.decodeIfPresent(Bool.self, forKey: .translationFollowsDefault) ?? true
 
@@ -173,8 +208,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
         summaryFollowsDefault = try c.decodeIfPresent(Bool.self, forKey: .summaryFollowsDefault) ?? true
         let rawSummaryEngine = try c.decodeIfPresent(String.self, forKey: .summaryEngine)
         summaryEngine = rawSummaryEngine.flatMap { TranslationEngine(rawValue: $0) } ?? aiEngine
-        summaryBaseURL = try c.decodeIfPresent(String.self, forKey: .summaryBaseURL) ?? aiBaseURL
-        summaryModel = try c.decodeIfPresent(String.self, forKey: .summaryModel) ?? aiModel
+        summaryBaseURL = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .summaryBaseURL) ?? aiBaseURL
+        )
+        summaryModel = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .summaryModel) ?? aiModel
+        )
         summaryAuthToken = try c.decodeIfPresent(String.self, forKey: .summaryAuthToken) ?? aiAuthToken
 
         subtitleStyle = try c.decodeIfPresent(SubtitleStyle.self, forKey: .subtitleStyle) ?? .bilingual
@@ -200,6 +239,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
         lastSubtitleLangs = try c.decodeIfPresent([String].self, forKey: .lastSubtitleLangs) ?? []
         lastOutputFormat = try c.decodeIfPresent(OutputFormat.self, forKey: .lastOutputFormat)
         lastPreferHDR = try c.decodeIfPresent(Bool.self, forKey: .lastPreferHDR) ?? false
+
+        // 界面与翻译语言（0.7）：旧 settings.json 无键时取安全默认。
+        // 翻译目标默认 zh-Hans，保证老用户升级后翻译行为完全不变。
+        appLanguage = try c.decodeIfPresent(String.self, forKey: .appLanguage) ?? "auto"
+        translationTargetLanguage = try c.decodeIfPresent(String.self, forKey: .translationTargetLanguage) ?? "zh-Hans"
+        onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
+        smartTranslationPromptsEnabled = try c.decodeIfPresent(Bool.self, forKey: .smartTranslationPromptsEnabled) ?? false
     }
 
     /// 自定义编码：必须显式写出 maxBurnHeight。
@@ -210,18 +256,18 @@ public struct AppSettings: Codable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(translationProvider.rawValue, forKey: .translationProvider)
         try c.encode(translationEngine.rawValue, forKey: .translationEngine)
-        try c.encode(translationBaseURL, forKey: .translationBaseURL)
-        try c.encode(translationModel, forKey: .translationModel)
+        try c.encode(Self.normalizedSingleLineField(translationBaseURL), forKey: .translationBaseURL)
+        try c.encode(Self.normalizedSingleLineField(translationModel), forKey: .translationModel)
         try c.encode(translationAuthToken, forKey: .translationAuthToken)
         try c.encode(aiEngine.rawValue, forKey: .aiEngine)
-        try c.encode(aiBaseURL, forKey: .aiBaseURL)
-        try c.encode(aiModel, forKey: .aiModel)
+        try c.encode(Self.normalizedSingleLineField(aiBaseURL), forKey: .aiBaseURL)
+        try c.encode(Self.normalizedSingleLineField(aiModel), forKey: .aiModel)
         try c.encode(aiAuthToken, forKey: .aiAuthToken)
         try c.encode(translationFollowsDefault, forKey: .translationFollowsDefault)
         try c.encode(summaryFollowsDefault, forKey: .summaryFollowsDefault)
         try c.encode(summaryEngine.rawValue, forKey: .summaryEngine)
-        try c.encode(summaryBaseURL, forKey: .summaryBaseURL)
-        try c.encode(summaryModel, forKey: .summaryModel)
+        try c.encode(Self.normalizedSingleLineField(summaryBaseURL), forKey: .summaryBaseURL)
+        try c.encode(Self.normalizedSingleLineField(summaryModel), forKey: .summaryModel)
         try c.encode(summaryAuthToken, forKey: .summaryAuthToken)
         try c.encode(subtitleStyle, forKey: .subtitleStyle)
         if let maxBurnHeight {
@@ -237,6 +283,20 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(lastSubtitleLangs, forKey: .lastSubtitleLangs)
         try c.encodeIfPresent(lastOutputFormat, forKey: .lastOutputFormat)
         try c.encode(lastPreferHDR, forKey: .lastPreferHDR)
+        try c.encode(appLanguage, forKey: .appLanguage)
+        try c.encode(translationTargetLanguage, forKey: .translationTargetLanguage)
+        try c.encode(onboardingCompleted, forKey: .onboardingCompleted)
+        try c.encode(smartTranslationPromptsEnabled, forKey: .smartTranslationPromptsEnabled)
+    }
+
+    // MARK: 翻译目标语言（0.7 — B 的单一漏斗）
+
+    /// 解析后的翻译目标语言。0.7 值域为 zh-Hans / zh-Hant / en（无 auto）。
+    public var resolvedTranslationTargetLanguage: String { translationTargetLanguage }
+
+    /// 用当前目标语言构造翻译上下文——所有调用点统一走这里，杜绝散落的硬编码 "zh-Hans"。
+    public func makeTranslationContext(sourceLanguage: String?) -> TranslationContext {
+        TranslationContext(sourceLanguage: sourceLanguage, targetLanguage: resolvedTranslationTargetLanguage)
     }
 
     public static func load() -> AppSettings {
@@ -367,15 +427,15 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 翻译实际使用的端点配置：跟随默认时用 ai*，否则用 translation* 覆盖槽。
     public var effectiveTranslationConfig: LLMEndpointConfig {
         translationFollowsDefault
-            ? LLMEndpointConfig(engine: aiEngine, baseURL: aiBaseURL, model: aiModel, authToken: aiAuthToken)
-            : LLMEndpointConfig(engine: translationEngine, baseURL: translationBaseURL, model: translationModel, authToken: translationAuthToken)
+            ? LLMEndpointConfig(engine: aiEngine, baseURL: Self.normalizedSingleLineField(aiBaseURL), model: Self.normalizedSingleLineField(aiModel), authToken: aiAuthToken)
+            : LLMEndpointConfig(engine: translationEngine, baseURL: Self.normalizedSingleLineField(translationBaseURL), model: Self.normalizedSingleLineField(translationModel), authToken: translationAuthToken)
     }
 
     /// 总结实际使用的端点配置：跟随默认时用 ai*，否则用 summary* 覆盖槽。
     public var effectiveSummaryConfig: LLMEndpointConfig {
         summaryFollowsDefault
-            ? LLMEndpointConfig(engine: aiEngine, baseURL: aiBaseURL, model: aiModel, authToken: aiAuthToken)
-            : LLMEndpointConfig(engine: summaryEngine, baseURL: summaryBaseURL, model: summaryModel, authToken: summaryAuthToken)
+            ? LLMEndpointConfig(engine: aiEngine, baseURL: Self.normalizedSingleLineField(aiBaseURL), model: Self.normalizedSingleLineField(aiModel), authToken: aiAuthToken)
+            : LLMEndpointConfig(engine: summaryEngine, baseURL: Self.normalizedSingleLineField(summaryBaseURL), model: Self.normalizedSingleLineField(summaryModel), authToken: summaryAuthToken)
     }
 
     /// 返回一份把 translation*/engine 替换成给定端点配置的副本。
@@ -384,8 +444,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         var copy = self
         copy.translationEngine = config.engine
         copy.translationProvider = config.engine.legacyProvider ?? copy.translationProvider
-        copy.translationBaseURL = config.baseURL
-        copy.translationModel = config.model
+        copy.translationBaseURL = Self.normalizedSingleLineField(config.baseURL)
+        copy.translationModel = Self.normalizedSingleLineField(config.model)
         copy.translationAuthToken = config.authToken
         return copy
     }
@@ -425,29 +485,29 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case .anthropicCompatible, .openAICompatible:
             return isTranslationConfigured
                 ? .ready
-                : TranslationReadiness(issues: [TranslationReadinessIssue(kind: .needsConfiguration)])
+                : TranslationReadiness(issues: [CoreL10n.issue(.needsConfiguration)])
         case .appleTranslationLowLatency, .appleTranslationHighFidelity:
-            var issues = [TranslationReadinessIssue(kind: .needsRuntimeVerification)]
+            var issues = [CoreL10n.issue(.needsRuntimeVerification)]
             if context.targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                issues.append(TranslationReadinessIssue(kind: .unsupportedLanguagePair))
+                issues.append(CoreL10n.issue(.unsupportedLanguagePair))
             } else {
-                issues.append(TranslationReadinessIssue(kind: .needsLanguageDownload))
+                issues.append(CoreL10n.issue(.needsLanguageDownload))
             }
             return TranslationReadiness(issues: issues)
         case .appleFoundationOnDevice:
             return TranslationReadiness(issues: [
-                TranslationReadinessIssue(kind: .appleIntelligenceUnavailable),
-                TranslationReadinessIssue(kind: .modelUnavailable)
+                CoreL10n.issue(.appleIntelligenceUnavailable),
+                CoreL10n.issue(.modelUnavailable)
             ])
         case .appleFoundationPCC:
             return TranslationReadiness(issues: [
-                TranslationReadinessIssue(kind: .pccUnavailable)
+                CoreL10n.issue(.pccUnavailable)
             ])
         case .appleFoundationCloudPro:
             return TranslationReadiness(issues: [
                 TranslationReadinessIssue(
                     kind: .pccUnavailable,
-                    message: "Apple Intelligence Cloud Pro（云端 Pro）当前不可用。"
+                    message: CoreL10n.t(L.Core.readinessCloudProUnavailable)
                 )
             ])
         }
