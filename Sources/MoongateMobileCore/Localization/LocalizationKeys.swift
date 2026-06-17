@@ -396,6 +396,7 @@ public enum L {
         public static let installing = "L.Update.Installing"
         public static let openGitHubDownload = "L.Update.OpenGitHubDownload"
         public static let untrustedPackageURL = "L.Update.UntrustedPackageURL"
+        public static let openTasksBeforeInstall = "L.Update.OpenTasksBeforeInstall"
         public static let downloadPackageFailed = "L.Update.DownloadPackageFailed"
         public static let installDirectoryNotWritable = "L.Update.InstallDirectoryNotWritable"
         public static let packageMissingApp = "L.Update.PackageMissingApp"

@@ -366,6 +366,7 @@ extension LocalizationTables {
         L.Update.installing: "Installing. Moongate will restart automatically soon...",
         L.Update.openGitHubDownload: "Download from GitHub",
         L.Update.untrustedPackageURL: "The update package URL is not trusted, so Moongate stopped the install. Download manually from GitHub.",
+        L.Update.openTasksBeforeInstall: "%d tasks are still in the queue. Finish or cancel them before checking for updates.",
         L.Update.downloadPackageFailed: "Failed to download the update package.",
         L.Update.installDirectoryNotWritable: "Moongate cannot write to %@, so automatic installation cannot continue. Run as an administrator or download manually from GitHub.",
         L.Update.packageMissingApp: "The update package does not contain an app.",

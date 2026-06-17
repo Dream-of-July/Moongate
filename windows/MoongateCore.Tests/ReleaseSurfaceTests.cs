@@ -23,8 +23,16 @@ public class ReleaseSurfaceTests
     public void ReleaseVersionSurfacesUse070()
     {
         Assert.Contains("VERSION=\"0.7.0\"", Read("build-windows.sh"));
-        Assert.Contains("VERSION=\"0.7.0\"", Read("make-dmg.sh"));
-        Assert.Contains("<string>0.7.0</string>", Read("build.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("make-dmg.sh"));
+        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("build.sh"));
+        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-700}\"", Read("build.sh"));
+        Assert.Contains("<string>$APP_VERSION</string>", Read("build.sh"));
+        Assert.Contains("<string>$APP_BUILD_NUMBER</string>", Read("build.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("make-pkg.sh"));
+        Assert.Contains("productbuild", Read("make-pkg.sh"));
+        Assert.Contains("PKG_SIGN_IDENTITY", Read("make-pkg.sh"));
+        Assert.Contains("INSTALL_DIR=\"$STAGING/Applications\"", Read("make-pkg.sh"));
+        Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
         Assert.Contains("default: v0.7.0", workflow);
@@ -33,6 +41,34 @@ public class ReleaseSurfaceTests
         Assert.Contains("Release tag/version mismatch", workflow);
 
         Assert.Contains("!define APPVERSION \"0.7.0\"", Read("windows", "installer", "installer.nsi"));
+    }
+
+    [Fact]
+    public void MacSparkleReleaseSurfaceUsesZipAppcastAndPublicKey()
+    {
+        var package = Read("Package.swift");
+        var build = Read("build.sh");
+        var zip = Read("make-sparkle-zip.sh");
+        var appcast = Read("make-appcast.sh");
+        var publicKey = Read("sparkle-public-ed-key.txt").Trim();
+        var readme = Read("README.md");
+        var changelog = Read("CHANGELOG.md");
+
+        Assert.Contains("https://github.com/sparkle-project/Sparkle", package);
+        Assert.Contains(".product(name: \"Sparkle\", package: \"Sparkle\")", package);
+        Assert.Contains("Sparkle.framework", build);
+        Assert.Contains("SUFeedURL", build);
+        Assert.Contains("https://dream-of-july.github.io/moongate/appcast.xml", build);
+        Assert.Contains("SUPublicEDKey", build);
+        Assert.Contains("SUAutomaticallyUpdate", build);
+        Assert.Contains("ditto -c -k --sequesterRsrc --keepParent", zip);
+        Assert.Contains("sign_update", appcast);
+        Assert.Contains("sparkle:edSignature", appcast);
+        Assert.Contains("docs/appcast.xml", appcast);
+        Assert.Equal(44, publicKey.Length);
+        Assert.Contains("Sparkle", readme);
+        Assert.Contains("make-sparkle-zip.sh", readme);
+        Assert.Contains("Sparkle", changelog);
     }
 
     [Fact]

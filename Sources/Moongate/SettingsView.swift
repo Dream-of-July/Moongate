@@ -753,66 +753,22 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             switch updater.state {
-            case .idle, .upToDate:
+            case .idle:
                 HStack {
-                    if case .upToDate = updater.state {
-                        Label(localizer.t(L.Update.upToDate), systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.callout)
-                    }
                     Spacer()
-                    Button(localizer.t(L.Update.check)) { updater.check() }
-                        .buttonStyle(.bordered)
-                }
-            case .checking:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel(localizer.t(L.Update.checkingAccessibility))
-                    Text(localizer.t(L.Update.checking))
-                        .font(.callout).foregroundStyle(.secondary)
-                    Spacer()
-                }
-            case .available(let info):
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(localizer.t(L.Update.available, info.version.description), systemImage: "arrow.down.circle.fill")
-                        .foregroundStyle(.blue)
-                        .font(.callout.weight(.medium))
-                    if !info.notes.isEmpty {
-                        DisclosureGroup(localizer.t(L.Update.releaseNotes)) {
-                            Text(info.notes)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
+                    Button(localizer.t(L.Update.check)) {
+                        if model.queue.openTaskCount > 0 {
+                            updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
+                        } else {
+                            updater.checkForUpdates()
                         }
-                        .font(.caption)
                     }
-                    HStack {
-                        Button(localizer.t(L.Update.downloadAndInstall)) { updater.downloadAndInstall(info) }
-                            .buttonStyle(.borderedProminent)
-                        Button(localizer.t(L.Update.openReleases)) { NSWorkspace.shared.open(updater.releasesPageURL) }
-                            .buttonStyle(.bordered)
-                        Spacer()
+                        .buttonStyle(.bordered)
+                        .disabled(!updater.canCheckForUpdates)
+                    Button(localizer.t(L.Update.openReleases)) {
+                        updater.openReleasesPage()
                     }
-                }
-            case .downloading(let fraction):
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(localizer.t(L.Update.downloadingPercent, Int(fraction * 100)))
-                        .font(.callout).foregroundStyle(.secondary)
-                    ProgressView(value: fraction)
-                        .accessibilityLabel(localizer.t(L.Update.downloadProgress))
-                    Button(localizer.t(L.Common.cancel)) { updater.cancel() }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-            case .installing:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel(localizer.t(L.Update.installingAccessibility))
-                    Text(localizer.t(L.Update.installing))
-                        .font(.callout).foregroundStyle(.secondary)
+                        .buttonStyle(.bordered)
                     Spacer()
                 }
             case .failed(let reason):
@@ -821,9 +777,18 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button(localizer.t(L.Common.retry)) { updater.check() }
+                        Button(localizer.t(L.Common.retry)) {
+                            if model.queue.openTaskCount > 0 {
+                                updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
+                            } else {
+                                updater.checkForUpdates()
+                            }
+                        }
                             .buttonStyle(.bordered)
-                        Button(localizer.t(L.Update.openGitHubDownload)) { NSWorkspace.shared.open(updater.releasesPageURL) }
+                            .disabled(!updater.canCheckForUpdates)
+                        Button(localizer.t(L.Update.openGitHubDownload)) {
+                            updater.openReleasesPage()
+                        }
                             .buttonStyle(.bordered)
                         Spacer()
                     }

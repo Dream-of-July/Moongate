@@ -17,11 +17,17 @@
 
 - macOS 主窗口、设置、队列、登录、总结、依赖、更新与关闭确认等高频界面文案接入运行时本地化。
 - Windows WPF 界面、核心下载 / 解析 / 队列 / 转码 / 烧录 / 依赖 / 更新错误文案补齐繁体中文与英文路径。
+- **macOS 自更新迁移到 Sparkle**：App 内更新不再下载 DMG 或 PKG 后自行处理安装；现在使用 Sparkle 2 原生更新窗口，从 GitHub Pages appcast 发现更新，下载 GitHub Release 里的 `Moongate-macOS-v0.7.0.zip`，通过 Sparkle EdDSA 签名校验后替换 App。
+- **免 Developer ID 的低成本链路**：新增 Sparkle ZIP 与 appcast 发布脚本，私钥保存到本机 Keychain，仓库只保存公开公钥。该路线解决 App 内更新与防篡改，但不伪装成 Gatekeeper 级正式发行体验。
+- **未完成队列保护**：队列里还有未完成任务时，设置页会先阻止手动检查更新，提示先完成或取消任务，避免更新重启与下载 / 压制流程互相打架。
+- **发布资产边界调整**：App 内自动更新资产改为 `Moongate-macOS-v0.7.0.zip` + `docs/appcast.xml`；DMG 仅保留为手动拖拽安装兜底，PKG 保留为未来 Developer ID Installer 链路备用。
 - 发布脚本、Windows 安装器、GitHub Actions 默认版本和文档示例更新到 0.7.0。
 
 ### 测试
 
 - 新增 macOS `Localizer`、设置、Onboarding、翻译目标、智能提示词、站点识别与发布边界测试。
+- 更新 macOS 更新边界测试：确认 Sparkle 依赖、Info.plist 配置、ZIP/appcast 脚本和公钥文件存在，并拒绝回退到自研 PKG/DMG 安装器。
+- 更新设置页边界测试：更新区改为 Sparkle 原生检查入口，并在队列未完成时阻止检查更新。
 - Windows 核心库测试数更新为 271，覆盖三语核心文案、设置迁移、Onboarding、翻译目标、智能提示词与发布面。
 
 ## 0.6.1
@@ -35,7 +41,7 @@
 ### 修复 / 改进
 
 - **修复 macOS 自更新静默失败**：下载新版 DMG 后，旧版本在退出时会过早卸载安装镜像，导致替换脚本从镜像复制新 App 时源已消失（`ditto: Cannot get the real path for source`），`/Applications/月之门.app` 始终没被替换、重启仍是旧版。现在镜像的卸载改由替换脚本在复制完成后负责，更新可稳定完成。
-  - 注意：该缺陷位于旧版本自身的更新器中，已安装的 0.5.0 / 0.6.0 仍需手动下载本版本一次；自 0.6.1 起，后续版本即可正常自动更新。
+  - 注意：该缺陷位于旧版本自身的更新器中，已安装的 0.5.0 / 0.6.0 仍需手动下载本版本一次。0.7.0 起，macOS App 内更新迁移到 Sparkle ZIP + appcast 链路，不再依赖这套自替换脚本。
 - **自更新安装目录不可写时给出明确错误**：替换脚本在 App 退出后运行，失败无法回传界面。现在退出前先检查安装目录可写性（如非管理员账户下的 /Applications），不可写时直接提示用「管理员账户运行或到 GitHub 手动下载」，不再静默失败。
 - **修复 OpenAI 兼容引擎「测试连接 / 拉取模型」报错**：测试连接此前固定调用 OpenAI 私有的 `/v1/responses` 端点，而多数「OpenAI 兼容」服务（Azure、DeepSeek、OpenRouter、Ollama、本地推理服务等）只实现 `/v1/chat/completions`，导致配置能保存、测试却失败。现在 OpenAI 协议统一改用通用的 `/v1/chat/completions`；同时拉取模型列表时不再向非 Anthropic 服务发送 Anthropic 专有请求头，避免严格网关因未知头拒绝。（桌面与移动端同步修复）
 - **修复部分 Windows 电脑安装后白屏 / 看不到界面**：启动时若建窗失败，旧逻辑会被全局异常处理器吞掉，导致进程在后台运行却没有任何窗口；现在启动失败会明确提示并退出。针对显卡驱动 / 远程桌面 / 虚拟机等环境的硬件渲染初始化失败，自动回退软件渲染（也可设环境变量 `MOONGATE_SOFTWARE_RENDER=1` 强制）。同时新增启动诊断日志（`%APPDATA%\Moongate\startup.log`），便于回传排查只在部分机器复现的问题。

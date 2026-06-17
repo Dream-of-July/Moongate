@@ -23,7 +23,7 @@
 - **字幕翻译**：Anthropic / OpenAI 兼容 API，或 Apple 本地引擎（见下）。
 - **统一 AI 设置**：翻译与总结共享一份默认 AI 配置，各自可「跟随默认」或单独配置。
 - **未登录引导**：检测到 YouTube / B 站等需要登录时，失败页给「去登录」按钮，弹站点登录页保存 cookies 后重试。
-- **远程更新**：设置 → 更新可检查新版，从 GitHub Releases 全自动下载安装并重启。
+- **远程更新**：macOS 使用 Sparkle 读取 appcast 并从 GitHub Releases 下载 ZIP 更新包；Windows 使用独立安装器更新链路。
 
 ## 依赖
 
@@ -41,6 +41,16 @@ macOS App：
 ```
 
 编译产物放在 `~/Library/Caches/vdl-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
+
+macOS App 内更新包（Sparkle）：
+
+```sh
+./init-sparkle-keys.sh     # 首次设置 Sparkle EdDSA 密钥；私钥保存到本机 Keychain
+./make-sparkle-zip.sh      # 生成 Moongate-macOS-v0.7.0.zip
+./make-appcast.sh ~/Downloads/Moongate-macOS-v0.7.0.zip
+```
+
+Sparkle 更新资产使用 ZIP + appcast：ZIP 上传 GitHub Release，`docs/appcast.xml` 通过 GitHub Pages 发布到 `https://dream-of-july.github.io/moongate/appcast.xml`。`./make-dmg.sh` 仍可生成手动拖拽安装用 DMG；`./make-pkg.sh` 仅保留为未来 Developer ID Installer 链路备用，不作为当前免 Apple Developer Program 的主更新资产。
 
 Windows 安装包：
 
@@ -88,10 +98,10 @@ swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --prov
 
 设置 → 更新可检查并安装新版：
 
-- 来源是本仓库的 GitHub Releases（公开，匿名访问）；选取含 macOS DMG 资产、版本号高于当前的最新发布。
-- 全自动：App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
-- 自下载的 DMG 不带隔离属性，ad-hoc 签名也能替换；失败时提供「去 GitHub 下载」兜底。
-- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.7.0.dmg`）。
+- macOS 使用 Sparkle 2：App 读取 GitHub Pages 上的 appcast，下载 GitHub Release 里的 `Moongate-macOS-vX.Y.Z.zip`，用 Sparkle EdDSA 签名校验后替换 App。
+- 更新 ZIP 需用 `ditto -c -k --sequesterRsrc --keepParent` 生成，并用 `make-appcast.sh` 写入 `sparkle:edSignature`、`sparkle:version` 和 `sparkle:shortVersionString`。
+- 设置页使用 Sparkle 原生更新窗口；队列里还有未完成任务时，会先提示完成或取消任务，再允许检查更新。
+- 免 Apple Developer Program 的 Sparkle 路线不等于 Gatekeeper 正式发行体验：首次安装仍可能需要用户手动确认。若未来切回 Developer ID 官方链路，再使用 `.pkg`、签名、公证与 stapler。
 
 ## 性能与队列
 

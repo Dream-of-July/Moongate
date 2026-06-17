@@ -223,7 +223,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
         XCTAssertTrue(formatRowBody.contains("model.selectedFormatID == format.id ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected)"))
     }
 
-    func testHeaderShowsUpdateBadgeOnSettingsButtonAndKeepsControlsCentered() throws {
+    func testHeaderSettingsButtonKeepsControlsCenteredWithoutUpdateBadge() throws {
         let source = try contentViewSource()
         let headerBody = try XCTUnwrap(functionBody(prefix: "private var header", in: source))
 
@@ -231,20 +231,14 @@ final class MacOSContentBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("ObservedObject(wrappedValue: model.updater)"))
         XCTAssertTrue(headerBody.contains("HStack(alignment: .center, spacing: 8)"))
         XCTAssertFalse(headerBody.contains("HStack(alignment: .top, spacing: 8)"))
-        XCTAssertTrue(headerBody.contains("if updater.hasAvailableUpdate"))
-        XCTAssertTrue(headerBody.contains("updateBadge"))
-        XCTAssertTrue(headerBody.contains("localizer.t(L.Main.settingsWithUpdateAccessibility)"))
+        XCTAssertFalse(headerBody.contains("if updater.hasAvailableUpdate"))
+        XCTAssertFalse(headerBody.contains("updateBadge"))
+        XCTAssertFalse(headerBody.contains("localizer.t(L.Main.settingsWithUpdateAccessibility)"))
         XCTAssertTrue(headerBody.contains("localizer.t(L.Main.settingsAccessibility)"))
         XCTAssertGreaterThanOrEqual(headerBody.components(separatedBy: ".frame(height: 34)").count - 1, 2)
 
         let parseButtonBody = try XCTUnwrap(functionBody(prefix: "private var parseButton", in: source))
         XCTAssertTrue(parseButtonBody.contains(".frame(height: 34)"))
-
-        let badgeBody = try XCTUnwrap(functionBody(prefix: "private var updateBadge", in: source))
-        XCTAssertTrue(badgeBody.contains("Circle()"))
-        XCTAssertTrue(badgeBody.contains(".fill(.red)"))
-        XCTAssertTrue(badgeBody.contains(".frame(width: 8, height: 8)"))
-        XCTAssertTrue(badgeBody.contains(".accessibilityHidden(true)"))
     }
 
     func testChineseSubtitleProcessingPickerHasAccessibleState() throws {

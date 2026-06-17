@@ -1,11 +1,12 @@
 #!/bin/zsh
-# 打包分发用 DMG：先跑 build.sh 确保 App 最新（含图标），再生成压缩镜像。
+# 打包手动安装用 DMG：先跑 build.sh 确保 App 最新（含图标），再生成压缩镜像。
+# App 内更新不再使用 DMG；当前免 Developer ID 更新资产请用 make-sparkle-zip.sh 生成 ZIP。
 # 输出默认到 ~/Downloads；也可以传参覆盖输出路径。
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
-VERSION="0.7.0"
+VERSION="${MOONGATE_VERSION:-0.7.0}"
 # build.sh 把 App 装到 /Applications，这里必须从同一位置取，否则 cp 找不到文件。
 APP="/Applications/$APP_NAME.app"
 OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.dmg}"

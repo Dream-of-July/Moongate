@@ -46,34 +46,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(summaryBody.contains("Text(localizer.t(L.Settings.defaultEngineCannotSummarize))"))
     }
 
-    func testUpdateSectionExposesVersionCheckAndInstallEntry() throws {
+    func testUpdateSectionExposesSparkleCheckAndReleaseFallback() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("SettingsView.swift"))
         let body = try XCTUnwrap(functionBody(named: "updateSection", in: source))
-        // 当前版本、检查更新、各状态、下载安装、GitHub 兜底。
+        // 当前版本、Sparkle 原生检查入口、队列保护、GitHub 兜底。
         XCTAssertTrue(body.contains("updater.currentVersion"))
-        XCTAssertTrue(body.contains("updater.check()"))
-        XCTAssertTrue(body.contains("updater.downloadAndInstall(info)"))
         XCTAssertTrue(body.contains("Section(localizer.t(L.Update.sectionTitle))"))
         XCTAssertTrue(body.contains("Text(localizer.t(L.Update.currentVersion))"))
-        XCTAssertTrue(body.contains("Label(localizer.t(L.Update.upToDate)"))
         XCTAssertTrue(body.contains("Button(localizer.t(L.Update.check))"))
-        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.checkingAccessibility))"))
-        XCTAssertTrue(body.contains("localizer.t(L.Update.available, info.version.description)"))
-        XCTAssertTrue(body.contains("DisclosureGroup(localizer.t(L.Update.releaseNotes))"))
-        XCTAssertTrue(body.contains("Button(localizer.t(L.Update.downloadAndInstall))"))
+        XCTAssertTrue(body.contains("updater.checkForUpdates()"))
+        XCTAssertTrue(body.contains(".disabled(!updater.canCheckForUpdates)"))
         XCTAssertTrue(body.contains("Button(localizer.t(L.Update.openReleases))"))
-        XCTAssertTrue(body.contains("localizer.t(L.Update.downloadingPercent"))
-        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.downloadProgress))"))
-        XCTAssertTrue(body.contains(".accessibilityLabel(localizer.t(L.Update.installingAccessibility))"))
+        XCTAssertTrue(body.contains("updater.openReleasesPage()"))
         XCTAssertTrue(body.contains("Button(localizer.t(L.Common.retry))"))
         XCTAssertTrue(body.contains("Button(localizer.t(L.Update.openGitHubDownload))"))
-        XCTAssertTrue(body.contains("case .available(let info)"))
-        XCTAssertTrue(body.contains("case .downloading"))
-        XCTAssertTrue(body.contains("case .installing"))
-        XCTAssertTrue(body.contains("releasesPageURL"))
+        XCTAssertTrue(body.contains("case .idle"))
+        XCTAssertTrue(body.contains("case .failed(let reason)"))
+        XCTAssertTrue(body.contains("model.queue.openTaskCount"))
+        XCTAssertTrue(body.contains("updater.blockInstallDueToOpenTasks"))
+        XCTAssertFalse(body.contains("updater.downloadAndInstall(info)"))
+        XCTAssertFalse(body.contains("case .available(let info)"))
+        XCTAssertFalse(body.contains("case .downloading"))
+        XCTAssertFalse(body.contains("case .installerOpened"))
         // 更新区被挂进 Form（与其他 section 并列）。
         XCTAssertTrue(source.contains("performanceSection"))
         XCTAssertTrue(source.contains("loginSection\n                updateSection")
@@ -93,16 +90,18 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("model.checkForUpdatesIfNeeded()"))
     }
 
-    func testUpdateServiceExposesAvailableUpdateBadgeState() throws {
+    func testUpdateServiceWrapsSparkleNativeUpdater() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("UpdateService.swift"))
 
-        XCTAssertTrue(source.contains("var hasAvailableUpdate: Bool"))
-        XCTAssertTrue(source.contains("if case .available = state"))
-        XCTAssertTrue(source.contains("return true"))
-        XCTAssertTrue(source.contains("return false"))
+        XCTAssertTrue(source.contains("SPUStandardUpdaterController"))
+        XCTAssertTrue(source.contains("@Published private(set) var canCheckForUpdates"))
+        XCTAssertTrue(source.contains("updaterController.checkForUpdates(nil)"))
+        XCTAssertTrue(source.contains("guard !silent else { return }"))
+        XCTAssertTrue(source.contains("NSWorkspace.shared.open(releasesPageURL)"))
+        XCTAssertFalse(source.contains("hasAvailableUpdate"))
     }
 
     func testSecondarySettingsSectionsUseLocalizer() throws {

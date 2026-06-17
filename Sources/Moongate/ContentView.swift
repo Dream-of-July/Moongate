@@ -106,21 +106,12 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "gearshape")
                         .frame(width: 18, height: 18)
-                        .overlay(alignment: .topTrailing) {
-                            if updater.hasAvailableUpdate {
-                                updateBadge
-                            }
-                        }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .frame(height: 34)
                 .help(localizer.t(L.Main.settingsHelp))
-                .accessibilityLabel(
-                    updater.hasAvailableUpdate
-                    ? localizer.t(L.Main.settingsWithUpdateAccessibility)
-                    : localizer.t(L.Main.settingsAccessibility)
-                )
+                .accessibilityLabel(localizer.t(L.Main.settingsAccessibility))
             }
             // 轻提示固定在解析栏下方：队列铺满时也不会被盖住
             // （ready 页有自己的就地提示，避免双显）
@@ -136,18 +127,6 @@ struct ContentView: View {
     private var isReadyStage: Bool {
         if case .ready = model.stage { return true }
         return false
-    }
-
-    private var updateBadge: some View {
-        Circle()
-            .fill(.red)
-            .frame(width: 8, height: 8)
-            .overlay {
-                Circle()
-                    .stroke(.white, lineWidth: 1.5)
-            }
-            .offset(x: 4, y: -4)
-            .accessibilityHidden(true)
     }
 
     /// 解析按钮：仅在 idle / failed 阶段作为主按钮，其余阶段降级为次按钮。

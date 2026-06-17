@@ -367,6 +367,7 @@ extension LocalizationTables {
         L.Update.installing: "正在安裝，App 稍後會自動重啟…",
         L.Update.openGitHubDownload: "去 GitHub 下載",
         L.Update.untrustedPackageURL: "更新包地址不可信，已阻止。請到 GitHub 手動下載。",
+        L.Update.openTasksBeforeInstall: "隊列中還有 %d 個任務未完成。請先完成或取消任務，再檢查更新。",
         L.Update.downloadPackageFailed: "下載更新包失敗。",
         L.Update.installDirectoryNotWritable: "沒有寫入「%@」的權限，無法自動安裝更新。請用管理員帳戶執行，或到 GitHub 手動下載安裝。",
         L.Update.packageMissingApp: "更新包裡沒有找到應用程式。",

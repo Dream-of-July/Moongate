@@ -34,7 +34,10 @@ packageTargets.append(
     // SwiftUI 图形界面 App（仅 macOS）
     .executableTarget(
         name: "Moongate",
-        dependencies: ["MoongateCore"],
+        dependencies: [
+            "MoongateCore",
+            .product(name: "Sparkle", package: "Sparkle"),
+        ],
         path: "Sources/Moongate"
     )
 )
@@ -44,5 +47,8 @@ let package = Package(
     name: "Moongate",
     platforms: [.macOS(.v14)],
     products: packageProducts,
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+    ],
     targets: packageTargets
 )
