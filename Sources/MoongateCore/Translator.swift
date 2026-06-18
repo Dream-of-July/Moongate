@@ -647,11 +647,11 @@ private enum TranslatorL10n {
     }
 
     static var smartPromptNeedsSummaryModel: String {
-        CoreL10n.text(en: "Smart translation prompts require a summary model that can generate text. Choose a cloud API or local Apple Intelligence in AI summary settings.", zhHans: "智能翻译提示词需要可生成文本的总结模型，请在 AI 总结设置里选择云端 API 或本地 Apple Intelligence。", zhHant: "智慧翻譯提示詞需要可生成文字的摘要模型，請在 AI 摘要設定裡選擇雲端 API 或本機 Apple Intelligence。")
+        CoreL10n.text(en: "Enhanced mode requires a summary model that can generate text. Choose a cloud API or local Apple Intelligence in AI summary settings.", zhHans: "增强模式需要可生成文本的总结模型，请在 AI 总结设置里选择云端 API 或本地 Apple Intelligence。", zhHant: "增強模式需要可生成文字的摘要模型，請在 AI 摘要設定裡選擇雲端 API 或本機 Apple Intelligence。")
     }
 
     static var smartAnalysisInvalid: String {
-        CoreL10n.text(en: "Smart translation analysis returned an invalid format. Retry or turn off smart translation prompts.", zhHans: "智能翻译分析返回格式异常，请重试或关闭智能翻译提示词。", zhHant: "智慧翻譯分析回傳格式異常，請重試或關閉智慧翻譯提示詞。")
+        CoreL10n.text(en: "Enhanced mode analysis returned an invalid format. Retry or turn off enhanced mode.", zhHans: "增强模式分析返回格式异常，请重试或关闭增强模式。", zhHant: "增強模式分析回傳格式異常，請重試或關閉增強模式。")
     }
 
     static var truncatedMarker: String {

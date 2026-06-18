@@ -560,7 +560,7 @@ public class ConfiguredTranslatorTests : IDisposable
             translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
 
         Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
-        Assert.Contains("智能翻译提示词", ex.Detail);
+        Assert.Contains("增强模式", ex.Detail);
         Assert.Contains("模型", ex.Detail);
     }
 

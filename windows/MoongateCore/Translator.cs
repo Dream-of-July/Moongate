@@ -1445,13 +1445,13 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         CancellationToken ct)
     {
         if (!_settings.SmartTranslationPromptsEnabled) return null;
-        // 智能提示词依赖可生成文本的总结模型；未配置则给出可操作的报错，而不是默默发空请求。
+        // 增强模式依赖可生成文本的总结模型；未配置则给出可操作的报错，而不是默默发空请求。
         if (!_settings.IsSummaryConfigured)
         {
             throw MoongateException.TranslateFailed(L10n.T(
-                "智能翻译提示词需要可生成文本的总结模型，请在 AI 总结设置里填写模型。",
-                "智慧翻譯提示詞需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
-                "Smart translation prompts require a summary model that can generate text. Configure a summary model in AI summary settings."));
+                "增强模式需要可生成文本的总结模型，请在 AI 总结设置里填写模型。",
+                "增強模式需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
+                "Enhanced mode requires a summary model that can generate text. Configure a summary model in AI summary settings."));
         }
         var system =
             "你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：" +
@@ -1464,9 +1464,9 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             _settings.ForSummary(), system, userContent, maxTokens: 1200, _handler, ct).ConfigureAwait(false);
         return ParseTranslationPromptAdvice(reply.Text)
             ?? throw MoongateException.TranslateFailed(L10n.T(
-                "智能翻译分析返回格式异常，请重试或关闭智能翻译提示词。",
-                "智慧翻譯分析返回格式異常，請重試或關閉智慧翻譯提示詞。",
-                "Smart translation analysis returned an invalid format. Try again or turn off smart translation prompts."));
+                "增强模式分析返回格式异常，请重试或关闭增强模式。",
+                "增強模式分析返回格式異常，請重試或關閉增強模式。",
+                "Enhanced mode analysis returned an invalid format. Try again or turn off enhanced mode."));
     }
 
     private static string SubtitleAnalysisSample(IReadOnlyList<SubtitleCue> cues)

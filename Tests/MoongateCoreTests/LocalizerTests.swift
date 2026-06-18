@@ -84,7 +84,7 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.langHans, language: .zhHant), "简体中文")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.langHant, language: .en), "繁體中文")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.aiSettingsSection, language: .en), "AI settings")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.smartTranslationPrompts, language: .zhHant), "智慧翻譯提示詞")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.smartTranslationPrompts, language: .zhHant), "增強模式")
         XCTAssertEqual(LocalizedStrings.format(L.Settings.fetchedModels, language: .en, [3]), "Fetched 3 models")
         XCTAssertEqual(LocalizedStrings.format(L.Settings.connectionFailed, language: .zhHant, ["逾時"]), "連線失敗：逾時")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.advancedDetails, language: .en), "Advanced details")

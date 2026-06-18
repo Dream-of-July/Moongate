@@ -141,8 +141,8 @@
     <sys:String x:Key="L.Settings.AIService">AI 服务</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">默认 AI 服务会被翻译和总结复用；需要不同模型时可在下方单独覆盖。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻译服务</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPrompts">智能翻译提示词</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">开启后，翻译前会先用总结模型分析字幕内容，并按内容类型选择更合适的翻译风格。</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">增强模式</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">开启后，翻译前先理解整段字幕：分析内容、按类型选择合适的翻译风格，并把自动字幕的碎句整理成完整句子。</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻译跟随默认 AI 服务</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">默认复用上方服务。关闭后可给翻译单独指定模型或网关。</sys:String>
     <sys:String x:Key="L.Settings.Protocol">接口协议</sys:String>

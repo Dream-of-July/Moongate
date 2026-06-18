@@ -141,8 +141,8 @@
     <sys:String x:Key="L.Settings.AIService">AI service</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">The default AI service is reused by translation and summaries; override below when a different model is needed.</sys:String>
     <sys:String x:Key="L.Settings.Translation">Translation service</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPrompts">Smart translation prompts</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">Analyzes subtitles before translation and chooses a translation style for the content type.</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">Enhanced mode</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">Reads the whole subtitle before translating—analyzing the content, picking a translation style for it, and reassembling fragmented auto-captions into complete sentences.</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">Translation follows the default AI service</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">Reuses the service above by default. Turn this off to give translation its own model or gateway.</sys:String>
     <sys:String x:Key="L.Settings.Protocol">API protocol</sys:String>
