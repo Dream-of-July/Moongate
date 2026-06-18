@@ -137,6 +137,19 @@ public class WindowsSettingsSurfaceTests
     }
 
     [Fact]
+    public void WindowsSettingsUpdateSectionAvoidsRunTextBindings()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+
+        Assert.DoesNotContain("<Run Text=", xaml);
+        Assert.Contains("Updater.AvailableVersionText", xaml);
+        Assert.Contains("Updater.DownloadPercentText", xaml);
+        Assert.Contains("L.Update.FoundPrefix", xaml);
+        Assert.Contains("L.Update.Downloading", xaml);
+        Assert.Contains("L.Update.OpenReleases", xaml);
+    }
+
+    [Fact]
     public void WindowsQueueSurfaceShowsTranscodingPercentAndCompatibilityCopy()
     {
         var viewModel = Read("windows", "MoongateApp", "QueueItemViewModel.cs");

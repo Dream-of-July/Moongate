@@ -20,9 +20,9 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse073()
+    public void ReleaseVersionSurfacesUse074ForWindowsAnd073ForMac()
     {
-        Assert.Contains("VERSION=\"0.7.3\"", Read("build-windows.sh"));
+        Assert.Contains("VERSION=\"0.7.4\"", Read("build-windows.sh"));
         Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("make-dmg.sh"));
         Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("build.sh"));
         Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-703}\"", Read("build.sh"));
@@ -35,12 +35,12 @@ public class ReleaseSurfaceTests
         Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.7.3", workflow);
-        Assert.Contains("default: 0.7.3", workflow);
+        Assert.Contains("default: v0.7.4", workflow);
+        Assert.Contains("default: 0.7.4", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.7.3\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.7.4\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -125,8 +125,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.3.exe", docs);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.3.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.4.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.4.exe", readme);
     }
 
     [Fact]
@@ -144,7 +144,8 @@ public class ReleaseSurfaceTests
     {
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("271", docs);
+        Assert.Contains("383", docs);
+        Assert.DoesNotContain("271", docs);
         Assert.DoesNotContain("247", docs);
         Assert.DoesNotContain("241", docs);
         Assert.DoesNotContain("240", docs);

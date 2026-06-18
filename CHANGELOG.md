@@ -2,6 +2,18 @@
 
 本项目版本遵循语义化版本（major.minor.patch）。
 
+## 0.7.4
+
+0.7.4 是 Windows-only 热修版本，用于让虚拟机上的 Windows 测试继续推进。
+
+### 修复
+
+- **修复 Windows 设置页打不开**：移除设置窗口更新区域里会触发 WPF `Run.Text` setter 异常的 inline `Run` 文本绑定，改为普通 `TextBlock` 组合显示。点击「设置」不应再弹出 `Set property 'System.Windows.Documents.Run.Text' threw an exception`。
+
+### 测试
+
+- 新增 Windows 设置页发布表面回归测试，禁止 `SettingsWindow.xaml` 再引入 `<Run Text=`，并确认更新区域仍保留新版本、下载百分比和发布页入口。
+
 ## 0.7.3
 
 0.7.3 是一次面向**发布加固**的版本：按外部代码审查，系统性收紧了更新、依赖、登录凭证、Cookie 隔离与设置可靠性等发布前风险点，并修复了下载进度条卡在 100% 的体验问题。

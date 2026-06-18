@@ -443,9 +443,10 @@
                         <!-- 发现新版本 -->
                         <StackPanel Margin="0,10,0,0"
                                     Visibility="{Binding Updater.IsAvailable, ElementName=Root, Converter={StaticResource BoolToVis}}">
-                            <TextBlock>
-                                <Run Text="{DynamicResource L.Update.FoundPrefix}"/><Run Text="{Binding Updater.AvailableVersionText, ElementName=Root}" FontWeight="SemiBold"/>
-                            </TextBlock>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{DynamicResource L.Update.FoundPrefix}"/>
+                                <TextBlock Text="{Binding Updater.AvailableVersionText, ElementName=Root}" FontWeight="SemiBold"/>
+                            </StackPanel>
                             <TextBlock Text="{Binding Updater.AvailableNotes, ElementName=Root}" Style="{StaticResource Caption}"
                                        TextWrapping="Wrap" MaxHeight="120" Margin="0,6,0,0"
                                        Visibility="{Binding Updater.HasNotes, ElementName=Root, Converter={StaticResource BoolToVis}}"/>
@@ -460,9 +461,10 @@
                         <!-- 下载中 -->
                         <StackPanel Margin="0,10,0,0"
                                     Visibility="{Binding Updater.IsDownloading, ElementName=Root, Converter={StaticResource BoolToVis}}">
-                            <TextBlock>
-                                <Run Text="{DynamicResource L.Update.Downloading}"/><Run Text="{Binding Updater.DownloadPercentText, ElementName=Root}"/>
-                            </TextBlock>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{DynamicResource L.Update.Downloading}"/>
+                                <TextBlock Text="{Binding Updater.DownloadPercentText, ElementName=Root}"/>
+                            </StackPanel>
                             <ProgressBar Height="6" Margin="0,6,0,0" Minimum="0" Maximum="1"
                                          Value="{Binding Updater.DownloadFraction, ElementName=Root}"/>
                             <Button Content="{DynamicResource L.Common.Cancel}" HorizontalAlignment="Left" Margin="0,6,0,0"
