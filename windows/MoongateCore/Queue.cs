@@ -818,23 +818,16 @@ public sealed class QueueManager
 
     /// <summary>
     /// 由当前显示态 + yt-dlp 上报的百分比（0..1，null 表示无百分比）推导下一显示态（纯函数，便于测试）。
-    /// 处理 yt-dlp 的两个现实：
-    /// 1) DASH 视频流到 100% 后会再下音频流、再合并——若一直显示「下载中 100%」会像卡死，
-    ///    若让进度条从 100% 跳回 0% 又像「进度倒退」。所以某条流到 100% 时锁定为「处理中」
-    ///    （不确定态），后续流的百分比不再把它拉回，直到进程结束。
-    /// 2) HLS 因总大小未知靠估算，百分比会小幅上下抖动——未到 100% 时只升不降、且忽略 &lt; 1 个百分点的变化。
+    /// 如实显示当前下载百分比：yt-dlp 分流下载（DASH 视频流 0→100% 后再下音频流 0→100%），
+    /// 换流时百分比会回落——这是真实情况，照实显示（进度条始终在动），好过卡在 100% 或藏成转圈「处理中」。
+    /// 仅过滤 &lt; 0.5 个百分点的高频抖动（HLS 因总大小未知靠估算会小幅上下跳），减少刷新churn。
+    /// 合并阶段由 yt-dlp 的 [Merger] 行单独触发「处理中」（见 Processing 分支）。
     /// </summary>
     internal static DownloadProgressState NextDownloadProgressState(DownloadProgressState current, double? incoming)
     {
-        if (current.IsProcessing) return current;            // 已锁定「处理中」，不被后续百分比拉回
-        if (incoming is not { } next) return current;        // 无百分比：不变（preparing/finished 另处处理）
-        if (next >= 1.0) return new DownloadProgressState(null, true);  // 某条流满 → 进入「处理中」
-        if (current.Progress is { } old)
-        {
-            if (next < old) return current;                  // 只升不降（HLS 估算抖动）
-            if (next - old < 0.01) return current;            // 忽略 < 1 个百分点的上行抖动
-        }
-        return new DownloadProgressState(next, false);
+        if (incoming is not { } next) return current;                                    // 无百分比 → 不变
+        if (current.Progress is { } old && Math.Abs(next - old) < 0.005) return current; // 过滤 <0.5pt 抖动
+        return new DownloadProgressState(next, false);                                    // 如实显示当前百分比
     }
 
     /// <summary>

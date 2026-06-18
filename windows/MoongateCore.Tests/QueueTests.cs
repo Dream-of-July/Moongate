@@ -89,25 +89,22 @@ internal sealed class FakeBurner : ISubtitleBurner
 public class QueueManagerTests
 {
     [Fact]
-    public void NextDownloadProgressState_NoFreezeNoBackwardJump()
+    public void NextDownloadProgressState_ShowsRealPercentAndNeverStalls()
     {
         QueueManager.DownloadProgressState S(double? p, bool proc) => new(p, proc);
 
         // 首个百分比：采纳。
         Assert.Equal(S(0.0, false), QueueManager.NextDownloadProgressState(S(null, false), 0.0));
-        // 单调上行：采纳。
+        // 上行：如实显示。
         Assert.Equal(S(0.55, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.55));
-        // 上行 < 1 个百分点：节流（不变）。
-        Assert.Equal(S(0.40, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.405));
-        // HLS 估算小幅回退：忽略（只升不降）。
-        Assert.Equal(S(0.80, false), QueueManager.NextDownloadProgressState(S(0.80, false), 0.78));
-        // 关键回归①：某条流到 100% 时进入「处理中」，而不是停在「下载中 100%」卡死。
-        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(0.95, false), 1.0));
-        // 关键回归②：进入「处理中」后，后续流（音频）的低百分比不会把进度条拉回 0（不倒退）。
-        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(null, true), 0.05));
-        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(null, true), 0.60));
-        // 临近 100% 仍如实上行。
-        Assert.Equal(S(0.999, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.999));
+        // < 0.5 个百分点的抖动：节流（不变）。
+        Assert.Equal(S(0.40, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.402));
+        // 关键①：视频流到 100% 后音频流从 0 开始——如实回落显示（进度条仍在动），不卡在 100%。
+        Assert.Equal(S(0.05, false), QueueManager.NextDownloadProgressState(S(1.0, false), 0.05));
+        // 关键②：不把下载藏成转圈「处理中」——下载阶段的百分比始终 isProcessing=false。
+        Assert.Equal(S(0.62, false), QueueManager.NextDownloadProgressState(S(0.20, false), 0.62));
+        // 较大回落（换流）如实显示。
+        Assert.Equal(S(0.10, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.10));
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)

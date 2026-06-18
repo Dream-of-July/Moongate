@@ -615,17 +615,12 @@ final class QueueManager: ObservableObject {
     }
 
     /// 由当前显示态 + yt-dlp 上报百分比推导下一显示态（纯函数）。
-    /// 1) DASH 视频流到 100% 后还要下音频 + 合并：某条流满即锁定「处理中」（不确定态），
-    ///    后续流的百分比不再把它拉回——既不卡在 100%，也不让进度条倒退回 0。
-    /// 2) HLS 总大小未知靠估算、百分比会小幅抖动：未到 100% 时只升不降、忽略 < 1 个百分点的变化。
+    /// 如实显示当前下载百分比：DASH 分流下载（视频 0→100% 后再下音频 0→100%），换流时百分比回落是真实情况，
+    /// 照实显示让进度条始终在动，好过卡在 100% 或藏成转圈「处理中」；仅过滤 < 0.5 个百分点的高频抖动。
+    /// 合并阶段由 [Merger] 行单独触发「处理中」。
     static func nextDownloadProgressState(_ current: DownloadProgressState, incoming: Double?) -> DownloadProgressState {
-        if current.isProcessing { return current }
         guard let next = incoming else { return current }
-        if next >= 1.0 { return DownloadProgressState(progress: nil, isProcessing: true) }
-        if let old = current.progress {
-            if next < old { return current }
-            if next - old < 0.01 { return current }
-        }
+        if let old = current.progress, abs(next - old) < 0.005 { return current }
         return DownloadProgressState(progress: next, isProcessing: false)
     }
 
