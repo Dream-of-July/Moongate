@@ -92,7 +92,7 @@
 | Phase 0 | 建立可验证基线 + 本跟踪文档 | **Done**（基线全绿，见上） |
 | Phase 1 | Windows 更新与依赖阻断项（WIN-UPD-001、WIN-DEP-001/002、UPDATE-WIN-003/002） | **Done (code)** — dotnet test 321 通过（+10），NSIS 编译通过；覆盖安装/取消下载需真机验证 |
 | Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
-| Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | **进行中** — MAC-DEP-001 / DEP-WIN-003 done；DEP-SUPPLY-001 机制完成（待固定哈希）；custom prefix 未做 |
+| Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | **进行中** — MAC-DEP-001 / DEP-WIN-003 / 自定义 Homebrew prefix done；DEP-SUPPLY-001 机制完成（待固定哈希） |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | **Plan only** — 并发敏感 + 失败模式仅真机可复现，已写详细实现计划，待真机验证下落地 |
 | Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **Done (code)** — 全部完成（真机/UI 验证待定） |
 | Phase 6 | UI/UX 与无障碍 | Not started（UI 重，难单测，需真机） |

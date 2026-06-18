@@ -314,15 +314,31 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return nil
     }
     #else
-    private static let searchDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+    /// 二进制搜索目录（macOS/Unix）：自定义 HOMEBREW_PREFIX/bin → 标准 Homebrew 前缀 → /usr/bin → PATH。
+    /// 纯函数（按环境字典计算），便于测试自定义 Homebrew prefix / 非标准安装位置（MAC-DEP-001 关联项）。
+    static func binarySearchDirectories(environment env: [String: String]) -> [String] {
+        var dirs: [String] = []
+        if let prefix = env["HOMEBREW_PREFIX"], !prefix.isEmpty {
+            dirs.append(prefix + "/bin")
+        }
+        dirs.append(contentsOf: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"])
+        if let path = env["PATH"], !path.isEmpty {
+            for dir in path.split(separator: ":") where !dir.isEmpty {
+                dirs.append(String(dir))
+            }
+        }
+        var seen = Set<String>()
+        return dirs.filter { seen.insert($0).inserted }
+    }
 
     private static func locateBinary(named name: String, envVar: String) -> String? {
         let fm = FileManager.default
-        if let custom = ProcessInfo.processInfo.environment[envVar],
+        let env = ProcessInfo.processInfo.environment
+        if let custom = env[envVar],
            !custom.isEmpty, fm.isExecutableFile(atPath: custom) {
             return custom
         }
-        for dir in searchDirectories {
+        for dir in binarySearchDirectories(environment: env) {
             let path = dir + "/" + name
             if fm.isExecutableFile(atPath: path) { return path }
         }
@@ -348,10 +364,14 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     /// （转 srt 不需要 libass，但统一定位逻辑、避免精简版边角问题。）
     private static func locateSubtitleFFmpeg() -> String? {
         let fm = FileManager.default
-        let candidates = [
+        var candidates: [String] = []
+        if let prefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"], !prefix.isEmpty {
+            candidates.append(prefix + "/opt/ffmpeg-full/bin/ffmpeg")
+        }
+        candidates.append(contentsOf: [
             "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
             "/usr/local/opt/ffmpeg-full/bin/ffmpeg",
-        ]
+        ])
         for path in candidates where fm.isExecutableFile(atPath: path) { return path }
         return locateBinary(named: "ffmpeg", envVar: "MOONGATE_FFMPEG_PATH")
     }
