@@ -147,6 +147,43 @@ public class CleanCuesTests
     }
 
     [Fact]
+    public void CleanCues_StripsSpeakerChangeMarkers()
+    {
+        // 广播/CART 字幕的 ">>"/">>>" 说话人切换标记应被去掉，不应进入译文。
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:03,000", ">> 从1949年开始"),
+            Cue(2, "00:00:03,000", "00:00:06,000", ">>> Beginning in December"),
+            Cue(3, "00:00:06,000", "00:00:09,000", "蒋介石努力"),
+            Cue(4, "00:00:09,000", "00:00:12,000", "Hello >> world"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal([
+            "从1949年开始",
+            "Beginning in December",
+            "蒋介石努力",
+            "Hello world",
+        ], cleaned.Select(c => c.Text).ToArray());
+        Assert.DoesNotContain(cleaned, c => c.Text.Contains(">>"));
+    }
+
+    [Fact]
+    public void CleanCues_KeepsInlineComparisonOperators()
+    {
+        // 行内 "a>>b"（无前导空白）不是说话人标记，不应被去掉。
+        var input = new List<SubtitleCue>
+        {
+            Cue(1, "00:00:00,000", "00:00:03,000", "a>>b shift right"),
+        };
+
+        var cleaned = SrtTools.CleanCues(input);
+
+        Assert.Equal(["a>>b shift right"], cleaned.Select(c => c.Text).ToArray());
+    }
+
+    [Fact]
     public void CleanCues_DropsMultilingualNonSpeechMarkersBeforeTranslation()
     {
         var input = new List<SubtitleCue>

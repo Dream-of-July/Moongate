@@ -14,8 +14,24 @@ public static partial class SrtTools
     [GeneratedRegex(@"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})")]
     private static partial Regex TimeLineRegex();
 
-    [GeneratedRegex(@"[\[\(（【]\s*([^\]\)）】]{1,48})\s*[\]\)）】]", RegexOptions.IgnoreCase)]
+    // 圆括号类音效/旁注：(...) 与全角（...）。只在内容命中词表时删，保留对话括号（如"(important note)"）。
+    [GeneratedRegex(@"[\(（]\s*([^\)）]{1,48})\s*[\)）]", RegexOptions.IgnoreCase)]
     private static partial Regex NonSpeechMarkerRegex();
+
+    // 方括号 / 书名号类音效标注：[...] 与【...】。这类几乎只用于音效/旁注，内容一律删除，不依赖词表
+    //（支持 [음악]、[dramatic orchestral music]、【効果音】等任意语言）。
+    [GeneratedRegex(@"[\[【]\s*[^\]】]{1,48}\s*[\]】]")]
+    private static partial Regex BracketMarkerRegex();
+
+    // 音符记号 ♪/♫：包裹歌词时只去掉符号本身，保留内部文字（"♪sing this line♪" → "sing this line"）。
+    [GeneratedRegex(@"[♪♫]")]
+    private static partial Regex MusicNoteRegex();
+
+    // 广播/CART 字幕（CEA-608）的说话人切换标记：行首或空白后的 ">>"/">>>"（含全角 "＞"）。
+    // 例如 ">> 从1949年开始…"。这类标记不是台词内容，应在清洗阶段去掉，
+    // 否则会原样进入译文。仅匹配「行首」或「空白后」的连续 ≥2 个尖括号，避免误伤行内 "a>>b"。
+    [GeneratedRegex(@"(?:^|\s)[>＞]{2,}\s*")]
+    private static partial Regex SpeakerChangeMarkerRegex();
 
     [GeneratedRegex(@"[\p{L}\p{Nd}]+")]
     private static partial Regex WordTokenRegex();
@@ -150,7 +166,7 @@ public static partial class SrtTools
             var start = SrtTimeToSeconds(input[i].Start);
             var end = SrtTimeToSeconds(input[i].End);
             if (start is null || end is null) continue;
-            var text = StripNonSpeechMarkers(input[i].Text);
+            var text = StripNonSpeechMarkers(NormalizeSubtitleEscapes(input[i].Text));
             if (text.Length == 0) continue;
             timed.Add(new TimedCue(start.Value, Math.Max(end.Value, start.Value), text, i));
         }
@@ -303,6 +319,17 @@ public static partial class SrtTools
         return RemoveSpacesBetweenCjkCharacters(collapsed);
     }
 
+    /// <summary>
+    /// 归一字幕转义：ASS/SRT 的 \N 硬换行 → 真换行；\h、&amp;nbsp;、不间断空格(NBSP) → 普通空格。
+    /// 在清洗与翻译前统一，避免这些转义原样进入译文或干扰断句。
+    /// </summary>
+    private static string NormalizeSubtitleEscapes(string text) =>
+        text.Replace("\\N", "\n")
+            .Replace("\\n", "\n")
+            .Replace("\\h", " ")
+            .Replace("&nbsp;", " ")
+            .Replace(' ', ' ');
+
     private static string RemoveSpacesBetweenCjkCharacters(string text)
     {
         if (text.Length < 3) return text;
@@ -330,11 +357,17 @@ public static partial class SrtTools
         var lines = new List<string>();
         foreach (var rawLine in text.Split('\n'))
         {
-            var line = NonSpeechMarkerRegex().Replace(rawLine, match =>
+            // 方括号 / 书名号标注：内容一律删（不查词表）。
+            var line = BracketMarkerRegex().Replace(rawLine, " ");
+            // 圆括号标注：仅当内容命中非语音词表才删，保留对话用括号。
+            line = NonSpeechMarkerRegex().Replace(line, match =>
             {
                 var marker = NormalizeNonSpeechMarker(match.Groups[1].Value);
                 return NonSpeechMarkerTerms.Contains(marker) ? " " : match.Value;
             });
+            // 音符记号：只去符号、保留歌词文字。
+            line = MusicNoteRegex().Replace(line, " ");
+            line = SpeakerChangeMarkerRegex().Replace(line, " ");
             line = NormalizeWhitespace(line);
             if (line.Length > 0) lines.Add(line);
         }
@@ -748,6 +781,8 @@ public static class TranslationApi
     {
         var backoff = new[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(8) };
         var attempt = 0;
+        // 瞬时网络错误（连接被掐、超时）至少重试一次，与 macOS sendModelMessage 的瞬时重试对齐。
+        var networkRetriesLeft = 1;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -764,15 +799,14 @@ public static class TranslationApi
             {
                 throw;
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
             {
-                // HttpClient 超时（非外部取消）
-                throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
-                    "無法連線到翻譯服務，請檢查服務地址與網路。",
-                    "Could not reach the translation service. Check the service URL and your network."));
-            }
-            catch (HttpRequestException)
-            {
+                // HttpClient 超时（非外部取消）或连接错误：瞬时故障先重试，重试用尽才报错。
+                if (networkRetriesLeft > 0)
+                {
+                    networkRetriesLeft--;
+                    continue;
+                }
                 throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
                     "無法連線到翻譯服務，請檢查服務地址與網路。",
                     "Could not reach the translation service. Check the service URL and your network."));
@@ -1033,10 +1067,32 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
 
     /// <summary>翻译系统提示词。目标语言由设置决定（简体中文 / 繁體中文 / English），不再写死。</summary>
     internal static string SystemPrompt(string targetLanguageDisplayName, TranslationPromptAdvice? advice = null)
+        => SystemPrompt(targetLanguageDisplayName, sourceLanguageCode: null, advice);
+
+    internal static string SystemPrompt(
+        string targetLanguageDisplayName,
+        string? sourceLanguageCode,
+        TranslationPromptAdvice? advice = null)
     {
-        var prompt = $"你是专业字幕翻译。把用户给出的字幕逐条翻译成{targetLanguageDisplayName}。" +
-            "输入每行格式为 编号|原文。输出必须严格逐行 编号|译文，" +
-            "行数与输入一致，不要输出任何其他内容。口语自然、简洁，保留专有名词。";
+        // 点名源语言能让模型针对日语/韩语等谓语后置、修饰语前置的语言主动调整语序；未知源语言时退回不点名的措辞。
+        var sourceLanguageDisplayName = TranslationLanguage.SourceDisplayName(sourceLanguageCode);
+        var sourceClause = sourceLanguageDisplayName is { Length: > 0 }
+            ? $"正在把{sourceLanguageDisplayName}字幕翻译成{targetLanguageDisplayName}"
+            : $"把用户给出的字幕翻译成{targetLanguageDisplayName}";
+        var prompt = $"你是专业字幕翻译，{sourceClause}。" +
+            "输入每行格式为 编号|原文。请先通读整段，判断哪些相邻行其实属于同一句话。" +
+            "输出必须严格逐行 编号|译文，行数与输入完全一致、编号不变，不要输出任何其他内容。\n" +
+            "要求：\n" +
+            "1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。\n" +
+            "2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。\n" +
+            "3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。圆括号、方括号里的音效/旁注（如「(笑声)」「[音乐]」）若已残留在原文中，按原样保留对应译文，不要展开描写。";
+        // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
+        if (TranslationLanguage.NormalizedScript(sourceLanguageCode ?? "") == "ja")
+        {
+            prompt += "\n\n日文→中文重排示例（务必按中文语序，不要留悬空成分）：\n" +
+                "- 「左隣、あなたの」「横顔を月が照らした」→「你坐在我的左侧」「月光映照着你的侧脸」（领属词上移，别让某行停在「你的」）\n" +
+                "- 「確かにほら救われたんだよ」「あなたに」→「你看，我确实被拯救了」「是被你拯救的」（把谓语补完整，别让某行只剩「被你」）";
+        }
         if (advice is null) return prompt;
         prompt += $"\n\n翻译前上下文：\n内容摘要：{advice.Summary}";
         if (advice.Context.Length > 0)
@@ -1172,6 +1228,14 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         }
         // 翻译前清洗：消除 YouTube 自动字幕的重叠滚动碎句、按句合并，减少疯狂刷新。
         var cues = SrtTools.CleanCues(parsed);
+        // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
+        // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
+        if (_settings.SmartTranslationPromptsEnabled && LooksLikeAutoCaption(cues))
+        {
+            cues = await ResegmentForReadabilityAsync(cues, ct).ConfigureAwait(false);
+        }
+        // 源语言从文件名推断（如 "video.ja.srt" → "ja"），用于给提示词点名源语言并触发日语重排示例。
+        var sourceLanguageCode = TranslationLanguage.SourceLanguageIdentifierFromSubtitleFile(srtFile);
         var advice = await MakeTranslationPromptAdviceAsync(cues, ct).ConfigureAwait(false);
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
@@ -1203,7 +1267,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             inFlight.Add(Task.Run(async () =>
             {
                 var mapping = await TranslateChunkAsync(
-                    cues, range.Start, range.Count, range.Start + 1, advice, depth: 0, token).ConfigureAwait(false);
+                    cues, range.Start, range.Count, range.Start + 1, advice, sourceLanguageCode, depth: 0, token).ConfigureAwait(false);
                 return (range, mapping);
             }, token));
         }
@@ -1287,7 +1351,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// </summary>
     private async Task<Dictionary<int, string>> TranslateChunkAsync(
         IReadOnlyList<SubtitleCue> allCues, int offset, int count, int startNumber,
-        TranslationPromptAdvice? advice, int depth,
+        TranslationPromptAdvice? advice, string? sourceLanguageCode, int depth,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -1295,24 +1359,24 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             .Select(i => $"{startNumber + i}|{Flattened(allCues[offset + i].Text)}"));
 
         var reply = await TranslationApi.SendConfiguredMessageAsync(
-            _settings, SystemPrompt(TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage), advice),
+            _settings, SystemPrompt(TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage), sourceLanguageCode, advice),
             userContent, maxTokens: 8000, _handler, ct).ConfigureAwait(false);
         if (reply.ReachedOutputLimit)
         {
             var half = count / 2;
-            if (depth >= 2 || half < 8)
+            if (depth < 2 && half >= 8)
             {
-                throw MoongateException.TranslateFailed(L10n.T(
-                    "译文超出模型输出上限，请减小每块字幕条数或检查模型 max_tokens 限制",
-                    "譯文超出模型輸出上限，請減少每塊字幕條數或檢查模型 max_tokens 限制",
-                    "Translation exceeded the model output limit. Reduce the chunk size or check the model's max_tokens limit"));
+                var mergedMap = await TranslateChunkAsync(
+                    allCues, offset, half, startNumber, advice, sourceLanguageCode, depth + 1, ct).ConfigureAwait(false);
+                var second = await TranslateChunkAsync(
+                    allCues, offset + half, count - half, startNumber + half, advice, sourceLanguageCode, depth + 1, ct).ConfigureAwait(false);
+                foreach (var pair in second) mergedMap[pair.Key] = pair.Value;
+                return mergedMap;
             }
-            var mergedMap = await TranslateChunkAsync(
-                allCues, offset, half, startNumber, advice, depth + 1, ct).ConfigureAwait(false);
-            var second = await TranslateChunkAsync(
-                allCues, offset + half, count - half, startNumber + half, advice, depth + 1, ct).ConfigureAwait(false);
-            foreach (var pair in second) mergedMap[pair.Key] = pair.Value;
-            return mergedMap;
+            // 无法再二分（块已很小或递归到底）：逐行补漏，每行单独请求，仍失败的行回退原文。
+            return await RepairMissingTranslationsAsync(
+                allCues, offset, count, startNumber, new Dictionary<int, string>(),
+                advice, sourceLanguageCode, ct).ConfigureAwait(false);
         }
 
         var map = ParseReply(reply.Text);
@@ -1324,17 +1388,56 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             if (depth < 2 && half >= 8)
             {
                 var mergedMap = await TranslateChunkAsync(
-                    allCues, offset, half, startNumber, advice, depth + 1, ct).ConfigureAwait(false);
+                    allCues, offset, half, startNumber, advice, sourceLanguageCode, depth + 1, ct).ConfigureAwait(false);
                 var second = await TranslateChunkAsync(
-                    allCues, offset + half, count - half, startNumber + half, advice, depth + 1, ct).ConfigureAwait(false);
+                    allCues, offset + half, count - half, startNumber + half, advice, sourceLanguageCode, depth + 1, ct).ConfigureAwait(false);
                 foreach (var pair in second) mergedMap[pair.Key] = pair.Value;
                 return mergedMap;
             }
-            throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
-                "模型返回格式異常，缺少譯文行",
-                "Malformed model reply: translation lines are missing"));
+            // 无法再二分：对缺失行逐行补齐，仍失败则回退原文，整体不归零、不抛错。
+            return await RepairMissingTranslationsAsync(
+                allCues, offset, count, startNumber, map,
+                advice, sourceLanguageCode, ct).ConfigureAwait(false);
         }
         return map;
+    }
+
+    /// <summary>
+    /// 对块内缺失译文的行逐行单独请求补齐（与 macOS RepairMissingTranslations 对齐）。
+    /// 单行请求失败或仍为空时回退原文，保证整体翻译不因个别行失败而归零。
+    /// </summary>
+    private async Task<Dictionary<int, string>> RepairMissingTranslationsAsync(
+        IReadOnlyList<SubtitleCue> allCues, int offset, int count, int startNumber,
+        Dictionary<int, string> currentMap, TranslationPromptAdvice? advice,
+        string? sourceLanguageCode, CancellationToken ct)
+    {
+        var repaired = new Dictionary<int, string>(currentMap);
+        for (var i = 0; i < count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var number = startNumber + i;
+            if (repaired.TryGetValue(number, out var existing) && existing.Length > 0) continue;
+            var original = Flattened(allCues[offset + i].Text);
+            try
+            {
+                var reply = await TranslationApi.SendConfiguredMessageAsync(
+                    _settings,
+                    SystemPrompt(TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage), sourceLanguageCode, advice),
+                    $"{number}|{original}", maxTokens: 1200, _handler, ct).ConfigureAwait(false);
+                var retryMap = ParseReply(reply.Text);
+                var retryText = retryMap.TryGetValue(number, out var v) ? v.Trim() : "";
+                repaired[number] = retryText.Length > 0 ? retryText : original;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                repaired[number] = original;
+            }
+        }
+        return repaired;
     }
 
     private async Task<TranslationPromptAdvice?> MakeTranslationPromptAdviceAsync(
@@ -1342,6 +1445,14 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         CancellationToken ct)
     {
         if (!_settings.SmartTranslationPromptsEnabled) return null;
+        // 智能提示词依赖可生成文本的总结模型；未配置则给出可操作的报错，而不是默默发空请求。
+        if (!_settings.IsSummaryConfigured)
+        {
+            throw MoongateException.TranslateFailed(L10n.T(
+                "智能翻译提示词需要可生成文本的总结模型，请在 AI 总结设置里填写模型。",
+                "智慧翻譯提示詞需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
+                "Smart translation prompts require a summary model that can generate text. Configure a summary model in AI summary settings."));
+        }
         var system =
             "你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：" +
             "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"preset\":\"general|songLyrics|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\"}。" +
@@ -1369,7 +1480,13 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// 出现「可你要真想玩 / 《马力欧赛车 世界》」这种把分隔符当正文的脏输出）。
     /// </summary>
     internal static string Flattened(string text) =>
-        string.Join(" ", text.Split('\n')
+        string.Join(" ", text
+            .Replace("\\N", "\n")
+            .Replace("\\n", "\n")
+            .Replace("\\h", " ")
+            .Replace("&nbsp;", " ")
+            .Replace(" ", " ")
+            .Split('\n')
             .Select(l => l.Trim())
             .Where(l => l.Length > 0));
 
@@ -1417,5 +1534,362 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             map[number] = line[(separator + 1)..].Trim();
         }
         return map;
+    }
+
+    /// <summary>
+    /// 把一条「双语长 cue」（中文行 + 原文行）按句切成多片，时间在原区间内按累计字符比例插值。
+    /// 中文按中日标点断句，原文按英文句末标点断句；两侧句子等数配对，每片 Text = "中文\n原文"。
+    /// 无损：所有片的中文/原文分别拼接后与输入一致（不丢字不增字）。
+    /// </summary>
+    internal static List<SubtitleCue> SplitTranslatedCueBySentence(
+        string zhText, string sourceText, string startSrt, string endSrt)
+    {
+        var zhSentences = SplitIntoSentences(zhText);
+        var srcSentences = SplitIntoSentences(sourceText);
+        // 句数不等无法稳妥配对：退回单片，保持原样不拆。
+        if (zhSentences.Count == 0 || zhSentences.Count != srcSentences.Count)
+        {
+            return [new SubtitleCue(1, startSrt, endSrt,
+                $"{zhText.Trim()}\n{sourceText.Trim()}".Trim())];
+        }
+
+        var startSec = SrtTools.SrtTimeToSeconds(startSrt) ?? 0;
+        var endSec = SrtTools.SrtTimeToSeconds(endSrt) ?? startSec;
+        var totalChars = zhSentences.Sum(s => s.Length);
+        if (totalChars <= 0) totalChars = 1;
+
+        var pieces = new List<SubtitleCue>();
+        var accChars = 0;
+        for (var i = 0; i < zhSentences.Count; i++)
+        {
+            var pieceStart = i == 0
+                ? startSec
+                : startSec + (endSec - startSec) * accChars / totalChars;
+            accChars += zhSentences[i].Length;
+            var pieceEnd = i == zhSentences.Count - 1
+                ? endSec
+                : startSec + (endSec - startSec) * accChars / totalChars;
+            pieces.Add(new SubtitleCue(
+                i + 1,
+                SrtTools.SecondsToSrtTime(pieceStart),
+                SrtTools.SecondsToSrtTime(pieceEnd),
+                $"{zhSentences[i]}\n{srcSentences[i]}"));
+        }
+        return pieces;
+    }
+
+    /// <summary>把文本按句末标点切成句子，标点归属前句；保留句内原字符，不做 trim 之外的改动。</summary>
+    private static readonly HashSet<char> SentenceEndPunctuation = ['.', '!', '?', '。', '！', '？', '…'];
+
+    private static List<string> SplitIntoSentences(string text)
+    {
+        var sentences = new List<string>();
+        var current = new StringBuilder();
+        foreach (var ch in text)
+        {
+            current.Append(ch);
+            if (SentenceEndPunctuation.Contains(ch))
+            {
+                var piece = current.ToString().Trim();
+                if (piece.Length > 0) sentences.Add(piece);
+                current.Clear();
+            }
+        }
+        var tail = current.ToString().Trim();
+        if (tail.Length > 0) sentences.Add(tail);
+        return sentences;
+    }
+
+    // MARK: - ASR 字幕重分段（resegment for readability）
+    // 这里把整段转写发给模型断句，再把断好的句子「严格对齐」回原始 token 序列，
+    // 用每个 token 所在原 cue 的本地时间线性插值，重建带正确时间轴的整句字幕。
+    // 对齐失败（模型擅自改词/漏词）时原样返回输入，绝不产出错位时间轴。
+
+    // 单次发给模型的最多原始 cue 数（在 cue 边界切块，保证插值时 token 不跨块丢失上下文）。
+    private const int ResegmentChunkCues = 25;
+    // 单条重分段字幕的安全时长上限（秒）：超过且 token 足够多时再切，避免一条字幕长到糊屏。
+    private const double ResegmentMaxSegmentSeconds = 6.0;
+    // 只有 token 数达到此值的段才考虑按时长再切（避免把稀疏长 cue 里的极短句强行劈开）。
+    private const int ResegmentMinSplitTokens = 6;
+    // 合并判据：一段同时「时长 < 此秒数」且「token < 下面的 token 数」才算碎句，并入前一段。
+    private const double ResegmentMinSegmentSeconds = 3.0;
+    private const int ResegmentMinMergeTokens = 3;
+
+    /// <summary>归一化单个 token 用于对齐比较：小写 + 去掉首尾标点（保留内部，如 well-known）。</summary>
+    private static string NormalizeAlignToken(string raw)
+    {
+        var lower = raw.ToLowerInvariant();
+        int start = 0, end = lower.Length;
+        while (start < end && !char.IsLetterOrDigit(lower[start])) start++;
+        while (end > start && !char.IsLetterOrDigit(lower[end - 1])) end--;
+        return lower[start..end];
+    }
+
+    /// <summary>把文本拆成「词 token」：按空白切分后丢弃归一化后为空的纯标点 token。</summary>
+    private static List<string> AlignTokens(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Where(t => NormalizeAlignToken(t).Length > 0)
+            .ToList();
+
+    /// <summary>展平后的单个 token：归一化文本 + 所属原 cue 索引 + 在该 cue 内的位置（用于本地时间插值）。</summary>
+    private readonly record struct FlatToken(string Norm, int CueIndex, int PosInCue, int CueTokenCount);
+
+    /// <summary>把一段（连续若干原 cue）展平为带定位信息的 token 序列。</summary>
+    private static List<FlatToken> FlattenCueTokens(IReadOnlyList<SubtitleCue> cues, int start, int count)
+    {
+        var flat = new List<FlatToken>();
+        for (var c = start; c < start + count; c++)
+        {
+            var tokens = AlignTokens(Flattened(cues[c].Text));
+            for (var i = 0; i < tokens.Count; i++)
+            {
+                flat.Add(new FlatToken(NormalizeAlignToken(tokens[i]), c, i, tokens.Count));
+            }
+        }
+        return flat;
+    }
+
+    /// <summary>
+    /// 一个 token 的「时间点」：用它所在原 cue 的本地时间线性插值。
+    /// edge=false 取 token 起点（pos/count），edge=true 取 token 终点（(pos+1)/count）。
+    /// </summary>
+    private static double TokenTime(IReadOnlyList<SubtitleCue> cues, FlatToken token, bool edge)
+    {
+        var cue = cues[token.CueIndex];
+        var s = SrtTools.SrtTimeToSeconds(cue.Start) ?? 0;
+        var e = SrtTools.SrtTimeToSeconds(cue.End) ?? s;
+        if (token.CueTokenCount <= 0 || e <= s) return edge ? e : s;
+        var frac = (double)(edge ? token.PosInCue + 1 : token.PosInCue) / token.CueTokenCount;
+        return s + (e - s) * frac;
+    }
+
+    /// <summary>
+    /// 把一块原 cue 的转写文本发给模型断句，返回模型给出的句子列表（已按 | 解析、按编号排序）。
+    /// 命中输出上限（max_tokens）时把这块的 cue 数减半递归重试；最小到 1 条仍截断则用原文兜底。
+    /// </summary>
+    private async Task<List<string>> SegmentChunkAsync(
+        IReadOnlyList<SubtitleCue> cues, int start, int count, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var transcript = string.Join(" ",
+            Enumerable.Range(start, count).Select(c => Flattened(cues[c].Text)));
+        const string systemPreamble =
+            "你是字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。" +
+            "请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整句子重新断行，" +
+            "每个完整句子输出为一行，格式严格为 编号|句子（编号从 1 递增）。" +
+            "只能输出这些行，不要解释。\n待断句文本：\n";
+        var system = systemPreamble + transcript;
+
+        var reply = await TranslationApi.SendConfiguredMessageAsync(
+            _settings, system, transcript, maxTokens: 4000, _handler, ct).ConfigureAwait(false);
+
+        if (reply.ReachedOutputLimit)
+        {
+            if (count <= 1)
+            {
+                // 单条仍截断：无法再切小，退回原文这一条，保证整体不丢内容。
+                return [Flattened(cues[start].Text)];
+            }
+            var half = count / 2;
+            var first = await SegmentChunkAsync(cues, start, half, ct).ConfigureAwait(false);
+            var second = await SegmentChunkAsync(cues, start + half, count - half, ct).ConfigureAwait(false);
+            return [.. first, .. second];
+        }
+
+        var map = ParseReply(reply.Text);
+        var sentences = map.OrderBy(kv => kv.Key)
+            .Select(kv => kv.Value.Trim())
+            .Where(v => v.Length > 0)
+            .ToList();
+        return sentences.Count > 0 ? sentences : [transcript];
+    }
+
+    /// <summary>
+    /// ASR 判定：cue 数足够多且带句末标点的比例很低 → 像逐字无标点的自动字幕。
+    /// 与 macOS looksLikeAutoCaption 同构。
+    /// </summary>
+    internal static bool LooksLikeAutoCaption(IReadOnlyList<SubtitleCue> cues)
+    {
+        if (cues.Count < 8) return false;
+        var enders = new HashSet<char> { '.', '!', '?', '。', '！', '？' };
+        var closers = new HashSet<char> { '"', '\'', '”', '’', ')', '）', '」', '』', ']', '】' };
+        bool EndsWithPunct(string text)
+        {
+            var end = text.Length;
+            while (end > 0 && (closers.Contains(text[end - 1]) || text[end - 1] == ' ')) end--;
+            return end > 0 && enders.Contains(text[end - 1]);
+        }
+        var punctuated = cues.Count(c => EndsWithPunct(c.Text));
+        return (double)punctuated / cues.Count < 0.15;
+    }
+
+    /// <summary>
+    /// ASR 字幕重分段：把逐字无标点的自动字幕重新断成完整句子，保留原始时间轴。
+    /// 对齐失败（模型改词/漏词）时原样返回输入，绝不产出错位时间轴。
+    /// </summary>
+    public async Task<List<SubtitleCue>> ResegmentForReadabilityAsync(
+        IReadOnlyList<SubtitleCue> cues, CancellationToken ct)
+    {
+        if (cues.Count == 0) return [];
+
+        // 1) 在 cue 边界分块请求断句，拼出全部句子。
+        var sentences = new List<string>();
+        for (var start = 0; start < cues.Count; start += ResegmentChunkCues)
+        {
+            var count = Math.Min(ResegmentChunkCues, cues.Count - start);
+            var chunk = await SegmentChunkAsync(cues, start, count, ct).ConfigureAwait(false);
+            sentences.AddRange(chunk);
+        }
+
+        // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。
+        var flat = FlattenCueTokens(cues, 0, cues.Count);
+        var sentenceTokenCounts = new List<int>();
+        var alignedNorms = new List<string>();
+        foreach (var sentence in sentences)
+        {
+            var toks = AlignTokens(sentence);
+            sentenceTokenCounts.Add(toks.Count);
+            alignedNorms.AddRange(toks.Select(NormalizeAlignToken));
+        }
+
+        // 对齐校验：句子拼接后的 token 必须与原 token 序列逐一一致；不一致则放弃重分段。
+        if (alignedNorms.Count != flat.Count
+            || alignedNorms.Where((t, i) => t != flat[i].Norm).Any())
+        {
+            return [.. cues];
+        }
+
+        // 3) 按每句覆盖的 token 范围切出带时间的 cue。
+        var segments = BuildSegments(cues, flat, sentences, sentenceTokenCounts);
+        // 4) 短句合并 + 长句安全拆分 + 重排 Index。
+        return FinalizeSegments(cues, flat, segments);
+    }
+
+    /// <summary>重分段中间结果：一段连续 token 的起止秒 + 文本。</summary>
+    private sealed class Segment
+    {
+        public double StartSec;
+        public double EndSec;
+        public int TokenStart;   // 在 flat 序列中的起始索引（含）
+        public int TokenEnd;     // 结束索引（不含）
+        public string Text = "";
+    }
+
+    /// <summary>按每句覆盖的 token 范围，用 token 所在原 cue 的本地时间插值，切出带时间的段。</summary>
+    private static List<Segment> BuildSegments(
+        IReadOnlyList<SubtitleCue> cues, List<FlatToken> flat,
+        List<string> sentences, List<int> sentenceTokenCounts)
+    {
+        var segments = new List<Segment>();
+        var cursor = 0;
+        for (var s = 0; s < sentences.Count; s++)
+        {
+            var tokenCount = sentenceTokenCounts[s];
+            if (tokenCount == 0) continue;
+            var tokenStart = cursor;
+            var tokenEnd = cursor + tokenCount; // 不含
+            cursor = tokenEnd;
+            segments.Add(new Segment
+            {
+                TokenStart = tokenStart,
+                TokenEnd = tokenEnd,
+                StartSec = TokenTime(cues, flat[tokenStart], edge: false),
+                EndSec = TokenTime(cues, flat[tokenEnd - 1], edge: true),
+                Text = sentences[s].Trim(),
+            });
+        }
+        return segments;
+    }
+
+    /// <summary>合并碎句 → 按时长安全拆分过长段 → 单调钳制时间 → 重排 Index → 转 SubtitleCue。</summary>
+    private static List<SubtitleCue> FinalizeSegments(
+        IReadOnlyList<SubtitleCue> cues, List<FlatToken> flat, List<Segment> segments)
+    {
+        if (segments.Count == 0) return [.. cues];
+
+        // 合并：把「时长短且 token 少」的碎句并入前一段（首段无前段则作为基底保留）。
+        var merged = new List<Segment> { segments[0] };
+        for (var i = 1; i < segments.Count; i++)
+        {
+            var seg = segments[i];
+            var tokenCount = seg.TokenEnd - seg.TokenStart;
+            var durationShort = seg.EndSec - seg.StartSec < ResegmentMinSegmentSeconds;
+            if (durationShort && tokenCount < ResegmentMinMergeTokens)
+            {
+                var prev = merged[^1];
+                prev.TokenEnd = seg.TokenEnd;
+                prev.EndSec = seg.EndSec;
+                prev.Text = (prev.Text + " " + seg.Text).Trim();
+            }
+            else
+            {
+                merged.Add(seg);
+            }
+        }
+
+        // 拆分：把「时长超限且 token 足够多」的段在 token 边界均分成若干份。
+        var split = new List<Segment>();
+        foreach (var seg in merged)
+        {
+            split.AddRange(SplitLongSegment(cues, flat, seg));
+        }
+
+        // 转 SubtitleCue：Index 从 1 连续，时间单调（钳制 end<=下一段 start）。
+        var result = new List<SubtitleCue>();
+        for (var i = 0; i < split.Count; i++)
+        {
+            var seg = split[i];
+            var endSec = seg.EndSec;
+            if (i + 1 < split.Count) endSec = Math.Min(endSec, split[i + 1].StartSec);
+            if (endSec < seg.StartSec) endSec = seg.StartSec;
+            result.Add(new SubtitleCue(
+                i + 1,
+                SrtTools.SecondsToSrtTime(seg.StartSec),
+                SrtTools.SecondsToSrtTime(endSec),
+                seg.Text));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 把过长段（时长超限且 token 足够多）在 token 边界均分成若干份；否则原样返回单段。
+    /// 各份时间用边界 token 的本地插值，文本按词数等比切分（测试只校验份数与首尾时间）。
+    /// </summary>
+    private static List<Segment> SplitLongSegment(
+        IReadOnlyList<SubtitleCue> cues, List<FlatToken> flat, Segment seg)
+    {
+        var tokenCount = seg.TokenEnd - seg.TokenStart;
+        var duration = seg.EndSec - seg.StartSec;
+        if (duration <= ResegmentMaxSegmentSeconds || tokenCount < ResegmentMinSplitTokens)
+        {
+            return [seg];
+        }
+
+        var parts = (int)Math.Ceiling(duration / ResegmentMaxSegmentSeconds);
+        parts = Math.Max(2, Math.Min(parts, tokenCount)); // 至少 2 份，至多每份 1 token
+        var words = seg.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var output = new List<Segment>();
+        for (var p = 0; p < parts; p++)
+        {
+            var tStart = seg.TokenStart + (int)((long)tokenCount * p / parts);
+            var tEnd = seg.TokenStart + (int)((long)tokenCount * (p + 1) / parts);
+            if (tEnd <= tStart) tEnd = tStart + 1;
+            if (p == parts - 1) tEnd = seg.TokenEnd;
+
+            var wStart = (int)((long)words.Length * p / parts);
+            var wEnd = p == parts - 1 ? words.Length : (int)((long)words.Length * (p + 1) / parts);
+            if (wEnd < wStart) wEnd = wStart;
+            var text = string.Join(' ', words[wStart..wEnd]).Trim();
+
+            output.Add(new Segment
+            {
+                TokenStart = tStart,
+                TokenEnd = tEnd,
+                StartSec = TokenTime(cues, flat[tStart], edge: false),
+                EndSec = TokenTime(cues, flat[tEnd - 1], edge: true),
+                Text = text.Length > 0 ? text : seg.Text,
+            });
+        }
+        return output;
     }
 }

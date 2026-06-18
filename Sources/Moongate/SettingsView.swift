@@ -754,8 +754,7 @@ struct SettingsView: View {
             }
             switch updater.state {
             case .idle:
-                HStack {
-                    Spacer()
+                HStack(spacing: 10) {
                     Button(localizer.t(L.Update.check)) {
                         startUpdateCheckFromSettings()
                     }
@@ -765,14 +764,13 @@ struct SettingsView: View {
                         updater.openReleasesPage()
                     }
                         .buttonStyle(.bordered)
-                    Spacer()
                 }
             case .failed(let reason):
                 VStack(alignment: .leading, spacing: 8) {
                     Text(reason)
                         .font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack {
+                    HStack(spacing: 10) {
                         Button(localizer.t(L.Common.retry)) {
                             startUpdateCheckFromSettings()
                         }
@@ -782,7 +780,6 @@ struct SettingsView: View {
                             updater.openReleasesPage()
                         }
                             .buttonStyle(.bordered)
-                        Spacer()
                     }
                 }
             }

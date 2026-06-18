@@ -11,6 +11,9 @@ internal static class Loc
     public static string S(string key) =>
         Application.Current?.TryFindResource(key) as string ?? key;
 
+    /// <summary>S 的语义别名：按本地化 key 取界面/错误文案。</summary>
+    public static string T(string key) => S(key);
+
     public static string F(string key, params object[] args) => string.Format(S(key), args);
 }
 

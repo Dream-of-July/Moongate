@@ -956,6 +956,37 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(cleaned.contains { $0.text.contains("[") || $0.text.contains("Music") || $0.text.contains("音乐") })
     }
 
+    func testCleanCuesStripsSpeakerChangeMarkers() {
+        // 广播/CART 字幕的 ">>"/">>>" 说话人切换标记应被去掉，不应进入译文。
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:03,000", text: ">> 从1949年开始"),
+            SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:06,000", text: ">>> Beginning in December"),
+            SubtitleCue(index: 3, start: "00:00:06,000", end: "00:00:09,000", text: "蒋介石努力"),
+            SubtitleCue(index: 4, start: "00:00:09,000", end: "00:00:12,000", text: "Hello >> world")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.map(\.text), [
+            "从1949年开始",
+            "Beginning in December",
+            "蒋介石努力",
+            "Hello world"
+        ])
+        XCTAssertFalse(cleaned.contains { $0.text.contains(">>") })
+    }
+
+    func testCleanCuesKeepsInlineComparisonOperators() {
+        // 行内 "a>>b"（无前导空白）不是说话人标记，不应被去掉。
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:03,000", text: "a>>b shift right")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.map(\.text), ["a>>b shift right"])
+    }
+
     func testCleanCuesDropsBroaderNonSpeechMarkersWithoutRemovingDialogueParentheses() {
         let input = [
             SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[Sighs]"),

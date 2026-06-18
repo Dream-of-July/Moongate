@@ -130,10 +130,24 @@ private func normalizedNonSpeechMarker(_ raw: String) -> String {
     }
 }
 
+/// 广播/CART 字幕（CEA-608）的说话人切换标记：行首或空白后的 ">>"/">>>"（含全角 "＞"）。
+/// 例如 ">> 从1949年开始…"。这类标记不是台词内容，应在清洗阶段去掉，
+/// 否则会原样进入译文。仅匹配「行首」或「空白后」的连续 ≥2 个尖括号，避免误伤行内 "a>>b"。
+private let speakerChangeMarkerRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"(?:^|\s)[>＞]{2,}\s*"#,
+    options: []
+)
+
+private func stripSpeakerChangeMarkers(_ line: String) -> String {
+    guard let regex = speakerChangeMarkerRegex else { return line }
+    let range = NSRange(line.startIndex..., in: line)
+    return regex.stringByReplacingMatches(in: line, range: range, withTemplate: " ")
+}
+
 private func stripNonSpeechMarkers(_ text: String) -> String {
     text.components(separatedBy: .newlines).compactMap { rawLine in
         guard let regex = nonSpeechMarkerRegex else {
-            let fallback = collapseSubtitleWhitespace(rawLine)
+            let fallback = collapseSubtitleWhitespace(stripSpeakerChangeMarkers(rawLine))
             return fallback.isEmpty ? nil : fallback
         }
         var line = rawLine
@@ -146,6 +160,7 @@ private func stripNonSpeechMarkers(_ text: String) -> String {
                 line.replaceSubrange(markerRange, with: " ")
             }
         }
+        line = stripSpeakerChangeMarkers(line)
         let cleaned = collapseSubtitleWhitespace(line)
         return cleaned.isEmpty ? nil : cleaned
     }
@@ -1400,7 +1415,12 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
         }
         // 翻译前清洗：消除 YouTube 自动字幕的重叠滚动碎句、按句合并，减少疯狂刷新。
-        let cues = cleanCues(parsed)
+        var cues = cleanCues(parsed)
+        // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
+        // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
+        if settings.smartTranslationPromptsEnabled, Self.looksLikeAutoCaption(cues) {
+            cues = try await resegmentForReadability(cues, context: context)
+        }
         let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
@@ -1757,7 +1777,261 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
         return map
     }
+
+    // MARK: - ASR 字幕重分段（resegment for readability）
+    // 逐字、无标点的自动字幕每条只是一个时间窗口里的碎词，读起来割裂。
+    // 把整段转写发给模型断句，再把断好的句子「严格对齐」回原始 token 序列，
+    // 用每个 token 所在原 cue 的本地时间线性插值，重建带正确时间轴的整句字幕。
+    // 对齐失败（模型擅自改词/漏词）时原样返回输入，绝不产出错位时间轴。
+    // 与 Windows SrtTools/ConfiguredTranslator 的 ResegmentForReadability 同构。
+
+    private static let resegmentChunkCues = 25        // 单次请求最多原始 cue 数（在 cue 边界切块）
+    private static let resegmentMaxSegmentSeconds = 6.0 // 单条安全时长上限：超过且 token 足够多才再切
+    private static let resegmentMinSplitTokens = 6      // 只有 token 数达到此值的段才按时长再切
+    private static let resegmentMinSegmentSeconds = 3.0 // 合并判据：时长 < 此秒数
+    private static let resegmentMinMergeTokens = 3      // 且 token < 此值，才算碎句并入前段
+
+    /// 归一化单个 token 用于对齐比较：小写 + 去掉首尾标点（保留内部，如 well-known）。
+    private static func normalizeAlignToken(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        let chars = Array(lower)
+        var start = 0, end = chars.count
+        while start < end, !chars[start].isLetter, !chars[start].isNumber { start += 1 }
+        while end > start, !chars[end - 1].isLetter, !chars[end - 1].isNumber { end -= 1 }
+        return String(chars[start..<end])
+    }
+
+    /// 把文本拆成「词 token」：按空白切分后丢弃归一化后为空的纯标点 token。
+    private static func alignTokens(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .filter { !normalizeAlignToken($0).isEmpty }
+    }
+
+    /// ASR 判定：cue 数足够多且带句末标点的比例很低 → 像逐字无标点的自动字幕。
+    static func looksLikeAutoCaption(_ cues: [SubtitleCue]) -> Bool {
+        guard cues.count >= 8 else { return false }
+        let enders: Set<Character> = [".", "!", "?", "。", "！", "？"]
+        let closers: Set<Character> = ["\"", "'", "”", "’", ")", "）", "」", "』", "]", "】"]
+        func endsWithPunct(_ text: String) -> Bool {
+            var chars = Array(text)
+            while let last = chars.last, closers.contains(last) || last == " " { chars.removeLast() }
+            guard let last = chars.last else { return false }
+            return enders.contains(last)
+        }
+        let punctuated = cues.filter { endsWithPunct($0.text) }.count
+        return Double(punctuated) / Double(cues.count) < 0.15
+    }
 }
 
 @available(*, deprecated, renamed: "ConfiguredTranslator")
 public typealias AnthropicTranslator = ConfiguredTranslator
+
+// MARK: - ASR 字幕重分段实现（与 Windows 同构）
+extension ConfiguredTranslator {
+    /// 展平后的单个 token：归一化文本 + 所属原 cue 索引 + 在该 cue 内的位置（用于本地时间插值）。
+    fileprivate struct FlatToken {
+        let norm: String
+        let cueIndex: Int
+        let posInCue: Int
+        let cueTokenCount: Int
+    }
+
+    /// 把一段（连续若干原 cue）展平为带定位信息的 token 序列。
+    fileprivate static func flattenCueTokens(_ cues: [SubtitleCue], start: Int, count: Int) -> [FlatToken] {
+        var flat: [FlatToken] = []
+        for c in start..<(start + count) {
+            let tokens = alignTokens(flattened(cues[c].text))
+            for (i, tok) in tokens.enumerated() {
+                flat.append(FlatToken(norm: normalizeAlignToken(tok), cueIndex: c,
+                                      posInCue: i, cueTokenCount: tokens.count))
+            }
+        }
+        return flat
+    }
+
+    /// 一个 token 的「时间点」：用它所在原 cue 的本地时间线性插值。
+    /// edge=false 取 token 起点（pos/count），edge=true 取 token 终点（(pos+1)/count）。
+    fileprivate static func tokenTime(_ cues: [SubtitleCue], _ token: FlatToken, edge: Bool) -> Double {
+        let cue = cues[token.cueIndex]
+        let s = srtTimeToSeconds(cue.start) ?? 0
+        let e = srtTimeToSeconds(cue.end) ?? s
+        if token.cueTokenCount <= 0 || e <= s { return edge ? e : s }
+        let frac = Double(edge ? token.posInCue + 1 : token.posInCue) / Double(token.cueTokenCount)
+        return s + (e - s) * frac
+    }
+
+    /// 把一块原 cue 的转写文本发给模型断句，返回模型给出的句子列表（按编号排序）。
+    /// 命中输出上限时把这块的 cue 数减半递归重试；单条仍截断则用原文兜底。
+    fileprivate func segmentChunk(_ cues: [SubtitleCue], start: Int, count: Int,
+                                  context: TranslationContext) async throws -> [String] {
+        if Task.isCancelled { throw MoongateError.cancelled }
+        let transcript = (start..<(start + count))
+            .map { Self.flattened(cues[$0].text) }
+            .joined(separator: " ")
+        let system = """
+        你是字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。\
+        请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整句子重新断行，\
+        每个完整句子输出为一行，格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。
+        待断句文本：
+        \(transcript)
+        """
+        let reply = try await sendModelMessage(
+            settings: settings, system: system, userContent: transcript,
+            maxTokens: 4000, context: context)
+        if reply.reachedOutputLimit {
+            if count <= 1 { return [Self.flattened(cues[start].text)] }
+            let half = count / 2
+            let first = try await segmentChunk(cues, start: start, count: half, context: context)
+            let second = try await segmentChunk(cues, start: start + half, count: count - half, context: context)
+            return first + second
+        }
+        let map = Self.parseReply(reply.text)
+        let sentences = map.sorted { $0.key < $1.key }
+            .map { $0.value.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return sentences.isEmpty ? [transcript] : sentences
+    }
+}
+
+extension ConfiguredTranslator {
+    /// 重分段中间结果：一段连续 token 的起止秒 + 文本。
+    fileprivate final class Segment {
+        var startSec: Double
+        var endSec: Double
+        var tokenStart: Int   // 在 flat 序列中的起始索引（含）
+        var tokenEnd: Int     // 结束索引（不含）
+        var text: String
+        init(startSec: Double, endSec: Double, tokenStart: Int, tokenEnd: Int, text: String) {
+            self.startSec = startSec; self.endSec = endSec
+            self.tokenStart = tokenStart; self.tokenEnd = tokenEnd; self.text = text
+        }
+    }
+
+    /// ASR 字幕重分段：把逐字无标点的自动字幕重新断成完整句子，保留原始时间轴。
+    /// 对齐失败（模型改词/漏词）时原样返回输入，绝不产出错位时间轴。
+    func resegmentForReadability(_ cues: [SubtitleCue], context: TranslationContext) async throws -> [SubtitleCue] {
+        guard !cues.isEmpty else { return [] }
+
+        // 1) 在 cue 边界分块请求断句，拼出全部句子。
+        var sentences: [String] = []
+        var start = 0
+        while start < cues.count {
+            let count = min(Self.resegmentChunkCues, cues.count - start)
+            sentences += try await segmentChunk(cues, start: start, count: count, context: context)
+            start += count
+        }
+
+        // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。
+        let flat = Self.flattenCueTokens(cues, start: 0, count: cues.count)
+        var sentenceTokenCounts: [Int] = []
+        var alignedNorms: [String] = []
+        for sentence in sentences {
+            let toks = Self.alignTokens(sentence)
+            sentenceTokenCounts.append(toks.count)
+            alignedNorms += toks.map(Self.normalizeAlignToken)
+        }
+        // 对齐校验：句子拼接后的 token 必须与原 token 序列逐一一致；不一致则放弃重分段。
+        guard alignedNorms.count == flat.count,
+              !zip(alignedNorms, flat).contains(where: { $0 != $1.norm }) else {
+            return cues
+        }
+
+        // 3) 切段 → 4) 合并/拆分/重排。
+        let segments = Self.buildSegments(cues, flat: flat, sentences: sentences, counts: sentenceTokenCounts)
+        return Self.finalizeSegments(cues, flat: flat, segments: segments)
+    }
+}
+
+extension ConfiguredTranslator {
+    /// 按每句覆盖的 token 范围，用 token 所在原 cue 的本地时间插值，切出带时间的段。
+    fileprivate static func buildSegments(_ cues: [SubtitleCue], flat: [FlatToken],
+                                          sentences: [String], counts: [Int]) -> [Segment] {
+        var segments: [Segment] = []
+        var cursor = 0
+        for (s, sentence) in sentences.enumerated() {
+            let tokenCount = counts[s]
+            if tokenCount == 0 { continue }
+            let tokenStart = cursor
+            let tokenEnd = cursor + tokenCount
+            cursor = tokenEnd
+            segments.append(Segment(
+                startSec: tokenTime(cues, flat[tokenStart], edge: false),
+                endSec: tokenTime(cues, flat[tokenEnd - 1], edge: true),
+                tokenStart: tokenStart, tokenEnd: tokenEnd,
+                text: sentence.trimmingCharacters(in: .whitespaces)))
+        }
+        return segments
+    }
+
+    /// 合并碎句 → 按时长安全拆分过长段 → 单调钳制时间 → 重排 index → 转 SubtitleCue。
+    fileprivate static func finalizeSegments(_ cues: [SubtitleCue], flat: [FlatToken],
+                                             segments: [Segment]) -> [SubtitleCue] {
+        guard !segments.isEmpty else { return cues }
+
+        // 合并：把「时长短且 token 少」的碎句并入前一段。
+        var merged: [Segment] = [segments[0]]
+        for i in 1..<segments.count {
+            let seg = segments[i]
+            let tokenCount = seg.tokenEnd - seg.tokenStart
+            let durationShort = seg.endSec - seg.startSec < resegmentMinSegmentSeconds
+            if durationShort && tokenCount < resegmentMinMergeTokens {
+                let prev = merged[merged.count - 1]
+                prev.tokenEnd = seg.tokenEnd
+                prev.endSec = seg.endSec
+                prev.text = (prev.text + " " + seg.text).trimmingCharacters(in: .whitespaces)
+            } else {
+                merged.append(seg)
+            }
+        }
+
+        // 拆分过长段。
+        var split: [Segment] = []
+        for seg in merged { split += splitLongSegment(cues, flat: flat, seg: seg) }
+
+        // 转 SubtitleCue：index 从 1 连续，时间单调（钳制 end<=下一段 start）。
+        var result: [SubtitleCue] = []
+        for (i, seg) in split.enumerated() {
+            var endSec = seg.endSec
+            if i + 1 < split.count { endSec = min(endSec, split[i + 1].startSec) }
+            if endSec < seg.startSec { endSec = seg.startSec }
+            result.append(SubtitleCue(index: i + 1,
+                                      start: secondsToSRTTime(seg.startSec),
+                                      end: secondsToSRTTime(endSec),
+                                      text: seg.text))
+        }
+        return result
+    }
+
+    /// 把过长段（时长超限且 token 足够多）在 token 边界均分成若干份；否则原样返回单段。
+    /// 各份时间用边界 token 的本地插值，文本按词数等比切分。
+    fileprivate static func splitLongSegment(_ cues: [SubtitleCue], flat: [FlatToken], seg: Segment) -> [Segment] {
+        let tokenCount = seg.tokenEnd - seg.tokenStart
+        let duration = seg.endSec - seg.startSec
+        if duration <= resegmentMaxSegmentSeconds || tokenCount < resegmentMinSplitTokens {
+            return [seg]
+        }
+        var parts = Int((duration / resegmentMaxSegmentSeconds).rounded(.up))
+        parts = max(2, min(parts, tokenCount)) // 至少 2 份，至多每份 1 token
+        let words = seg.text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var output: [Segment] = []
+        for p in 0..<parts {
+            var tStart = seg.tokenStart + tokenCount * p / parts
+            var tEnd = seg.tokenStart + tokenCount * (p + 1) / parts
+            if tEnd <= tStart { tEnd = tStart + 1 }
+            if p == parts - 1 { tEnd = seg.tokenEnd }
+            tStart = min(tStart, flat.count - 1)
+
+            let wStart = words.count * p / parts
+            let wEnd = p == parts - 1 ? words.count : words.count * (p + 1) / parts
+            let text = wEnd > wStart ? words[wStart..<wEnd].joined(separator: " ") : seg.text
+            output.append(Segment(
+                startSec: tokenTime(cues, flat[tStart], edge: false),
+                endSec: tokenTime(cues, flat[tEnd - 1], edge: true),
+                tokenStart: tStart, tokenEnd: tEnd,
+                text: text.trimmingCharacters(in: .whitespaces)))
+        }
+        return output
+    }
+}
+

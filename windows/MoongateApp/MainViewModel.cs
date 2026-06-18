@@ -790,7 +790,7 @@ public sealed class MainViewModel : ObservableObject
                 if (token != _session) return;
                 info = PreferCandidateTitle(info, candidate);
                 var formatId = info.Formats.FirstOrDefault()?.Id
-                    ?? throw MoongateException.AnalyzeFailed(Loc.S("L.Error.NoAvailableFormat"));
+                    ?? throw MoongateException.AnalyzeFailed(Loc.T("L.Error.NoAvailableFormat"));
                 if (Queue.HasOpenDuplicate(info.VideoId, info.SourceUrl, formatId))
                 {
                     duplicated++;

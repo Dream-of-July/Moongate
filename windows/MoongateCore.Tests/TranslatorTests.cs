@@ -761,6 +761,83 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal(cues.Select(c => c.Text), output.Select(c => c.Text));
     }
 
+    private static List<SubtitleCue> AsrCues()
+    {
+        // 8 条逐字、无标点的碎句（典型 ASR 自动字幕）。
+        string[] words =
+        [
+            "we know it", "what is the vision", "for what you see", "coming next",
+            "we asked ourselves", "how far can it go", "and what comes", "after that",
+        ];
+        return words.Select((t, i) => new SubtitleCue(
+            i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
+    }
+
+    [Fact]
+    public void LooksLikeAutoCaption_DetectsUnpunctuatedShortCues()
+    {
+        Assert.True(ConfiguredTranslator.LooksLikeAutoCaption(AsrCues()));
+        var normal = Enumerable.Range(1, 8).Select(i => new SubtitleCue(
+            i, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), $"This is line {i}.")).ToList();
+        Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(normal));
+        Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(AsrCues().Take(3).ToList()));
+    }
+
+    [Fact]
+    public async Task Translate_ResegmentsAsrCaption_WhenSmartEnabled()
+    {
+        var srt = WriteSrt("asr.en.srt", AsrCues());
+        var segmentCalls = 0;
+        var settings = Settings with { SmartTranslationPromptsEnabled = true };
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var system = RequestSystem(captured.Body);
+                if (system.Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    segmentCalls++;
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|we know it what is the vision for what you see coming next.\n2|we asked ourselves how far can it go and what comes after that?"));
+                }
+                if (system.Contains("字幕内容分析器", StringComparison.Ordinal))
+                {
+                    return FakeHttpHandler.Json(200, AnthropicReply("{\"summary\":\"测试\",\"preset\":\"general\"}"));
+                }
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.True(segmentCalls > 0, "smart 开 + ASR 应触发重分段");
+        Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public async Task Translate_SkipsResegment_WhenSmartDisabled()
+    {
+        var srt = WriteSrt("asr2.en.srt", AsrCues());
+        var segmentCalls = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                if (RequestSystem(captured.Body).Contains("待断句文本", StringComparison.Ordinal)) segmentCalls++;
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler); // SmartTranslationPromptsEnabled = false
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(0, segmentCalls);
+        Assert.Equal(8, result.Count);
+    }
+
     private static List<SubtitleCue> NumberedWordCues(int cueCount, int tokensPerCue)
     {
         var token = 1;
