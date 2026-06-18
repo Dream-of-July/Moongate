@@ -781,6 +781,16 @@ public class ConfiguredTranslatorTests : IDisposable
             i, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), $"This is line {i}.")).ToList();
         Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(normal));
         Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(AsrCues().Take(3).ToList()));
+        // 无标点但每条很长（≥6s）→ 不判定。
+        var longCues = Enumerable.Range(0, 8).Select(i => new SubtitleCue(
+            i + 1, SrtTools.SecondsToSrtTime(i * 8), SrtTools.SecondsToSrtTime(i * 8 + 8),
+            "some words without period here")).ToList();
+        Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(longCues));
+        // 无标点但大量多行排版 → 不判定。
+        var multiline = Enumerable.Range(0, 8).Select(i => new SubtitleCue(
+            i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1),
+            "first line\nsecond line")).ToList();
+        Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(multiline));
     }
 
     [Fact]

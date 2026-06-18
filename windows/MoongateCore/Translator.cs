@@ -1705,7 +1705,9 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     }
 
     /// <summary>
-    /// ASR 判定：cue 数足够多且带句末标点的比例很低 → 像逐字无标点的自动字幕。
+    /// ASR 判定：像逐字无标点的自动字幕才重分段，尽量避免误伤正常字幕/歌词。
+    /// 需同时满足：(1) cue 数足够多；(2) 带句末标点的 cue 比例很低；
+    /// (3) 平均时长偏短（碎句特征）；(4) 整体几乎没有换行（ASR 每条单行碎词）。
     /// 与 macOS looksLikeAutoCaption 同构。
     /// </summary>
     internal static bool LooksLikeAutoCaption(IReadOnlyList<SubtitleCue> cues)
@@ -1720,7 +1722,26 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             return end > 0 && enders.Contains(text[end - 1]);
         }
         var punctuated = cues.Count(c => EndsWithPunct(c.Text));
-        return (double)punctuated / cues.Count < 0.15;
+        if ((double)punctuated / cues.Count >= 0.15) return false;
+
+        // 平均时长：ASR 碎句通常每条很短；过长（≥6s/条）更像已成句的正常字幕。
+        var totalDuration = 0.0;
+        var measured = 0;
+        foreach (var cue in cues)
+        {
+            var s = SrtTools.SrtTimeToSeconds(cue.Start);
+            var e = SrtTools.SrtTimeToSeconds(cue.End);
+            if (s is null || e is null || e <= s) continue;
+            totalDuration += e.Value - s.Value;
+            measured++;
+        }
+        var avgDuration = measured > 0 ? totalDuration / measured : 0;
+        if (measured > 0 && avgDuration >= 6.0) return false;
+
+        // 多行比例：ASR 自动字幕基本每条单行；大量多行排版更像人工字幕。
+        var multiline = cues.Count(c => c.Text.Contains('\n'));
+        if ((double)multiline / cues.Count >= 0.5) return false;
+        return true;
     }
 
     /// <summary>
@@ -1756,14 +1777,21 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         if (alignedNorms.Count != flat.Count
             || alignedNorms.Where((t, i) => t != flat[i].Norm).Any())
         {
+            ResegmentLog($"对齐失败（原 {flat.Count} token vs 模型 {alignedNorms.Count} token），保留原 {cues.Count} 条字幕");
             return [.. cues];
         }
 
         // 3) 按每句覆盖的 token 范围切出带时间的 cue。
         var segments = BuildSegments(cues, flat, sentences, sentenceTokenCounts);
         // 4) 短句合并 + 长句安全拆分 + 重排 Index。
-        return FinalizeSegments(cues, flat, segments);
+        var result = FinalizeSegments(cues, flat, segments);
+        ResegmentLog($"生效：{cues.Count} 条 → {result.Count} 条整句");
+        return result;
     }
+
+    /// <summary>重分段诊断日志：写 stderr，便于排查「是否生效 / 为何回退」。与 macOS resegmentLog 一致。</summary>
+    private static void ResegmentLog(string message) =>
+        Console.Error.WriteLine($"[resegment] {message}");
 
     /// <summary>重分段中间结果：一段连续 token 的起止秒 + 文本。</summary>
     private sealed class Segment

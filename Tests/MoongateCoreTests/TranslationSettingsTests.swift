@@ -956,6 +956,40 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(cleaned.contains { $0.text.contains("[") || $0.text.contains("Music") || $0.text.contains("音乐") })
     }
 
+    func testCleanCuesDropsBracketMarkersWithoutDependingOnLanguageTerms() {
+        // 方括号 [] / 书名号【】里的内容一律删（不查词表，支持任意语言）；
+        // 音符 ♪ 只去符号留歌词；圆括号 () 仍只在命中词表时删（保留对话括号）。
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[음악]"),
+            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "Open [dramatic orchestral music] now"),
+            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "続けて【効果音】話す"),
+            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "♪sing this line♪"),
+            SubtitleCue(index: 5, start: "00:00:04,000", end: "00:00:05,000", text: "Keep (important note) here")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.map(\.text), [
+            "Open now",
+            "続けて話す",
+            "sing this line",
+            "Keep (important note) here"
+        ])
+    }
+
+    func testCleanCuesNormalizesSubtitleEscapesBeforeCleaning() {
+        // \N 硬换行 → 真换行；\h、&nbsp;、NBSP → 普通空格。与 Windows 对齐。
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000",
+                        text: "NVIDIA\\hCEO\\Nnext&nbsp;line\u{00A0}here")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned[0].text, "NVIDIA CEO\nnext line here")
+    }
+
     func testCleanCuesStripsSpeakerChangeMarkers() {
         // 广播/CART 字幕的 ">>"/">>>" 说话人切换标记应被去掉，不应进入译文。
         let input = [

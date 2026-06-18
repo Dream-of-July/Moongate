@@ -91,10 +91,34 @@ func serializeSRT(_ cues: [SubtitleCue]) -> String {
 
 // MARK: - 字幕清洗（去重叠 + 按句合并）
 
+// 圆括号类音效/旁注：(...) 与全角（...）。只在内容命中词表时删，保留对话括号（如"(important note)"）。
 private let nonSpeechMarkerRegex: NSRegularExpression? = try? NSRegularExpression(
-    pattern: #"[\[\(（【]\s*([^\]\)）】]{1,48})\s*[\]\)）】]"#,
+    pattern: #"[\(（]\s*([^\)）]{1,48})\s*[\)）]"#,
     options: [.caseInsensitive]
 )
+
+// 方括号 / 书名号类音效标注：[...] 与【...】。这类几乎只用于音效/旁注，内容一律删除，不依赖词表
+//（支持 [음악]、[dramatic orchestral music]、【効果音】等任意语言）。
+private let bracketMarkerRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"[\[【]\s*[^\]】]{1,48}\s*[\]】]"#,
+    options: []
+)
+
+// 音符记号 ♪/♫：包裹歌词时只去掉符号本身，保留内部文字（"♪sing this line♪" → "sing this line"）。
+private let musicNoteRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"[♪♫]"#,
+    options: []
+)
+
+/// 归一字幕转义：ASS/SRT 的 \N 硬换行 → 真换行；\h、&nbsp;、不间断空格(NBSP) → 普通空格。
+/// 在清洗与翻译前统一，避免这些转义原样进入译文或干扰断句。与 Windows NormalizeSubtitleEscapes 同构。
+private func normalizeSubtitleEscapes(_ text: String) -> String {
+    text.replacingOccurrences(of: "\\N", with: "\n")
+        .replacingOccurrences(of: "\\n", with: "\n")
+        .replacingOccurrences(of: "\\h", with: " ")
+        .replacingOccurrences(of: "&nbsp;", with: " ")
+        .replacingOccurrences(of: "\u{00A0}", with: " ")
+}
 
 private let nonSpeechMarkerTerms: Set<String> = [
     "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
@@ -145,20 +169,29 @@ private func stripSpeakerChangeMarkers(_ line: String) -> String {
 }
 
 private func stripNonSpeechMarkers(_ text: String) -> String {
-    text.components(separatedBy: .newlines).compactMap { rawLine in
-        guard let regex = nonSpeechMarkerRegex else {
-            let fallback = collapseSubtitleWhitespace(stripSpeakerChangeMarkers(rawLine))
-            return fallback.isEmpty ? nil : fallback
-        }
+    text.components(separatedBy: .newlines).compactMap { rawLine -> String? in
         var line = rawLine
-        let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
-        for match in matches.reversed() {
-            guard let contentRange = Range(match.range(at: 1), in: line),
-                  let markerRange = Range(match.range(at: 0), in: line) else { continue }
-            let marker = normalizedNonSpeechMarker(String(line[contentRange]))
-            if nonSpeechMarkerTerms.contains(marker) {
-                line.replaceSubrange(markerRange, with: " ")
+        // 方括号 / 书名号标注：内容一律删（不查词表）。
+        if let bracketRegex = bracketMarkerRegex {
+            line = bracketRegex.stringByReplacingMatches(
+                in: line, range: NSRange(line.startIndex..., in: line), withTemplate: " ")
+        }
+        // 圆括号标注：仅当内容命中非语音词表才删，保留对话用括号。
+        if let regex = nonSpeechMarkerRegex {
+            let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            for match in matches.reversed() {
+                guard let contentRange = Range(match.range(at: 1), in: line),
+                      let markerRange = Range(match.range(at: 0), in: line) else { continue }
+                let marker = normalizedNonSpeechMarker(String(line[contentRange]))
+                if nonSpeechMarkerTerms.contains(marker) {
+                    line.replaceSubrange(markerRange, with: " ")
+                }
             }
+        }
+        // 音符记号：只去符号、保留歌词文字。
+        if let noteRegex = musicNoteRegex {
+            line = noteRegex.stringByReplacingMatches(
+                in: line, range: NSRange(line.startIndex..., in: line), withTemplate: " ")
         }
         line = stripSpeakerChangeMarkers(line)
         let cleaned = collapseSubtitleWhitespace(line)
@@ -242,7 +275,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
             continue
         }
-        let text = stripNonSpeechMarkers(cue.text)
+        let text = stripNonSpeechMarkers(normalizeSubtitleEscapes(cue.text))
         guard !text.isEmpty else { continue }
         timed.append(Timed(start: start, end: max(end, start), text: text, order: i))
     }
@@ -1808,7 +1841,9 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             .filter { !normalizeAlignToken($0).isEmpty }
     }
 
-    /// ASR 判定：cue 数足够多且带句末标点的比例很低 → 像逐字无标点的自动字幕。
+    /// ASR 判定：像逐字无标点的自动字幕才重分段，尽量避免误伤正常字幕/歌词。
+    /// 需同时满足：(1) cue 数足够多；(2) 带句末标点的 cue 比例很低；
+    /// (3) 平均时长偏短（碎句特征）；(4) 整体几乎没有换行（ASR 每条单行碎词）。
     static func looksLikeAutoCaption(_ cues: [SubtitleCue]) -> Bool {
         guard cues.count >= 8 else { return false }
         let enders: Set<Character> = [".", "!", "?", "。", "！", "？"]
@@ -1820,7 +1855,23 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             return enders.contains(last)
         }
         let punctuated = cues.filter { endsWithPunct($0.text) }.count
-        return Double(punctuated) / Double(cues.count) < 0.15
+        guard Double(punctuated) / Double(cues.count) < 0.15 else { return false }
+
+        // 平均时长：ASR 碎句通常每条很短；过长（≥6s/条）更像已成句的正常字幕。
+        var totalDuration = 0.0
+        var measured = 0
+        for cue in cues {
+            guard let s = srtTimeToSeconds(cue.start), let e = srtTimeToSeconds(cue.end), e > s else { continue }
+            totalDuration += e - s
+            measured += 1
+        }
+        let avgDuration = measured > 0 ? totalDuration / Double(measured) : 0
+        guard measured == 0 || avgDuration < 6.0 else { return false }
+
+        // 多行比例：ASR 自动字幕基本每条单行；若大量条目本身就是多行排版，更像人工字幕。
+        let multiline = cues.filter { $0.text.contains("\n") }.count
+        guard Double(multiline) / Double(cues.count) < 0.5 else { return false }
+        return true
     }
 }
 
@@ -1934,12 +1985,20 @@ extension ConfiguredTranslator {
         // 对齐校验：句子拼接后的 token 必须与原 token 序列逐一一致；不一致则放弃重分段。
         guard alignedNorms.count == flat.count,
               !zip(alignedNorms, flat).contains(where: { $0 != $1.norm }) else {
+            Self.resegmentLog("对齐失败（原 \(flat.count) token vs 模型 \(alignedNorms.count) token），保留原 \(cues.count) 条字幕")
             return cues
         }
 
         // 3) 切段 → 4) 合并/拆分/重排。
         let segments = Self.buildSegments(cues, flat: flat, sentences: sentences, counts: sentenceTokenCounts)
-        return Self.finalizeSegments(cues, flat: flat, segments: segments)
+        let result = Self.finalizeSegments(cues, flat: flat, segments: segments)
+        Self.resegmentLog("生效：\(cues.count) 条 → \(result.count) 条整句")
+        return result
+    }
+
+    /// 重分段诊断日志：写 stderr，便于排查「是否生效 / 为何回退」。与 Engine 的 stderr 诊断风格一致。
+    fileprivate static func resegmentLog(_ message: String) {
+        FileHandle.standardError.write(Data("[resegment] \(message)\n".utf8))
     }
 }
 

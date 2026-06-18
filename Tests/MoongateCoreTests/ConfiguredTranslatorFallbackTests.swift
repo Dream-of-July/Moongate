@@ -142,6 +142,18 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(normal))
         // 条数太少 → 不判定。
         XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(Array(asrCues().prefix(3))))
+        // 无标点但每条很长（≥6s）→ 更像已成句字幕，不判定。
+        let longCues = (0..<8).map {
+            SubtitleCue(index: $0 + 1, start: secondsToSRTTime(Double($0) * 8),
+                        end: secondsToSRTTime(Double($0) * 8 + 8), text: "some words without period here")
+        }
+        XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(longCues))
+        // 无标点但大量多行排版 → 更像人工字幕，不判定。
+        let multiline = (0..<8).map {
+            SubtitleCue(index: $0 + 1, start: secondsToSRTTime(Double($0)),
+                        end: secondsToSRTTime(Double($0) + 1), text: "first line\nsecond line")
+        }
+        XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(multiline))
     }
 
     func testTranslateResegmentsAsrCaptionWhenSmartEnabled() async throws {
