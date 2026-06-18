@@ -6,7 +6,7 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 SCRATCH="$HOME/Library/Caches/vdl-build"
 VERSION="${MOONGATE_VERSION:-0.7.3}"
-BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-702}"
+BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-703}"
 RELEASE_TAG="${RELEASE_TAG:-v$VERSION}"
 ZIP="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.zip}"
 ZIP_URL="${ZIP_URL:-https://github.com/Dream-of-July/moongate/releases/download/$RELEASE_TAG/$(basename "$ZIP")}"
