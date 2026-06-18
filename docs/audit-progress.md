@@ -92,6 +92,41 @@
 | Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
 | Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | Not started |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | Not started |
-| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | Not started |
-| Phase 6 | UI/UX 与无障碍 | Not started |
-| Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | Not started |
+| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **进行中** — DATA-SETTINGS-002 / PATH-WIN-001 / PARITY-001 / UPDATE-MAC-001 done；SETTINGS-001 仅 Win；PARITY-002 待做 |
+| Phase 6 | UI/UX 与无障碍 | Not started（UI 重，难单测，需真机） |
+| Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | **Blocked** — 需 Apple Developer ID 与 Authenticode 证书等外部资源，本环境无法产出已签名包 |
+
+---
+
+## 后续执行计划与门槛（供审查）
+
+本批改动均为**可在本机用单测验证**的项。以下为剩余项的执行约束与建议，未盲目落地：
+
+### SEC-CRED-001（P0，凭证安全存储）——需评审 + 真机验证后落地
+**为何未在本会话落地**：这是对两端 `Settings` 凭证持久化的核心改造，DPAPI（Windows）/ Keychain（macOS）
+**无法在本机运行时验证**，且迁移写错会丢用户 Token。盲改违背「保护凭证 / 不堆未验证复杂度」。
+
+**建议实现（可注入抽象 + 假存储单测迁移编排）**：
+1. 定义 `ICredentialStore`（C#）/ `CredentialStore`（Swift）：`Get/Set/Delete(key)`。
+   - Windows 实现：DPAPI `ProtectedData`（CurrentUser），密文存 `%APPDATA%\Moongate\credentials.dat`（key→base64）。
+   - macOS 实现：Keychain Services 通用密码项。
+   - 非目标平台（跨平台 dev/test）：可注入的内存/文件 fallback，单测用假实现。
+2. `Settings.Save`：先把 3 个 token 写入 store，**成功后**再写不含明文 token 的 settings.json；store 写失败则抛错、保留旧明文，绝不清除。
+3. `Settings.Load`：读 JSON（无 token）后从 store 覆盖 token。
+4. 迁移：若旧 JSON 仍含明文 token → 写入 store 成功后，原子改写 JSON 去除明文；确认后才算迁移完成。
+5. 单测（假存储）：迁移成功、store 写失败时旧 token 不丢、多 provider 独立、日志/异常不含 token。
+6. **真机验证**：Windows DPAPI 跨重启可读、换用户不可读；macOS Keychain 首次授权、清除凭证。
+
+### 其余可继续的纯逻辑项（低风险，可单测）
+- PARITY-002：Windows `AppSettings` 增 last* 字段 + MainViewModel 选档页 restore/persist（settings 往返可单测）。
+- DEP-WIN-003：结构化依赖健康检查（--version / -filters 解析可单测；实际 exec 需依赖在位）。
+- DEP-SUPPLY-001：固定版本 manifest + 下载后 SHA-256 校验（manifest 解析 + 校验逻辑可单测）。
+- MAC-DEP-001：删除或严格限制「卸载 Homebrew 依赖」，记录实际 provider（检测映射可单测）。
+- PROC-001 / PROC-MAC-002：暂停返回成功/失败、失败不释放槽位、进程组取消（状态机可单测；真机压力测试需真机）。
+- SETTINGS-001(mac)：`requestLogin/requestDependencySetup` 检查保存结果，失败不跳转。
+
+### 真正的外部门槛（本环境不可完成）
+- Phase 7 全部：macOS Developer ID + hardened runtime + notarization + staple；Windows Authenticode 签名；
+  更新器验证发布者。均需**付费证书 / Apple 账号**，只能产出脚本与文档，无法生成真正已签名的发布包。
+- REL-WIN-002 / 真机测试矩阵：需真实 Windows / macOS 机器跑安装、更新、卸载、DPI、WebView2、杀软等。
+
