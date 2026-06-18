@@ -71,8 +71,9 @@
 |---|---|---|---|---|---|---|---|
 | PARITY-001 | P2 | Windows | Done (code) | windows/MoongateCore/UrlTokenizer.cs, MoongateApp/MainViewModel.cs | UrlTokenizerTests (10) | Not validated on real hardware | 统一到 Core 的 UrlTokenizer（按 http(s):// 锚点切分），覆盖换行/相邻/Tab/标点/括号/重复；与 macOS 同构 |
 | PARITY-002 | P2 | Windows | Done (code) | windows/MoongateCore/Settings.cs, MoongateApp/MainViewModel.cs | SettingsTests.LastDownloadOptions_RoundTrip* | Not validated on real hardware | Win 记住上次字幕模式/语言/输出格式/HDR，选档页恢复（与 macOS 同构，按语言代码匹配字幕） |
-| UX-WIN-001 | P2 | Windows | Not started | — | — | Not validated on real hardware | 设置窗口固定尺寸，高 DPI 不友好 |
-| UX-WIN-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 硬编码浅色主题，高对比弱 |
+| UX-WIN-001 | P2 | Windows | Done (code) | windows/MoongateApp/SettingsWindow.xaml | dotnet build 通过 | Not validated on real hardware | 设置窗改为可缩放（ResizeMode=CanResize）+ MinWidth/MinHeight；正文本已在 ScrollViewer 内，高 DPI/大字体下可缩放滚动而非裁切。「记住窗口尺寸」未做 |
+| UX-WIN-002 | P2 | Windows | Plan only | — | — | Not validated on real hardware | System/Light/Dark/High Contrast 主题需主题资源字典 + 系统色绑定，会大改现有硬编码浅色视觉，需真机视觉/高对比验证，不盲改；可先补 AutomationProperties |
+| UX-QUEUE-001 | P2 | Both | Plan only | — | — | Not validated on real hardware | 自动收起队列在悬停/键盘焦点/屏幕阅读器时不收起，需真机交互验证；建议：交互期间取消 peek 定时器、尊重 Reduce Motion |
 | UX-WIN-003 | P2 | Windows | Done (code) | windows/installer/installer.nsi | makensis 编译通过（3 语言表 + 组件页） | Not validated on real hardware | 安装器加 English/TradChinese（MUI 按系统语言自动选）+ 自定义文案 LangString 化；桌面快捷方式改为组件页可选 |
 | REL-WIN-003 | P2 | Windows | Done (doc) | docs/WINDOWS.md | — | n/a | 文档明确仅 win-x64、ARM 为模拟非原生；列出后续原生 ARM64 路径 |
 | DOC-001 | P2 | macOS | Done (doc) | README.md | — | n/a | 改为「运行时媒体依赖来自 Homebrew；App 通过 SwiftPM 使用 Sparkle 2」，不再自相矛盾 |
@@ -80,7 +81,7 @@
 | REL-WIN-003 | P2 | Windows | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
 | UPDATE-WIN-003 | P2 | Windows | Done (code) | UpdateService.cs, App.xaml.cs | 经现有更新测试覆盖编译 | Not validated on real hardware | 取消/失败即时清理临时目录 + 启动清理 moongate-update-* 残留 |
 | UPDATE-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | 每次开设置新建更新器并静默请求 GitHub |
-| UX-QUEUE-001 | P2 | Both | Not started | — | — | Not validated on real hardware | 自动收起队列可能在交互时关闭 |
+| UX-QUEUE-001 | P2 | Both | Plan only | 见上 | — | — | 已记录于上方 |
 | DOC-001 | P2 | macOS | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
 
 ---
@@ -95,7 +96,7 @@
 | Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | **进行中** — MAC-DEP-001 / DEP-WIN-003 / 自定义 Homebrew prefix done；DEP-SUPPLY-001 机制完成（待固定哈希） |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | **Plan only** — 并发敏感 + 失败模式仅真机可复现，已写详细实现计划，待真机验证下落地 |
 | Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **Done (code)** — 全部完成（真机/UI 验证待定） |
-| Phase 6 | UI/UX 与无障碍 | Not started（UI 重，难单测，需真机） |
+| Phase 6 | UI/UX 与无障碍 | **部分** — UX-WIN-003/004/REL-WIN-003/DOC-001/UX-WIN-001 done；UX-WIN-002（主题）、UX-QUEUE-001 为 Plan only（需真机视觉/交互/屏幕阅读器验证） |
 | Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | **Blocked** — 需 Apple Developer ID 与 Authenticode 证书等外部资源，本环境无法产出已签名包 |
 
 ---
