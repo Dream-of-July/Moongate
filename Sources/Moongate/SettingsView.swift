@@ -757,11 +757,7 @@ struct SettingsView: View {
                 HStack {
                     Spacer()
                     Button(localizer.t(L.Update.check)) {
-                        if model.queue.openTaskCount > 0 {
-                            updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
-                        } else {
-                            updater.checkForUpdates()
-                        }
+                        startUpdateCheckFromSettings()
                     }
                         .buttonStyle(.bordered)
                         .disabled(!updater.canCheckForUpdates)
@@ -778,11 +774,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button(localizer.t(L.Common.retry)) {
-                            if model.queue.openTaskCount > 0 {
-                                updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
-                            } else {
-                                updater.checkForUpdates()
-                            }
+                            startUpdateCheckFromSettings()
                         }
                             .buttonStyle(.bordered)
                             .disabled(!updater.canCheckForUpdates)
@@ -794,6 +786,17 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func startUpdateCheckFromSettings() {
+        if model.queue.openTaskCount > 0 {
+            updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
+            return
+        }
+        model.showSettings = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            updater.checkForUpdates()
         }
     }
 

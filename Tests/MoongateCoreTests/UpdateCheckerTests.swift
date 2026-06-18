@@ -39,6 +39,10 @@ final class UpdateCheckerTests: XCTestCase {
 
         XCTAssertTrue(source.contains("import Sparkle"))
         XCTAssertTrue(source.contains("SPUStandardUpdaterController"))
+        XCTAssertTrue(source.contains("SPUStandardUserDriverDelegate"))
+        XCTAssertTrue(source.contains("userDriverDelegate: self"))
+        XCTAssertTrue(source.contains("standardUserDriverWillShowModalAlert"))
+        XCTAssertTrue(source.contains("prepareForUpdateUI?()"))
         XCTAssertTrue(source.contains("updaterController.checkForUpdates(nil)"))
         XCTAssertTrue(source.contains("blockInstallDueToOpenTasks"))
         XCTAssertFalse(source.contains("pkgutil"))

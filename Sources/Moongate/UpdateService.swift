@@ -17,6 +17,7 @@ final class UpdateService: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var canCheckForUpdates = false
+    var prepareForUpdateUI: (@MainActor () -> Void)?
 
     private var updaterController: SPUStandardUpdaterController!
     private var canCheckObservation: NSKeyValueObservation?
@@ -26,7 +27,7 @@ final class UpdateService: NSObject, ObservableObject {
         updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
-            userDriverDelegate: nil
+            userDriverDelegate: self
         )
         canCheckForUpdates = updaterController.updater.canCheckForUpdates
         canCheckObservation = updaterController.updater.observe(
@@ -75,5 +76,13 @@ final class UpdateService: NSObject, ObservableObject {
     private func t(_ key: String, _ args: CVarArg...) -> String {
         let language = (AppLanguage(rawValue: AppSettings.load().appLanguage) ?? .auto).resolved()
         return LocalizedStrings.format(key, language: language, args)
+    }
+}
+
+extension UpdateService: SPUStandardUserDriverDelegate {
+    nonisolated func standardUserDriverWillShowModalAlert() {
+        Task { @MainActor [weak self] in
+            self?.prepareForUpdateUI?()
+        }
     }
 }

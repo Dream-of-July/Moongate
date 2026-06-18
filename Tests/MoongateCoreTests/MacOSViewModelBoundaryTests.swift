@@ -7,12 +7,17 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("let updater: UpdateService"))
         XCTAssertTrue(source.contains("updater: UpdateService? = nil"))
         XCTAssertTrue(source.contains("self.updater = updater ?? UpdateService()"))
+        XCTAssertTrue(source.contains("self.updater.prepareForUpdateUI"))
+        XCTAssertTrue(source.contains("dismissSheetsForUpdateUI()"))
         let onAppearBody = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
         XCTAssertTrue(onAppearBody.contains("checkForUpdatesIfNeeded()"))
 
         let checkBody = try XCTUnwrap(functionBody(prefix: "func checkForUpdatesIfNeeded", in: source))
         XCTAssertTrue(checkBody.contains("if case .idle = updater.state"))
         XCTAssertTrue(checkBody.contains("updater.check(silent: true)"))
+
+        let dismissBody = try XCTUnwrap(functionBody(prefix: "func dismissSheetsForUpdateUI", in: source))
+        XCTAssertTrue(dismissBody.contains("showSettings = false"))
     }
 
     func testStartDownloadSkipsTranslationReadinessGateForChineseSourceSubtitles() throws {

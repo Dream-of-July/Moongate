@@ -148,6 +148,9 @@ final class ViewModel: ObservableObject {
         self.queue = queue ?? QueueManager(engine: engine)
         self.updater = updater ?? UpdateService()
         self.runtimeReadinessEvaluator = runtimeReadinessEvaluator
+        self.updater.prepareForUpdateUI = { [weak self] in
+            self?.dismissSheetsForUpdateUI()
+        }
         CoreL10n.sync(from: settings)
     }
 
@@ -179,6 +182,10 @@ final class ViewModel: ObservableObject {
         if case .idle = updater.state {
             updater.check(silent: true)
         }
+    }
+
+    func dismissSheetsForUpdateUI() {
+        showSettings = false
     }
 
     /// 视图出现或 App 激活时：处于可输入阶段且输入框为空，用剪贴板里的链接预填（不自动解析）。
