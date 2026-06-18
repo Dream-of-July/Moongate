@@ -216,6 +216,46 @@ public class RedownloadTransactionTests : IDisposable
         Assert.Equal(expected, DependencyManager.FormatBytes(bytes));
     }
 
+    // DEP-SUPPLY-001：下载完整性校验（长度 + SHA-256）。
+    [Fact]
+    public void VerifyDownloadIntegrity_LengthMismatch_Throws()
+    {
+        var path = Path.Combine(_binDir, "f.bin");
+        File.WriteAllText(path, "abc"); // 3 字节
+        // 期望 10 字节 → 截断 → 抛错。
+        Assert.Throws<IOException>(() =>
+            DependencyManager.VerifyDownloadIntegrity("yt-dlp", path, expectedLength: 10, expectedSha256: null));
+        // 长度匹配、无 sha256 → 通过。
+        DependencyManager.VerifyDownloadIntegrity("yt-dlp", path, expectedLength: 3, expectedSha256: null);
+    }
+
+    [Fact]
+    public void VerifyDownloadIntegrity_Sha256_MatchAndMismatch()
+    {
+        var path = Path.Combine(_binDir, "g.bin");
+        File.WriteAllText(path, "hello");
+        var good = DependencyManager.FileSha256Hex(path);
+        // 正确哈希 → 通过。
+        DependencyManager.VerifyDownloadIntegrity("ffmpeg", path, expectedLength: null, expectedSha256: good);
+        // 大小写无关。
+        DependencyManager.VerifyDownloadIntegrity("ffmpeg", path, expectedLength: null, expectedSha256: good.ToUpperInvariant());
+        // 错误哈希 → 拒绝安装。
+        Assert.Throws<IOException>(() =>
+            DependencyManager.VerifyDownloadIntegrity("ffmpeg", path, expectedLength: null,
+                expectedSha256: new string('0', 64)));
+    }
+
+    [Fact]
+    public void FileSha256Hex_KnownValue()
+    {
+        var path = Path.Combine(_binDir, "h.bin");
+        File.WriteAllText(path, "abc");
+        // SHA-256("abc") 已知向量。
+        Assert.Equal(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            DependencyManager.FileSha256Hex(path));
+    }
+
     /// <summary>所有请求都失败的 handler（模拟断网/代理失败）。</summary>
     private sealed class FailingHandler : HttpMessageHandler
     {

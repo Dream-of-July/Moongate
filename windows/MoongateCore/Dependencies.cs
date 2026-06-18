@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 
 namespace Moongate.Core;
 
@@ -16,6 +17,12 @@ public sealed record DependencyDownload
     /// <summary>Zip 内 entry 路径后缀 → 目标文件名；Executable 时为空。</summary>
     public IReadOnlyDictionary<string, string> ZipEntries { get; init; } =
         new Dictionary<string, string>();
+    /// <summary>
+    /// 期望的 SHA-256（小写十六进制）。非空时下载后必须匹配才安装（DEP-SUPPLY-001）。
+    /// 当前为 null（未固定）：需在依赖 manifest 里填入对应固定版本的真实哈希后才生效——
+    /// Content-Length 只能发现截断，SHA-256 才能发现被替换的完整恶意文件。
+    /// </summary>
+    public string? Sha256 { get; init; }
 }
 
 /// <summary>
@@ -151,20 +158,8 @@ public sealed class DependencyManager
                     await CopyWithProgressAsync(src, fileStream, plan.Name, expected, progress, ct)
                         .ConfigureAwait(false);
                 }
-                // 完整性校验：弱网/VPN/CDN 抖动会让连接中途断开却让读取正常返回，
-                // 留下截断文件。可执行文件被直接改名安装成损坏二进制（zip 解压会自爆，exe 不会）。
-                // Content-Length 已知时必须匹配，否则视为下载失败、删临时文件重来。
-                if (expected is { } total)
-                {
-                    var actual = new FileInfo(tempPath).Length;
-                    if (actual != total)
-                    {
-                        throw new IOException(L10n.T(
-                            $"{plan.Name} 下载不完整（{actual}/{total} 字节），可能是网络中断或代理抖动，请重试。",
-                            $"{plan.Name} 下載不完整（{actual}/{total} 位元組），可能是網路中斷或代理抖動，請重試。",
-                            $"{plan.Name} download was incomplete ({actual}/{total} bytes); the network or proxy may have dropped. Please retry."));
-                    }
-                }
+                // 完整性校验：先查长度（截断），再查 SHA-256（被替换的完整文件）。
+                VerifyDownloadIntegrity(plan.Name, tempPath, expected, plan.Sha256);
             }
 
             if (plan.Kind == DependencyDownload.DownloadKind.Executable)
@@ -227,6 +222,45 @@ public sealed class DependencyManager
         var unit = -1;
         do { value /= 1024; unit++; } while (value >= 1024 && unit < units.Length - 1);
         return $"{value:0.0} {units[unit]}";
+    }
+
+    /// <summary>
+    /// 下载完整性校验（DEP-SUPPLY-001）：
+    /// 1) Content-Length 已知时必须匹配——只能发现截断（弱网/CDN 抖动让读取提前正常返回）。
+    /// 2) 期望 SHA-256 非空时必须匹配——能发现被替换的完整恶意文件，是 Content-Length 给不了的保证。
+    /// 任一不符抛 IOException，调用方删临时文件、保留旧版本。
+    /// </summary>
+    internal static void VerifyDownloadIntegrity(string name, string path, long? expectedLength, string? expectedSha256)
+    {
+        if (expectedLength is { } total)
+        {
+            var actual = new FileInfo(path).Length;
+            if (actual != total)
+            {
+                throw new IOException(L10n.T(
+                    $"{name} 下载不完整（{actual}/{total} 字节），可能是网络中断或代理抖动，请重试。",
+                    $"{name} 下載不完整（{actual}/{total} 位元組），可能是網路中斷或代理抖動，請重試。",
+                    $"{name} download was incomplete ({actual}/{total} bytes); the network or proxy may have dropped. Please retry."));
+            }
+        }
+        if (!string.IsNullOrEmpty(expectedSha256))
+        {
+            var actual = FileSha256Hex(path);
+            if (!string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException(L10n.T(
+                    $"{name} 校验失败：SHA-256 与预期不符，已拒绝安装（可能被篡改或下载源被劫持）。",
+                    $"{name} 校驗失敗：SHA-256 與預期不符，已拒絕安裝（可能被竄改或下載來源被劫持）。",
+                    $"{name} verification failed: SHA-256 did not match the pinned value; installation refused (possible tampering)."));
+            }
+        }
+    }
+
+    /// <summary>计算文件 SHA-256（小写十六进制）。</summary>
+    internal static string FileSha256Hex(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
     /// <summary>
