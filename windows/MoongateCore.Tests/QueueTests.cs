@@ -88,6 +88,24 @@ internal sealed class FakeBurner : ISubtitleBurner
 [Collection(L10nLanguageCollection.Name)]
 public class QueueManagerTests
 {
+    [Fact]
+    public void ShouldApplyDownloadProgress_AllowsNewStreamResetButThrottlesJitter()
+    {
+        // 首个进度：接受。
+        Assert.True(QueueManager.ShouldApplyDownloadProgress(null, 0.0));
+        // 单调上行：接受。
+        Assert.True(QueueManager.ShouldApplyDownloadProgress(0.40, 0.55));
+        // 上行微小变化（< 1%，未到 100%）：节流忽略。
+        Assert.False(QueueManager.ShouldApplyDownloadProgress(0.400, 0.405));
+        // 关键回归：视频流到 100% 后音频流从 0 重启（大幅回退）→ 接受，不再永久卡 100%。
+        Assert.True(QueueManager.ShouldApplyDownloadProgress(1.0, 0.02));
+        Assert.True(QueueManager.ShouldApplyDownloadProgress(1.0, 0.30));
+        // 微小回退（抖动，< 5%）：忽略。
+        Assert.False(QueueManager.ShouldApplyDownloadProgress(0.80, 0.78));
+        // 到达 100%：接受（即使与上一个相同也允许写满）。
+        Assert.True(QueueManager.ShouldApplyDownloadProgress(0.999, 1.0));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)
     {
         var start = Environment.TickCount64;

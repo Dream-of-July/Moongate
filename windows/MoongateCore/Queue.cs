@@ -814,6 +814,23 @@ public sealed class QueueManager
     }
 
     /// <summary>
+    /// 下载进度是否应写回（去抖 + 多流处理）。
+    /// yt-dlp 下载 DASH 视频流到 100% 后会再下音频流，进度从 ~0 重新开始；旧逻辑「忽略一切回退」
+    /// 会把进度条永久卡在 100%（音频下载 + 合并期间看起来「没在下载」）。这里：
+    /// - 微小回退（&lt; 5%）视为抖动，忽略；
+    /// - 大幅回退（≥ 5%）视为进入新的下载流，接受以反映真实进度；
+    /// - 上行微小变化（&lt; 1% 且未到 100%）节流忽略，减少高频刷新。
+    /// 纯函数，便于测试。
+    /// </summary>
+    internal static bool ShouldApplyDownloadProgress(double? current, double? incoming)
+    {
+        if (incoming is not { } next || current is not { } old) return true;
+        if (next < old) return old - next >= 0.05;
+        if (next < 1 && next - old < 0.01) return false;
+        return true;
+    }
+
+    /// <summary>
     /// 下载进度上报：转 0...1（processing 阶段进度不确定，置 null）。
     /// 节流：进度变化 &lt; 1% 时不写回，避免高频事件在长队列时拖累 UI。
     /// </summary>
@@ -827,14 +844,7 @@ public sealed class QueueManager
             {
                 case DownloadProgress.ProgressPhase.Downloading:
                     double? newValue = p.Percent is { } percent ? Math.Min(Math.Max(percent / 100, 0), 1) : null;
-                    if (newValue is { } next && item.Progress is { } current && next < current)
-                    {
-                        return;
-                    }
-                    if (newValue is { } nv && item.Progress is { } old && nv < 1 && Math.Abs(nv - old) < 0.01)
-                    {
-                        return;
-                    }
+                    if (!ShouldApplyDownloadProgress(item.Progress, newValue)) return;
                     item.Progress = newValue;
                     item.IsPostDownloadProcessing = false;
                     item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;

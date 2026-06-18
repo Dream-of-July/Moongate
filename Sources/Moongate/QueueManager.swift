@@ -608,6 +608,18 @@ final class QueueManager: ObservableObject {
         }
     }
 
+    /// 下载进度是否应写回（去抖 + 多流处理）。
+    /// yt-dlp 下载 DASH 视频流到 100% 后会再下音频流，进度从 ~0 重新开始；旧逻辑「忽略一切回退」
+    /// 会把进度条永久卡在 100%（音频下载 + 合并期间看起来「没在下载」）。这里：
+    /// - 微小回退（< 5%）视为抖动，忽略；大幅回退（≥ 5%）视为进入新下载流，接受以反映真实进度；
+    /// - 上行微小变化（< 1% 且未到 100%）节流忽略。纯函数，便于测试。
+    static func shouldApplyDownloadProgress(current: Double?, incoming: Double?) -> Bool {
+        guard let next = incoming, let old = current else { return true }
+        if next < old { return old - next >= 0.05 }
+        if next < 1, next - old < 0.01 { return false }
+        return true
+    }
+
     /// 下载进度上报：转 0...1（processing 阶段进度不确定，置 nil）。
     /// 节流：进度变化 < 1% 时不写 items，避免高频 objectWillChange 在长队列时拖累 UI。
     private func applyDownloadProgress(id: UUID, generation: Int, _ p: DownloadProgress) {
@@ -617,12 +629,7 @@ final class QueueManager: ObservableObject {
             switch p.phase {
             case .downloading:
                 let newValue = p.percent.map { min(max($0 / 100, 0), 1) }
-                if let new = newValue, let old = $0.progress, new < old {
-                    return
-                }
-                if let new = newValue, let old = $0.progress, new < 1, abs(new - old) < 0.01 {
-                    return
-                }
+                guard Self.shouldApplyDownloadProgress(current: $0.progress, incoming: newValue) else { return }
                 $0.progress = newValue
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
