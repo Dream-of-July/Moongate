@@ -89,21 +89,25 @@ internal sealed class FakeBurner : ISubtitleBurner
 public class QueueManagerTests
 {
     [Fact]
-    public void ShouldApplyDownloadProgress_AllowsNewStreamResetButThrottlesJitter()
+    public void NextDownloadProgressState_NoFreezeNoBackwardJump()
     {
-        // 首个进度：接受。
-        Assert.True(QueueManager.ShouldApplyDownloadProgress(null, 0.0));
-        // 单调上行：接受。
-        Assert.True(QueueManager.ShouldApplyDownloadProgress(0.40, 0.55));
-        // 上行微小变化（< 1%，未到 100%）：节流忽略。
-        Assert.False(QueueManager.ShouldApplyDownloadProgress(0.400, 0.405));
-        // 关键回归：视频流到 100% 后音频流从 0 重启（大幅回退）→ 接受，不再永久卡 100%。
-        Assert.True(QueueManager.ShouldApplyDownloadProgress(1.0, 0.02));
-        Assert.True(QueueManager.ShouldApplyDownloadProgress(1.0, 0.30));
-        // 微小回退（抖动，< 5%）：忽略。
-        Assert.False(QueueManager.ShouldApplyDownloadProgress(0.80, 0.78));
-        // 到达 100%：接受（即使与上一个相同也允许写满）。
-        Assert.True(QueueManager.ShouldApplyDownloadProgress(0.999, 1.0));
+        QueueManager.DownloadProgressState S(double? p, bool proc) => new(p, proc);
+
+        // 首个百分比：采纳。
+        Assert.Equal(S(0.0, false), QueueManager.NextDownloadProgressState(S(null, false), 0.0));
+        // 单调上行：采纳。
+        Assert.Equal(S(0.55, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.55));
+        // 上行 < 1 个百分点：节流（不变）。
+        Assert.Equal(S(0.40, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.405));
+        // HLS 估算小幅回退：忽略（只升不降）。
+        Assert.Equal(S(0.80, false), QueueManager.NextDownloadProgressState(S(0.80, false), 0.78));
+        // 关键回归①：某条流到 100% 时进入「处理中」，而不是停在「下载中 100%」卡死。
+        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(0.95, false), 1.0));
+        // 关键回归②：进入「处理中」后，后续流（音频）的低百分比不会把进度条拉回 0（不倒退）。
+        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(null, true), 0.05));
+        Assert.Equal(S(null, true), QueueManager.NextDownloadProgressState(S(null, true), 0.60));
+        // 临近 100% 仍如实上行。
+        Assert.Equal(S(0.999, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.999));
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)

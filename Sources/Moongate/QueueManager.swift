@@ -608,16 +608,25 @@ final class QueueManager: ObservableObject {
         }
     }
 
-    /// 下载进度是否应写回（去抖 + 多流处理）。
-    /// yt-dlp 下载 DASH 视频流到 100% 后会再下音频流，进度从 ~0 重新开始；旧逻辑「忽略一切回退」
-    /// 会把进度条永久卡在 100%（音频下载 + 合并期间看起来「没在下载」）。这里：
-    /// - 微小回退（< 5%）视为抖动，忽略；大幅回退（≥ 5%）视为进入新下载流，接受以反映真实进度；
-    /// - 上行微小变化（< 1% 且未到 100%）节流忽略。纯函数，便于测试。
-    static func shouldApplyDownloadProgress(current: Double?, incoming: Double?) -> Bool {
-        guard let next = incoming, let old = current else { return true }
-        if next < old { return old - next >= 0.05 }
-        if next < 1, next - old < 0.01 { return false }
-        return true
+    /// 下载进度显示态：进度分数（nil=不确定）+ 是否「处理中」（合并/收尾，显示不确定）。
+    struct DownloadProgressState: Equatable {
+        var progress: Double?
+        var isProcessing: Bool
+    }
+
+    /// 由当前显示态 + yt-dlp 上报百分比推导下一显示态（纯函数）。
+    /// 1) DASH 视频流到 100% 后还要下音频 + 合并：某条流满即锁定「处理中」（不确定态），
+    ///    后续流的百分比不再把它拉回——既不卡在 100%，也不让进度条倒退回 0。
+    /// 2) HLS 总大小未知靠估算、百分比会小幅抖动：未到 100% 时只升不降、忽略 < 1 个百分点的变化。
+    static func nextDownloadProgressState(_ current: DownloadProgressState, incoming: Double?) -> DownloadProgressState {
+        if current.isProcessing { return current }
+        guard let next = incoming else { return current }
+        if next >= 1.0 { return DownloadProgressState(progress: nil, isProcessing: true) }
+        if let old = current.progress {
+            if next < old { return current }
+            if next - old < 0.01 { return current }
+        }
+        return DownloadProgressState(progress: next, isProcessing: false)
     }
 
     /// 下载进度上报：转 0...1（processing 阶段进度不确定，置 nil）。
@@ -629,10 +638,12 @@ final class QueueManager: ObservableObject {
             switch p.phase {
             case .downloading:
                 let newValue = p.percent.map { min(max($0 / 100, 0), 1) }
-                guard Self.shouldApplyDownloadProgress(current: $0.progress, incoming: newValue) else { return }
-                $0.progress = newValue
-                $0.isPostDownloadProcessing = false
-                $0.postDownloadProcessingKind = nil
+                let isProcessing = $0.isPostDownloadProcessing && $0.postDownloadProcessingKind == .generic
+                let nextState = Self.nextDownloadProgressState(
+                    DownloadProgressState(progress: $0.progress, isProcessing: isProcessing), incoming: newValue)
+                $0.progress = nextState.progress
+                $0.isPostDownloadProcessing = nextState.isProcessing
+                $0.postDownloadProcessingKind = nextState.isProcessing ? .generic : nil
             case .preparing, .finished:
                 $0.progress = nil
                 $0.isPostDownloadProcessing = false

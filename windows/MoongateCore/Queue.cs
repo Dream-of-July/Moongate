@@ -813,26 +813,32 @@ public sealed class QueueManager
         }
     }
 
+    /// <summary>下载进度显示态：进度分数（null=不确定）+ 是否「处理中」（合并/收尾，显示不确定）。</summary>
+    public readonly record struct DownloadProgressState(double? Progress, bool IsProcessing);
+
     /// <summary>
-    /// 下载进度是否应写回（去抖 + 多流处理）。
-    /// yt-dlp 下载 DASH 视频流到 100% 后会再下音频流，进度从 ~0 重新开始；旧逻辑「忽略一切回退」
-    /// 会把进度条永久卡在 100%（音频下载 + 合并期间看起来「没在下载」）。这里：
-    /// - 微小回退（&lt; 5%）视为抖动，忽略；
-    /// - 大幅回退（≥ 5%）视为进入新的下载流，接受以反映真实进度；
-    /// - 上行微小变化（&lt; 1% 且未到 100%）节流忽略，减少高频刷新。
-    /// 纯函数，便于测试。
+    /// 由当前显示态 + yt-dlp 上报的百分比（0..1，null 表示无百分比）推导下一显示态（纯函数，便于测试）。
+    /// 处理 yt-dlp 的两个现实：
+    /// 1) DASH 视频流到 100% 后会再下音频流、再合并——若一直显示「下载中 100%」会像卡死，
+    ///    若让进度条从 100% 跳回 0% 又像「进度倒退」。所以某条流到 100% 时锁定为「处理中」
+    ///    （不确定态），后续流的百分比不再把它拉回，直到进程结束。
+    /// 2) HLS 因总大小未知靠估算，百分比会小幅上下抖动——未到 100% 时只升不降、且忽略 &lt; 1 个百分点的变化。
     /// </summary>
-    internal static bool ShouldApplyDownloadProgress(double? current, double? incoming)
+    internal static DownloadProgressState NextDownloadProgressState(DownloadProgressState current, double? incoming)
     {
-        if (incoming is not { } next || current is not { } old) return true;
-        if (next < old) return old - next >= 0.05;
-        if (next < 1 && next - old < 0.01) return false;
-        return true;
+        if (current.IsProcessing) return current;            // 已锁定「处理中」，不被后续百分比拉回
+        if (incoming is not { } next) return current;        // 无百分比：不变（preparing/finished 另处处理）
+        if (next >= 1.0) return new DownloadProgressState(null, true);  // 某条流满 → 进入「处理中」
+        if (current.Progress is { } old)
+        {
+            if (next < old) return current;                  // 只升不降（HLS 估算抖动）
+            if (next - old < 0.01) return current;            // 忽略 < 1 个百分点的上行抖动
+        }
+        return new DownloadProgressState(next, false);
     }
 
     /// <summary>
-    /// 下载进度上报：转 0...1（processing 阶段进度不确定，置 null）。
-    /// 节流：进度变化 &lt; 1% 时不写回，避免高频事件在长队列时拖累 UI。
+    /// 下载进度上报：转 0...1。某条流满后进入「处理中」（不确定），避免卡 100% 或进度倒退。
     /// </summary>
     private void ApplyDownloadProgress(Guid id, int generation, DownloadProgress p)
     {
@@ -844,10 +850,16 @@ public sealed class QueueManager
             {
                 case DownloadProgress.ProgressPhase.Downloading:
                     double? newValue = p.Percent is { } percent ? Math.Min(Math.Max(percent / 100, 0), 1) : null;
-                    if (!ShouldApplyDownloadProgress(item.Progress, newValue)) return;
-                    item.Progress = newValue;
-                    item.IsPostDownloadProcessing = false;
-                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                    var cur = new DownloadProgressState(
+                        item.Progress,
+                        item.IsPostDownloadProcessing
+                            && item.PostDownloadProcessingKind == PostDownloadProcessingKind.Generic);
+                    var nextState = NextDownloadProgressState(cur, newValue);
+                    item.Progress = nextState.Progress;
+                    item.IsPostDownloadProcessing = nextState.IsProcessing;
+                    item.PostDownloadProcessingKind = nextState.IsProcessing
+                        ? PostDownloadProcessingKind.Generic
+                        : PostDownloadProcessingKind.None;
                     break;
                 case DownloadProgress.ProgressPhase.Preparing:
                 case DownloadProgress.ProgressPhase.Finished:
