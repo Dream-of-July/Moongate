@@ -27,10 +27,11 @@
 
 ## 依赖
 
-仅依赖已通过 Homebrew 安装的命令行工具，无任何第三方 Swift 包：
+运行时媒体处理依赖来自 Homebrew 安装的命令行工具；App 自身通过 SwiftPM 仅引入 Sparkle 2（用于 macOS 自更新）：
 
 - `yt-dlp`（建议 ≥ 2026.06.09，旧版可能被 YouTube 风控拦截）
 - `ffmpeg` / `ffprobe`
+- Sparkle 2（SwiftPM 依赖，仅 macOS 自更新使用；见 `Package.swift`）
 
 ## 构建安装
 

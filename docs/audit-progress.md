@@ -73,13 +73,15 @@
 | PARITY-002 | P2 | Windows | Done (code) | windows/MoongateCore/Settings.cs, MoongateApp/MainViewModel.cs | SettingsTests.LastDownloadOptions_RoundTrip* | Not validated on real hardware | Win 记住上次字幕模式/语言/输出格式/HDR，选档页恢复（与 macOS 同构，按语言代码匹配字幕） |
 | UX-WIN-001 | P2 | Windows | Not started | — | — | Not validated on real hardware | 设置窗口固定尺寸，高 DPI 不友好 |
 | UX-WIN-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 硬编码浅色主题，高对比弱 |
-| UX-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 安装器只有简体中文 |
+| UX-WIN-003 | P2 | Windows | Done (code) | windows/installer/installer.nsi | makensis 编译通过（3 语言表 + 组件页） | Not validated on real hardware | 安装器加 English/TradChinese（MUI 按系统语言自动选）+ 自定义文案 LangString 化；桌面快捷方式改为组件页可选 |
+| REL-WIN-003 | P2 | Windows | Done (doc) | docs/WINDOWS.md | — | n/a | 文档明确仅 win-x64、ARM 为模拟非原生；列出后续原生 ARM64 路径 |
+| DOC-001 | P2 | macOS | Done (doc) | README.md | — | n/a | 改为「运行时媒体依赖来自 Homebrew；App 通过 SwiftPM 使用 Sparkle 2」，不再自相矛盾 |
 | UX-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | WebView2 缺失无直接修复入口 |
-| REL-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 仅发布 x64，ARM 仅模拟 |
+| REL-WIN-003 | P2 | Windows | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
 | UPDATE-WIN-003 | P2 | Windows | Done (code) | UpdateService.cs, App.xaml.cs | 经现有更新测试覆盖编译 | Not validated on real hardware | 取消/失败即时清理临时目录 + 启动清理 moongate-update-* 残留 |
 | UPDATE-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | 每次开设置新建更新器并静默请求 GitHub |
 | UX-QUEUE-001 | P2 | Both | Not started | — | — | Not validated on real hardware | 自动收起队列可能在交互时关闭 |
-| DOC-001 | P2 | macOS | Not started | — | — | Not validated on real hardware | README 对 Swift 依赖描述自相矛盾 |
+| DOC-001 | P2 | macOS | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
 
 ---
 

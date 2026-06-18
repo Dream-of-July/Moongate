@@ -53,6 +53,10 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 | 烧录中文字体 | 苹方 | 微软雅黑 |
 | 站点登录 | WKWebView | WebView2（需 Edge WebView2 运行时） |
 
+> 架构（REL-WIN-003）：当前仅发布 **win-x64**（依赖 yt-dlp/ffmpeg/deno 也取 x64 构建）。
+> Windows on ARM 通过系统 x64 模拟运行，**不是原生 ARM64**；发布说明里不应写成原生 ARM64 支持。
+> 后续如需原生 ARM64：增加 win-arm64 publish + ARM64 的 deno/ffmpeg 资产与双架构安装器。
+
 ## 旧的 Swift 条件编译适配
 
 `Sources/MoongateCore` 里的 `#if os(Windows)` 分支（taskkill、PATH 定位等）仍保留，
