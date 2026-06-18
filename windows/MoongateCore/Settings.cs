@@ -128,6 +128,17 @@ public sealed record AppSettings
     /// </summary>
     public bool ReceiveBetaUpdates { get; init; } = true;
 
+    // MARK: 上次下载选项（PARITY-002：与 macOS 一致，选档页恢复上次选择）
+
+    /// <summary>上次字幕处理方式的 rawValue（off/srtOnly/burnIn/burnOriginal）；null 表示无记录。</summary>
+    public string? LastSubtitleMode { get; init; }
+    /// <summary>上次选择的字幕语言 id 列表。</summary>
+    public IReadOnlyList<string> LastSubtitleLangs { get; init; } = [];
+    /// <summary>上次输出格式的 rawValue（original/mp4H264/mp4H265/mkv）；null 表示无记录。</summary>
+    public string? LastOutputFormat { get; init; }
+    /// <summary>上次是否偏好 HDR。</summary>
+    public bool LastPreferHdr { get; init; }
+
     /// <summary>
     /// 实际压制并发上限：硬件后端可比兼容路径多放一路并行提高吞吐；
     /// 兼容路径维持设置值，避免互相拖慢。夹在 1...4。
@@ -283,6 +294,20 @@ public sealed record AppSettings
         var receiveBetaUpdates = !root.TryGetProperty("receiveBetaUpdates", out var rbu)
             || rbu.ValueKind != JsonValueKind.False;
 
+        // 上次下载选项（PARITY-002）。
+        var lastSubtitleMode = StringField(root, "lastSubtitleMode");
+        var lastOutputFormat = StringField(root, "lastOutputFormat");
+        var lastPreferHdr = root.TryGetProperty("lastPreferHDR", out var lph)
+            && lph.ValueKind == JsonValueKind.True;
+        var lastSubtitleLangs = new List<string>();
+        if (root.TryGetProperty("lastSubtitleLangs", out var lsl) && lsl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in lsl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String && item.GetString() is { } s) lastSubtitleLangs.Add(s);
+            }
+        }
+
         // 编码后端：缺键默认 Auto；烧录始终 H.264 默认关（跟随源）。
         var encodeBackend = EncodeBackendExtensions.FromRawValue(StringField(root, "encodeBackend"));
         var burnAlwaysH264 = root.TryGetProperty("burnAlwaysH264", out var ah264)
@@ -317,6 +342,10 @@ public sealed record AppSettings
             OnboardingCompleted = onboardingCompleted,
             SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
             ReceiveBetaUpdates = receiveBetaUpdates,
+            LastSubtitleMode = lastSubtitleMode,
+            LastSubtitleLangs = lastSubtitleLangs,
+            LastOutputFormat = lastOutputFormat,
+            LastPreferHdr = lastPreferHdr,
         };
     }
 
@@ -351,6 +380,10 @@ public sealed record AppSettings
             ["onboardingCompleted"] = OnboardingCompleted,
             ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
             ["receiveBetaUpdates"] = ReceiveBetaUpdates,
+            ["lastSubtitleMode"] = LastSubtitleMode,
+            ["lastSubtitleLangs"] = LastSubtitleLangs,
+            ["lastOutputFormat"] = LastOutputFormat,
+            ["lastPreferHDR"] = LastPreferHdr,
         };
         return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
     }

@@ -70,7 +70,7 @@
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
 | PARITY-001 | P2 | Windows | Done (code) | windows/MoongateCore/UrlTokenizer.cs, MoongateApp/MainViewModel.cs | UrlTokenizerTests (10) | Not validated on real hardware | 统一到 Core 的 UrlTokenizer（按 http(s):// 锚点切分），覆盖换行/相邻/Tab/标点/括号/重复；与 macOS 同构 |
-| PARITY-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 不记住上次下载选项 |
+| PARITY-002 | P2 | Windows | Done (code) | windows/MoongateCore/Settings.cs, MoongateApp/MainViewModel.cs | SettingsTests.LastDownloadOptions_RoundTrip* | Not validated on real hardware | Win 记住上次字幕模式/语言/输出格式/HDR，选档页恢复（与 macOS 同构，按语言代码匹配字幕） |
 | UX-WIN-001 | P2 | Windows | Not started | — | — | Not validated on real hardware | 设置窗口固定尺寸，高 DPI 不友好 |
 | UX-WIN-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 硬编码浅色主题，高对比弱 |
 | UX-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 安装器只有简体中文 |
@@ -92,7 +92,7 @@
 | Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
 | Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | Not started |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | Not started |
-| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **进行中** — DATA-SETTINGS-002 / PATH-WIN-001 / PARITY-001 / UPDATE-MAC-001 done；SETTINGS-001 仅 Win；PARITY-002 待做 |
+| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **基本完成** — 仅剩 SETTINGS-001(mac)；其余 done |
 | Phase 6 | UI/UX 与无障碍 | Not started（UI 重，难单测，需真机） |
 | Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | **Blocked** — 需 Apple Developer ID 与 Authenticode 证书等外部资源，本环境无法产出已签名包 |
 

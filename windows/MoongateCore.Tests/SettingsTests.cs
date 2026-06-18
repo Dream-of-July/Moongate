@@ -63,6 +63,30 @@ public class SettingsTests
     }
 
     [Fact]
+    public void LastDownloadOptions_RoundTripAndDefault()
+    {
+        // PARITY-002：上次下载选项默认空，能往返。
+        var fresh = new AppSettings();
+        Assert.Null(fresh.LastSubtitleMode);
+        Assert.Empty(fresh.LastSubtitleLangs);
+        Assert.Null(fresh.LastOutputFormat);
+        Assert.False(fresh.LastPreferHdr);
+
+        var settings = new AppSettings
+        {
+            LastSubtitleMode = "burnIn",
+            LastSubtitleLangs = ["ja", "en"],
+            LastOutputFormat = "mp4H265",
+            LastPreferHdr = true,
+        };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.Equal("burnIn", back.LastSubtitleMode);
+        Assert.Equal(new[] { "ja", "en" }, back.LastSubtitleLangs.ToArray());
+        Assert.Equal("mp4H265", back.LastOutputFormat);
+        Assert.True(back.LastPreferHdr);
+    }
+
+    [Fact]
     public void Defaults()
     {
         var settings = new AppSettings();
@@ -79,7 +103,8 @@ public class SettingsTests
     public void FromJson_EmptyObject_AllDefaults()
     {
         var settings = AppSettings.FromJson("{}");
-        Assert.Equal(new AppSettings(), settings);
+        // 值等价比较用 JSON（记录里含集合字段 LastSubtitleLangs，record 默认相等是引用比较，不适用）。
+        Assert.Equal(new AppSettings().ToJson(), settings.ToJson());
         Assert.Equal(1080, settings.MaxBurnHeight);
     }
 
@@ -398,7 +423,7 @@ public class SettingsTests
             Assert.Empty(Directory.GetFiles(dir, "*.tmp-*"));
 
             var loaded = AppSettings.Load();
-            Assert.Equal(settings, loaded);
+            Assert.Equal(settings.ToJson(), loaded.ToJson());
         }
         finally
         {

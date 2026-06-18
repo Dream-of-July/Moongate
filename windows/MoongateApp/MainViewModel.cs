@@ -674,13 +674,113 @@ public sealed class MainViewModel : ObservableObject
         {
             SubtitleOptions.Add(new SubtitleOptionViewModel(this, subtitle));
         }
-        _chineseMode = ChineseSubtitleMode.Off;
-        _preferHdr = false;
-        RaisePropertyChanged(nameof(PreferHdr));
-        SelectedOutputFormat = OutputFormats[0];
+        RestoreLastDownloadOptions(info);
         ResetSummary();
         SetStage(ParseStage.Ready);
         RaiseChineseDerived();
+    }
+
+    /// <summary>
+    /// 选档页恢复上次下载选项（PARITY-002，与 macOS 一致）：输出格式 / HDR 直接套用；
+    /// 字幕按语言代码在本视频可用字幕里匹配（真实字幕优先）；字幕处理方式在字幕恢复之后再设，
+    /// 避免勾选回调把它打回「不需要」。
+    /// </summary>
+    private void RestoreLastDownloadOptions(VideoInfo info)
+    {
+        _preferHdr = Settings.LastPreferHdr && (SelectedFormat?.HdrAvailable ?? false);
+        RaisePropertyChanged(nameof(PreferHdr));
+        SelectedOutputFormat = OutputFormats.FirstOrDefault(o => o.Format == OutputFormatFromRaw(Settings.LastOutputFormat))
+            ?? OutputFormats[0];
+
+        var wantedLangs = Settings.LastSubtitleLangs.Select(NormalizedLang).ToHashSet();
+        var matchedAny = false;
+        if (wantedLangs.Count > 0)
+        {
+            foreach (var lang in wantedLangs)
+            {
+                var group = SubtitleOptions.Where(o => NormalizedLang(o.Id) == lang).ToList();
+                var best = group.FirstOrDefault(o => !o.IsAuto) ?? group.FirstOrDefault();
+                if (best is not null)
+                {
+                    best.IsSelected = true;
+                    matchedAny = true;
+                }
+            }
+        }
+        // 仅当字幕成功恢复、且记录的处理方式不是「不需要」时才恢复 mode（否则保持 Off）。
+        var savedMode = ChineseModeFromRaw(Settings.LastSubtitleMode);
+        _chineseMode = matchedAny && savedMode != ChineseSubtitleMode.Off ? savedMode : ChineseSubtitleMode.Off;
+    }
+
+    /// <summary>字幕 id 归一成语言代码：小写、取首个 '-' 前的部分（"ja-JP"/"ja-orig" → "ja"）。</summary>
+    private static string NormalizedLang(string id)
+    {
+        var lower = id.ToLowerInvariant();
+        var dash = lower.IndexOf('-');
+        return dash >= 0 ? lower[..dash] : lower;
+    }
+
+    private static string ChineseModeRaw(ChineseSubtitleMode mode) => mode switch
+    {
+        ChineseSubtitleMode.SrtOnly => "srtOnly",
+        ChineseSubtitleMode.BurnIn => "burnIn",
+        ChineseSubtitleMode.BurnOriginal => "burnOriginal",
+        _ => "off",
+    };
+
+    private static ChineseSubtitleMode ChineseModeFromRaw(string? raw) => raw switch
+    {
+        "srtOnly" => ChineseSubtitleMode.SrtOnly,
+        "burnIn" => ChineseSubtitleMode.BurnIn,
+        "burnOriginal" => ChineseSubtitleMode.BurnOriginal,
+        _ => ChineseSubtitleMode.Off,
+    };
+
+    private static string OutputFormatRaw(OutputFormat format) => format switch
+    {
+        OutputFormat.Mp4H264 => "mp4H264",
+        OutputFormat.Mp4H265 => "mp4H265",
+        OutputFormat.Mkv => "mkv",
+        _ => "original",
+    };
+
+    private static OutputFormat OutputFormatFromRaw(string? raw) => raw switch
+    {
+        "mp4H264" => OutputFormat.Mp4H264,
+        "mp4H265" => OutputFormat.Mp4H265,
+        "mkv" => OutputFormat.Mkv,
+        _ => OutputFormat.Original,
+    };
+
+    /// <summary>把当前选档页的选择记住为「上次下载选项」（无变化不写盘）。</summary>
+    private void PersistLastDownloadOptions()
+    {
+        var selectedIds = SubtitleOptions.Where(o => o.IsSelected).Select(o => o.Id).ToList();
+        var mode = ChineseModeRaw(_chineseMode);
+        var format = OutputFormatRaw(SelectedOutputFormat?.Format ?? OutputFormat.Original);
+        if (mode == Settings.LastSubtitleMode
+            && format == Settings.LastOutputFormat
+            && _preferHdr == Settings.LastPreferHdr
+            && selectedIds.SequenceEqual(Settings.LastSubtitleLangs))
+        {
+            return;
+        }
+        var updated = Settings with
+        {
+            LastSubtitleMode = mode,
+            LastSubtitleLangs = selectedIds,
+            LastOutputFormat = format,
+            LastPreferHdr = _preferHdr,
+        };
+        try
+        {
+            updated.Save();
+            Settings = updated;
+        }
+        catch
+        {
+            // 记忆上次选项失败不影响本次下载。
+        }
     }
 
     public void CancelParse()
@@ -900,6 +1000,7 @@ public sealed class MainViewModel : ObservableObject
             OutputFormat = SelectedOutputFormat?.Format ?? OutputFormat.Original,
         };
         Queue.Enqueue(info, request, _chineseMode, Settings);
+        PersistLastDownloadOptions();
         PeekQueue();
 
         // 回到可输入态，方便粘贴下一条
