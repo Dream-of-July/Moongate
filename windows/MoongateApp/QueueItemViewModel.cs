@@ -94,8 +94,8 @@ public sealed class QueueItemViewModel : ObservableObject
         StatusText = ComputeStatusText(item, open);
         IsFailed = kind == ItemStageKind.Failed;
         ShowProgress = open;
-        ProgressValue = CoerceProgressValue(item.Progress);
-        ProgressIndeterminate = open && item.Progress is null;
+        ProgressValue = CoerceProgressValue(item.OverallProgress);
+        ProgressIndeterminate = open && item.OverallProgress is null;
 
         ShowPause = open && !item.IsPaused;
         ShowResume = open && item.IsPaused;
@@ -123,24 +123,64 @@ public sealed class QueueItemViewModel : ObservableObject
             ItemStageKind.Queued => item.StatusText ?? Loc.S("L.Status.Queued"),
             ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Transcoding =>
                 item.Progress is { } p
-                    ? Loc.F("L.Status.TranscodingFmt", (int)(p * 100))
-                    : Loc.S("L.Status.Transcoding"),
+                    ? WithProgressDetails(Loc.F("L.Status.TranscodingFmt", (int)(p * 100)), item, includeSpeed: false)
+                    : WithProgressDetails(Loc.S("L.Status.Transcoding"), item, includeSpeed: false),
             ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Generic ||
-                                           item.IsPostDownloadProcessing => Loc.S("L.Status.Processing"),
+                                           item.IsPostDownloadProcessing =>
+                WithProgressDetails(Loc.S("L.Status.Processing"), item, includeSpeed: false),
             ItemStageKind.Downloading => item.Progress is { } p
-                ? Loc.F("L.Status.DownloadingFmt", (int)(p * 100))
-                : Loc.S("L.Status.Downloading"),
+                ? WithProgressDetails(Loc.F("L.Status.DownloadingFmt", (int)(p * 100)), item)
+                : WithProgressDetails(Loc.S("L.Status.Downloading"), item),
             ItemStageKind.Translating => item.Progress is { } p
-                ? Loc.F("L.Status.TranslatingFmt", (int)(p * 100))
-                : Loc.S("L.Status.Translating"),
+                ? WithProgressDetails(Loc.F("L.Status.TranslatingFmt", (int)(p * 100)), item, includeSpeed: false)
+                : WithProgressDetails(Loc.S("L.Status.Translating"), item, includeSpeed: false),
             ItemStageKind.Burning => item.Progress is { } p
-                ? Loc.F("L.Status.BurningFmt", (int)(p * 100))
-                : Loc.S("L.Status.Burning"),
+                ? WithProgressDetails(Loc.F("L.Status.BurningFmt", (int)(p * 100)), item, includeSpeed: false)
+                : WithProgressDetails(Loc.S("L.Status.Burning"), item, includeSpeed: false),
             ItemStageKind.Done => item.StatusText ?? Loc.S("L.Status.Done"),
             ItemStageKind.Cancelled => item.StatusText ?? Loc.S("L.Status.Cancelled"),
             ItemStageKind.Failed => Loc.F("L.Status.FailedFmt", item.Stage.FailureReason ?? Loc.S("L.Status.Unknown")),
             _ => item.StatusText ?? "",
         };
+    }
+
+    private static string WithProgressDetails(string baseText, QueueManager.QueueItem item, bool includeSpeed = true)
+    {
+        var parts = new List<string> { baseText };
+        if (includeSpeed && !string.IsNullOrWhiteSpace(item.SpeedText)) parts.Add(item.SpeedText);
+        if (RemainingText(item) is { } remaining) parts.Add(remaining);
+        return string.Join(Loc.S("L.Queue.SummarySep"), parts);
+    }
+
+    private static string? RemainingText(QueueManager.QueueItem item)
+    {
+        if (item.RemainingSeconds is { } seconds)
+        {
+            return item.RemainingIsApproximate
+                ? Loc.F("L.Status.RemainingApprox", ApproximateDurationText(seconds))
+                : Loc.F("L.Status.RemainingExact", ClockDurationText(seconds));
+        }
+        return item.IsEstimatingRemaining ? Loc.S("L.Status.RemainingEstimating") : null;
+    }
+
+    private static string ClockDurationText(double seconds)
+    {
+        var total = Math.Max(0, (int)Math.Ceiling(seconds));
+        var hours = total / 3600;
+        var minutes = total % 3600 / 60;
+        var secs = total % 60;
+        return hours > 0
+            ? $"{hours}:{minutes:00}:{secs:00}"
+            : $"{minutes:00}:{secs:00}";
+    }
+
+    private static string ApproximateDurationText(double seconds)
+    {
+        var total = Math.Max(0, (int)Math.Ceiling(seconds));
+        if (total < 60) return Loc.S("L.Status.RemainingLessThanMinute");
+        var minutes = (int)Math.Ceiling(total / 60.0);
+        if (minutes < 60) return Loc.F("L.Status.RemainingMinutes", minutes);
+        return Loc.F("L.Status.RemainingHoursMinutes", minutes / 60, minutes % 60);
     }
 
     /// <summary>在资源管理器中选中产物（烧录视频排第一）。</summary>

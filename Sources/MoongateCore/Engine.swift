@@ -280,16 +280,10 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     private var hlsCacheOrder: [String] = []
 
     final class DownloadProgressTracker: @unchecked Sendable {
-        private let lock = NSLock()
-        private var highestPercent: Double = 0
-
         func normalizedPercent(_ percent: Double?) -> Double? {
             guard let percent else { return nil }
-            let clamped = min(max(percent, 0), 100)
-            lock.lock()
-            defer { lock.unlock() }
-            highestPercent = max(highestPercent, clamped)
-            return highestPercent
+            guard percent.isFinite else { return nil }
+            return min(max(percent, 0), 100)
         }
     }
 

@@ -157,6 +157,14 @@ public sealed class QueueManager
         public ItemStage Stage { get; internal set; } = ItemStage.Queued;
         /// <summary>0...1；null 表示不确定（处理 / 翻译启动等）。</summary>
         public double? Progress { get; internal set; }
+        /// <summary>整条任务的 0...1 进度；跨下载 / 转码 / 翻译 / 烧录保持单调。</summary>
+        public double? OverallProgress { get; internal set; }
+        public string? SpeedText { get; internal set; }
+        public double? RemainingSeconds { get; internal set; }
+        public bool RemainingIsApproximate { get; internal set; }
+        public bool IsEstimatingRemaining { get; internal set; }
+        public QueueProgressPhase? ProgressPhase { get; internal set; }
+        public required QueueProgressPlan ProgressPlan { get; init; }
         /// <summary>暂停 / 部分成功 / 失败原因等附加说明。</summary>
         public string? StatusText { get; internal set; }
         /// <summary>已落盘的产物（下载文件、译文、烧录视频）。</summary>
@@ -177,6 +185,23 @@ public sealed class QueueManager
         public int Generation { get; internal set; }
         internal CancellationTokenSource Cts { get; set; } = new();
         internal Task? RunTask { get; set; }
+
+        internal void ClearProgress(bool resetOverall = false)
+        {
+            Progress = null;
+            SpeedText = null;
+            RemainingSeconds = null;
+            RemainingIsApproximate = false;
+            IsEstimatingRemaining = false;
+            ProgressPhase = null;
+            if (resetOverall) OverallProgress = null;
+        }
+
+        internal void CompleteProgress()
+        {
+            ClearProgress();
+            OverallProgress = 1;
+        }
     }
 
     private readonly object _lock = new();
@@ -235,6 +260,8 @@ public sealed class QueueManager
     private readonly Dictionary<Guid, (int Generation, StageSlotPool Pool)> _holdingPool = [];
     /// <summary>暂停时让出的槽位池：恢复时需先重新领到槽位再恢复进程。</summary>
     private readonly Dictionary<Guid, (int Generation, StageSlotPool Pool)> _resumePool = [];
+    private readonly Dictionary<Guid, (int Generation, QueueProgressPhase Phase, DateTimeOffset StartedAt)> _progressPhaseStarts = [];
+    private readonly Dictionary<QueueProgressPhase, List<double>> _phaseDurationSamples = [];
 
     /// <summary>视频文件后缀（用于在产物里识别可烧录的视频）。</summary>
     internal static readonly HashSet<string> VideoExtensions =
@@ -375,6 +402,52 @@ public sealed class QueueManager
         get { lock (_lock) return _items.Any(i => !IsOpen(i.Stage.Kind)); }
     }
 
+    public QueueProgressSnapshot ProgressSnapshot
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return QueueProgressEstimator.QueueSnapshot(_items.Select(item =>
+                {
+                    var terminal = !IsOpen(item.Stage.Kind);
+                    return new TaskProgressSnapshot(
+                        OverallProgress: terminal ? 1 : item.OverallProgress,
+                        RemainingSeconds: item.RemainingSeconds,
+                        IsEstimatingRemaining: item.IsEstimatingRemaining,
+                        IsTerminal: terminal,
+                        Plan: item.ProgressPlan,
+                        CurrentPhase: item.ProgressPhase);
+                }).ToList(), PhaseMedianDurationsLocked(), new Dictionary<QueueProgressPhase, int>
+                {
+                    [QueueProgressPhase.Download] = Math.Max(1, _maxConcurrentDownloads),
+                    [QueueProgressPhase.Transcode] = Math.Max(1, _maxConcurrentDownloads),
+                    [QueueProgressPhase.Translate] = 2,
+                    [QueueProgressPhase.Burn] = Math.Max(1, _effectiveBurnCapacity),
+                });
+            }
+        }
+    }
+
+    private Dictionary<QueueProgressPhase, double> PhaseMedianDurationsLocked()
+    {
+        var medians = new Dictionary<QueueProgressPhase, double>();
+        foreach (var (phase, samples) in _phaseDurationSamples)
+        {
+            var valid = samples
+                .Where(value => !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0)
+                .Order()
+                .ToList();
+            if (valid.Count > 0) medians[phase] = valid[valid.Count / 2];
+        }
+        return medians;
+    }
+
+    private static QueueProgressPlan ProgressPlanFor(DownloadRequest request, ChineseSubtitleMode mode) => new(
+        shouldTranscode: Transcoder.NeedsProcessing(request.OutputFormat),
+        shouldTranslate: mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn,
+        shouldBurn: mode is ChineseSubtitleMode.BurnIn or ChineseSubtitleMode.BurnOriginal);
+
     // MARK: - 入队
 
     /// <summary>去重键：优先 videoID，取不到用 sourceURL + formatID。</summary>
@@ -409,6 +482,7 @@ public sealed class QueueManager
             Request = request,
             ChineseMode = chineseMode,
             Settings = settings,
+            ProgressPlan = ProgressPlanFor(request, chineseMode),
         };
         lock (_lock) _items.Add(item);
         ItemsChanged?.Invoke();
@@ -436,6 +510,15 @@ public sealed class QueueManager
         if (skipDownload)
         {
             downloadFiles = [.. current.ResultFiles];
+            Update(id, generation, item =>
+            {
+                item.OverallProgress = QueueProgressEstimator.TaskOverallProgress(
+                    item.ProgressPlan,
+                    QueueProgressPhase.Download,
+                    1,
+                    item.OverallProgress);
+                item.ClearProgress();
+            });
         }
         else
         {
@@ -448,10 +531,11 @@ public sealed class QueueManager
                     Update(id, generation, item =>
                     {
                         item.Stage = ItemStage.Downloading;
-                        item.Progress = null;
+                        item.ClearProgress(resetOverall: true);
                         item.StatusText = null;
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                        ApplyProgress(item, id, generation, QueueProgressPhase.Download, null);
                     });
                     var result = await _engine.DownloadAsync(
                         current.Request, control,
@@ -459,10 +543,11 @@ public sealed class QueueManager
                         ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
                     downloadFiles = [.. result.Files];
+                    CompleteProgressPhase(id, generation, QueueProgressPhase.Download);
                     Update(id, generation, item =>
                     {
                         item.ResultFiles = [.. result.Files];
-                        item.Progress = null;
+                        item.ClearProgress();
                     });
 
                     // 下载后转码/remux（用户选了非「保持源格式」时）。在下载槽内顺序执行。
@@ -475,10 +560,11 @@ public sealed class QueueManager
                             Update(id, generation, item =>
                             {
                                 item.Stage = ItemStage.Downloading;
-                                item.Progress = null;
+                                item.ClearProgress();
                                 item.StatusText = null;
                                 item.IsPostDownloadProcessing = true;
                                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.Transcoding;
+                                ApplyProgress(item, id, generation, QueueProgressPhase.Transcode, null);
                             });
                             // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
                             var requestedHdrFallback = current.Request.PreferHdr;
@@ -489,7 +575,8 @@ public sealed class QueueManager
                                 frac =>
                                 {
                                     if (GenerationOf(id) != generation) return;
-                                    Update(id, generation, item => item.Progress = frac);
+                                    Update(id, generation, item =>
+                                        ApplyProgress(item, id, generation, QueueProgressPhase.Transcode, frac));
                                 },
                                 backend: current.Settings.EncodeBackend,
                                 ct: ct).ConfigureAwait(false);
@@ -501,10 +588,11 @@ public sealed class QueueManager
                             }
                             downloadFiles = downloadFiles.Select(f => f == videoFile ? transcoded : f).ToList();
                             if (!downloadFiles.Contains(transcoded)) downloadFiles.Add(transcoded);
+                            CompleteProgressPhase(id, generation, QueueProgressPhase.Transcode);
                             Update(id, generation, item =>
                             {
                                 item.ResultFiles = [.. downloadFiles];
-                                item.Progress = null;
+                                item.ClearProgress();
                                 item.StatusText = null;
                                 item.IsPostDownloadProcessing = false;
                                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
@@ -526,11 +614,12 @@ public sealed class QueueManager
                     {
                         item.Stage = ItemStage.Cancelled;
                         item.IsPaused = false;
-                        item.Progress = null;
+                        item.ClearProgress();
                         item.StatusText = L10n.T("已取消", "已取消", "Cancelled");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
+                    ClearProgressTracking(id);
                 }
                 else
                 {
@@ -539,11 +628,12 @@ public sealed class QueueManager
                     {
                         item.Stage = ItemStage.Failed(reason);
                         item.IsPaused = false;
-                        item.Progress = null;
+                        item.ClearProgress();
                         item.StatusText = L10n.T($"失败：{reason}", $"失敗：{reason}", $"Failed: {reason}");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     });
+                    ClearProgressTracking(id);
                 }
                 return;
             }
@@ -587,10 +677,11 @@ public sealed class QueueManager
                     Update(id, generation, item =>
                     {
                         item.Stage = ItemStage.Burning;
-                        item.Progress = null;
+                        item.ClearProgress();
                         item.StatusText = L10n.T("直接烧录字幕（不翻译）", "直接燒錄字幕（不翻譯）", "Burning subtitle as-is (no translation)");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                        ApplyProgress(item, id, generation, QueueProgressPhase.Burn, null);
                     });
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
@@ -598,13 +689,14 @@ public sealed class QueueManager
                         p => Update(id, generation, item =>
                         {
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
-                            item.Progress = p;
+                            ApplyProgress(item, id, generation, QueueProgressPhase.Burn, p);
                         }),
                         backend: settings.EncodeBackend,
                         alwaysH264: settings.BurnAlwaysH264,
                         outputTag: L10n.T("（字幕版）", "（字幕版）", " (subtitled)"),
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
+                    CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
                     Update(id, generation, item =>
                     {
                         var files = item.ResultFiles.Where(f => f != burned).ToList();
@@ -660,12 +752,13 @@ public sealed class QueueManager
                     Update(id, generation, item =>
                     {
                         item.Stage = ItemStage.Burning;
-                        item.Progress = null;
+                        item.ClearProgress();
                         item.StatusText = L10n.T("使用视频自带目标语言字幕，直接烧录（不翻译）",
                             "使用影片內建目標語言字幕，直接燒錄（不翻譯）",
                             "Using the video's target-language subtitle; burning directly (no translation)");
                         item.IsPostDownloadProcessing = false;
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                        ApplyProgress(item, id, generation, QueueProgressPhase.Burn, null);
                     });
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
@@ -673,12 +766,13 @@ public sealed class QueueManager
                         p => Update(id, generation, item =>
                         {
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
-                            item.Progress = p;
+                            ApplyProgress(item, id, generation, QueueProgressPhase.Burn, p);
                         }),
                         backend: settings.EncodeBackend,
                         alwaysH264: settings.BurnAlwaysH264,
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
+                    CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
                     Update(id, generation, item =>
                     {
                         var files = item.ResultFiles.Where(f => f != burned).ToList();
@@ -715,10 +809,11 @@ public sealed class QueueManager
                 Update(id, generation, item =>
                 {
                     item.Stage = ItemStage.Translating;
-                    item.Progress = null;
+                    item.ClearProgress();
                     item.StatusText = null;
                     item.IsPostDownloadProcessing = false;
                     item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                    ApplyProgress(item, id, generation, QueueProgressPhase.Translate, null);
                 });
                 var translationSettings = settings.ForTranslation();
                 var translator = _translatorFactory(translationSettings);
@@ -727,13 +822,14 @@ public sealed class QueueManager
                     p => Update(id, generation, item =>
                     {
                         if (item.Stage.Kind != ItemStageKind.Translating) return;
-                        item.Progress = p;
+                        ApplyProgress(item, id, generation, QueueProgressPhase.Translate, p);
                     }),
                     ct).ConfigureAwait(false);
                 if (GenerationOf(id) != generation) return;
+                CompleteProgressPhase(id, generation, QueueProgressPhase.Translate);
                 Update(id, generation, item =>
                 {
-                    item.Progress = null;
+                    item.ClearProgress();
                     if (!item.ResultFiles.Contains(zhSrt))
                     {
                         item.ResultFiles = [.. item.ResultFiles, zhSrt];
@@ -775,10 +871,11 @@ public sealed class QueueManager
                 Update(id, generation, item =>
                 {
                     item.Stage = ItemStage.Burning;
-                    item.Progress = null;
+                    item.ClearProgress();
                     item.StatusText = null;
                     item.IsPostDownloadProcessing = false;
                     item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                    ApplyProgress(item, id, generation, QueueProgressPhase.Burn, null);
                 });
                 var burner = _burnerFactory();
                 var burned = await burner.BurnAsync(
@@ -786,12 +883,13 @@ public sealed class QueueManager
                     p => Update(id, generation, item =>
                     {
                         if (item.Stage.Kind != ItemStageKind.Burning) return;
-                        item.Progress = p;
+                        ApplyProgress(item, id, generation, QueueProgressPhase.Burn, p);
                     }),
                     backend: settings.EncodeBackend,
                     alwaysH264: settings.BurnAlwaysH264,
                     ct: ct).ConfigureAwait(false);
                 if (GenerationOf(id) != generation) return;
+                CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
                 Update(id, generation, item =>
                 {
                     var files = item.ResultFiles.Where(f => f != burned).ToList();
@@ -840,6 +938,77 @@ public sealed class QueueManager
         return Math.Clamp(fraction, 0, 1);
     }
 
+    private DateTimeOffset ProgressPhaseStart(Guid id, int generation, QueueProgressPhase phase, DateTimeOffset now)
+    {
+        if (_progressPhaseStarts.TryGetValue(id, out var existing)
+            && existing.Generation == generation
+            && existing.Phase == phase)
+        {
+            return existing.StartedAt;
+        }
+        _progressPhaseStarts[id] = (generation, phase, now);
+        return now;
+    }
+
+    private void ClearProgressTracking(Guid id)
+    {
+        lock (_lock) _progressPhaseStarts.Remove(id);
+    }
+
+    private void CompleteProgressPhase(Guid id, int generation, QueueProgressPhase expectedPhase)
+    {
+        lock (_lock)
+        {
+            if (!_progressPhaseStarts.TryGetValue(id, out var existing)
+                || existing.Generation != generation
+                || existing.Phase != expectedPhase)
+            {
+                return;
+            }
+            var duration = Math.Max(0.1, (DateTimeOffset.UtcNow - existing.StartedAt).TotalSeconds);
+            _progressPhaseStarts.Remove(id);
+            if (!_phaseDurationSamples.TryGetValue(expectedPhase, out var samples))
+            {
+                samples = [];
+                _phaseDurationSamples[expectedPhase] = samples;
+            }
+            samples.Add(duration);
+            if (samples.Count > 9)
+            {
+                samples.RemoveRange(0, samples.Count - 9);
+            }
+        }
+    }
+
+    private void ApplyProgress(
+        QueueItem item,
+        Guid id,
+        int generation,
+        QueueProgressPhase phase,
+        double? phaseProgress,
+        string? speedText = null,
+        string? etaText = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var normalized = QueueProgressEstimator.NormalizedFraction(phaseProgress);
+        var startedAt = ProgressPhaseStart(id, generation, phase, now);
+        item.Progress = normalized;
+        item.ProgressPhase = phase;
+        item.OverallProgress = QueueProgressEstimator.TaskOverallProgress(
+            item.ProgressPlan,
+            phase,
+            normalized,
+            item.OverallProgress);
+        item.SpeedText = speedText;
+        var remaining = QueueProgressEstimator.EstimatedRemainingSeconds(
+            elapsedSeconds: Math.Max(0, (now - startedAt).TotalSeconds),
+            phaseProgress: normalized,
+            sourceEtaSeconds: QueueProgressEstimator.ParseEtaSeconds(etaText));
+        item.RemainingSeconds = remaining?.Seconds;
+        item.RemainingIsApproximate = remaining?.IsApproximate ?? false;
+        item.IsEstimatingRemaining = remaining is null && normalized != 1 && !item.IsPaused;
+    }
+
     private void ApplyDownloadProgress(Guid id, int generation, DownloadProgress p)
     {
         Update(id, generation, item =>
@@ -855,21 +1024,33 @@ public sealed class QueueManager
                         item.IsPostDownloadProcessing
                             && item.PostDownloadProcessingKind == PostDownloadProcessingKind.Generic);
                     var nextState = NextDownloadProgressState(cur, newValue);
-                    item.Progress = nextState.Progress;
+                    ApplyProgress(
+                        item,
+                        id,
+                        generation,
+                        QueueProgressPhase.Download,
+                        nextState.Progress,
+                        speedText: p.SpeedText,
+                        etaText: p.EtaText);
                     item.IsPostDownloadProcessing = nextState.IsProcessing;
                     item.PostDownloadProcessingKind = nextState.IsProcessing
                         ? PostDownloadProcessingKind.Generic
                         : PostDownloadProcessingKind.None;
                     break;
                 case DownloadProgress.ProgressPhase.Preparing:
+                    ApplyProgress(item, id, generation, QueueProgressPhase.Download, null);
+                    item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                    break;
                 case DownloadProgress.ProgressPhase.Finished:
-                    item.Progress = null;
+                    ApplyProgress(item, id, generation, QueueProgressPhase.Download, 1);
+                    item.ClearProgress();
                     item.IsPostDownloadProcessing = false;
                     item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                     break;
                 case DownloadProgress.ProgressPhase.Processing:
                     // 下载 100% 后的合并/转码：进度不确定，标记为「处理中」避免像卡死。
-                    item.Progress = null;
+                    ApplyProgress(item, id, generation, QueueProgressPhase.Download, null);
                     item.IsPostDownloadProcessing = true;
                     item.PostDownloadProcessingKind = PostDownloadProcessingKind.Generic;
                     break;
@@ -889,13 +1070,14 @@ public sealed class QueueManager
             {
                 item.Stage = ItemStage.Cancelled;
                 item.IsPaused = false;
-                item.Progress = null;
+                item.ClearProgress();
                 item.StatusText = files.Count == 0
                     ? L10n.T("已取消", "已取消", "Cancelled")
                     : L10n.T("已取消，视频已保存", "已取消，影片已儲存", "Cancelled; downloaded video kept");
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
+            ClearProgressTracking(id);
             return;
         }
         var reason = ShortReason(error);
@@ -905,7 +1087,7 @@ public sealed class QueueManager
             {
                 item.Stage = ItemStage.Done;
                 item.IsPaused = false;
-                item.Progress = null;
+                item.CompleteProgress();
                 item.PartialFailure = true;
                 item.StatusText = L10n.T($"视频已下载，字幕{phase}失败：{reason}",
                     $"影片已下載，字幕{phase}失敗：{reason}",
@@ -913,6 +1095,7 @@ public sealed class QueueManager
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
+            ClearProgressTracking(id);
         }
         else
         {
@@ -920,11 +1103,12 @@ public sealed class QueueManager
             {
                 item.Stage = ItemStage.Failed(reason);
                 item.IsPaused = false;
-                item.Progress = null;
+                item.ClearProgress();
                 item.StatusText = L10n.T($"失败：{reason}", $"失敗：{reason}", $"Failed: {reason}");
                 item.IsPostDownloadProcessing = false;
                 item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             });
+            ClearProgressTracking(id);
         }
     }
 
@@ -934,13 +1118,14 @@ public sealed class QueueManager
         {
             item.Stage = ItemStage.Done;
             item.IsPaused = false;
-            item.Progress = null;
+            item.CompleteProgress();
             item.PartialFailure = false;
             item.IsPostDownloadProcessing = false;
             item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             item.ResultFiles = files.Count == 0 ? item.ResultFiles : files;
             item.StatusText = statusText;
         });
+        ClearProgressTracking(id);
     }
 
     // MARK: - 单项控制
@@ -1034,6 +1219,7 @@ public sealed class QueueManager
             var target = _items.FirstOrDefault(i => i.Id == id);
             if (target is null) return;
             _resumePool.Remove(id);
+            _progressPhaseStarts.Remove(id);
             control = target.Control;
             cts = target.Cts;
         }
@@ -1052,6 +1238,7 @@ public sealed class QueueManager
             var target = _items.FirstOrDefault(i => i.Id == id);
             if (target is null) return;
             _resumePool.Remove(id);
+            _progressPhaseStarts.Remove(id);
             control = target.Control;
             cts = target.Cts;
         }
@@ -1075,6 +1262,7 @@ public sealed class QueueManager
             if (old is null) return;
             // 旧 control 若仍登记着进程，确保释放；清掉旧代际的槽位记账。
             _resumePool.Remove(id);
+            _progressPhaseStarts.Remove(id);
             oldControl = old.Control;
             oldCts = old.Cts;
             var hasVideo = old.ResultFiles.Any(f => VideoExtensions.Contains(ExtensionOf(f)));
@@ -1084,7 +1272,7 @@ public sealed class QueueManager
             old.Generation += 1;
             old.Stage = ItemStage.Queued;
             old.IsPaused = false;
-            old.Progress = null;
+            old.ClearProgress(resetOverall: true);
             old.IsPostDownloadProcessing = false;
             old.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
             old.PartialFailure = false;

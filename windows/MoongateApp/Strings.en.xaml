@@ -100,6 +100,7 @@
     <sys:String x:Key="L.Queue.ActiveFmt">{0} active</sys:String>
     <sys:String x:Key="L.Queue.FinishedFmt">{0} finished</sys:String>
     <sys:String x:Key="L.Queue.AllDone">All done</sys:String>
+    <sys:String x:Key="L.Queue.AllEnded">All ended</sys:String>
     <sys:String x:Key="L.Queue.SummarySep"> · </sys:String>
     <sys:String x:Key="L.Row.Pause">Pause</sys:String>
     <sys:String x:Key="L.Row.Resume">Resume</sys:String>
@@ -124,6 +125,12 @@
     <sys:String x:Key="L.Status.Cancelled">Cancelled</sys:String>
     <sys:String x:Key="L.Status.FailedFmt">Failed: {0}</sys:String>
     <sys:String x:Key="L.Status.Unknown">Unknown error</sys:String>
+    <sys:String x:Key="L.Status.RemainingExact">{0} left</sys:String>
+    <sys:String x:Key="L.Status.RemainingApprox">about {0} left</sys:String>
+    <sys:String x:Key="L.Status.RemainingEstimating">Estimating…</sys:String>
+    <sys:String x:Key="L.Status.RemainingLessThanMinute">less than 1 min</sys:String>
+    <sys:String x:Key="L.Status.RemainingMinutes">{0} min</sys:String>
+    <sys:String x:Key="L.Status.RemainingHoursMinutes">{0} hr {1} min</sys:String>
 
     <!-- Close confirmation -->
     <sys:String x:Key="L.Confirm.CloseFmt">{0} tasks are still running; closing will abort them all.</sys:String>

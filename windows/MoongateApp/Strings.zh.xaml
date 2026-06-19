@@ -100,6 +100,7 @@
     <sys:String x:Key="L.Queue.ActiveFmt">{0} 个进行中</sys:String>
     <sys:String x:Key="L.Queue.FinishedFmt">{0} 个已完成</sys:String>
     <sys:String x:Key="L.Queue.AllDone">全部完成</sys:String>
+    <sys:String x:Key="L.Queue.AllEnded">全部已结束</sys:String>
     <sys:String x:Key="L.Queue.SummarySep"> · </sys:String>
     <sys:String x:Key="L.Row.Pause">暂停</sys:String>
     <sys:String x:Key="L.Row.Resume">继续</sys:String>
@@ -124,6 +125,12 @@
     <sys:String x:Key="L.Status.Cancelled">已取消</sys:String>
     <sys:String x:Key="L.Status.FailedFmt">失败：{0}</sys:String>
     <sys:String x:Key="L.Status.Unknown">未知错误</sys:String>
+    <sys:String x:Key="L.Status.RemainingExact">剩 {0}</sys:String>
+    <sys:String x:Key="L.Status.RemainingApprox">剩约 {0}</sys:String>
+    <sys:String x:Key="L.Status.RemainingEstimating">正在估算…</sys:String>
+    <sys:String x:Key="L.Status.RemainingLessThanMinute">不到 1 分钟</sys:String>
+    <sys:String x:Key="L.Status.RemainingMinutes">{0} 分钟</sys:String>
+    <sys:String x:Key="L.Status.RemainingHoursMinutes">{0} 小时 {1} 分钟</sys:String>
 
     <!-- 关窗确认 -->
     <sys:String x:Key="L.Confirm.CloseFmt">队列中还有 {0} 个任务在进行，关闭会全部中止。</sys:String>

@@ -2,7 +2,7 @@ import XCTest
 @testable import MoongateCore
 
 final class EngineProgressTests: XCTestCase {
-    func testDownloadProgressDoesNotGoBackwardsAcrossSeparateStreams() {
+    func testDownloadProgressReportsRawPercentAcrossSeparateStreams() {
         let state = YtDlpEngine.DownloadProgressTracker()
         let recorder = ProgressRecorder()
 
@@ -19,7 +19,7 @@ final class EngineProgressTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(recorder.values, [0, 50, 100, 100, 100, 100])
+        XCTAssertEqual(recorder.values, [0, 50, 100, 0, 30, 100])
     }
 }
 

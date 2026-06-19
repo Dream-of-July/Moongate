@@ -116,6 +116,30 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(accessibilityValueBody.contains("localizer.t(L.Queue.progressIndeterminateTranscoding)"))
     }
 
+    func testQueueItemUsesOverallProgressAndAddsRemainingDetails() throws {
+        let source = try queueItemSource()
+        let progressBody = try XCTUnwrap(functionBody(named: "progressBar", in: source))
+        let statusHelperBody = try XCTUnwrap(functionBody(named: "statusWithDetails", in: source))
+        let remainingBody = try XCTUnwrap(functionBody(named: "remainingText", in: source))
+        let overlaySource = try queueOverlaySource()
+        let overlayProgressBody = try XCTUnwrap(functionBody(named: "overallProgress", in: overlaySource))
+        let overlayLabelBody = try XCTUnwrap(functionBody(named: "handleLabel", in: overlaySource))
+        let terminalLabelBody = try XCTUnwrap(functionBody(named: "terminalHandleLabel", in: overlaySource))
+
+        XCTAssertTrue(progressBody.contains("item.overallProgress"))
+        XCTAssertFalse(progressBody.contains("item.progress"))
+        XCTAssertTrue(statusHelperBody.contains("item.speedText"))
+        XCTAssertTrue(statusHelperBody.contains("remainingText"))
+        XCTAssertTrue(remainingBody.contains("item.remainingSeconds"))
+        XCTAssertTrue(remainingBody.contains("localizer.t(L.Queue.remainingApprox"))
+        XCTAssertTrue(remainingBody.contains("localizer.t(L.Queue.remainingEstimating"))
+        XCTAssertTrue(overlayProgressBody.contains("queue.progressSnapshot.overallProgress"))
+        XCTAssertTrue(overlayLabelBody.contains("queueRemainingText"))
+        XCTAssertTrue(overlayLabelBody.contains("terminalHandleLabel"))
+        XCTAssertTrue(terminalLabelBody.contains("L.Queue.allDone"))
+        XCTAssertTrue(terminalLabelBody.contains("L.Queue.allEnded"))
+    }
+
     private func queueManagerSource() throws -> String {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -135,6 +159,13 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("QueueItemView.swift"))
+    }
+
+    private func queueOverlaySource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("QueueOverlayView.swift"))
     }
 
     private func packageRoot() -> URL {

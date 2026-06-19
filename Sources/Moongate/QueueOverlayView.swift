@@ -48,22 +48,36 @@ struct QueueOverlayView: View {
 
     /// 队列整体完成度：终态算 1，进行中按各自进度（未知进度按 0 计）。
     private var overallProgress: Double {
-        guard !queue.items.isEmpty else { return 0 }
-        let total = queue.items.reduce(0.0) { sum, item in
-            switch item.stage {
-            case .done, .failed, .cancelled:
-                return sum + 1
-            default:
-                return sum + (item.progress ?? 0)
-            }
-        }
-        return min(1, max(0, total / Double(queue.items.count)))
+        queue.progressSnapshot.overallProgress
     }
 
     private var handleLabel: String {
-        if openCount == 0 { return localizer.t(L.Queue.allDone) }
+        if openCount == 0 { return terminalHandleLabel }
         if queue.pausedOpenTaskCount == openCount { return localizer.t(L.Queue.pausedCount, openCount) }
-        return localizer.t(L.Queue.inProgressCount, openCount)
+        var label = localizer.t(L.Queue.inProgressCount, openCount)
+        if let remaining = queueRemainingText {
+            label += " · " + remaining
+        }
+        return label
+    }
+
+    private var terminalHandleLabel: String {
+        let allSucceeded = queue.items.allSatisfy { item in
+            if case .done = item.stage { return true }
+            return false
+        }
+        return localizer.t(allSucceeded ? L.Queue.allDone : L.Queue.allEnded)
+    }
+
+    private var queueRemainingText: String? {
+        let snapshot = queue.progressSnapshot
+        if let seconds = snapshot.remainingSeconds {
+            return localizer.t(L.Queue.remainingApprox, approximateDurationText(seconds))
+        }
+        if snapshot.isEstimatingRemaining {
+            return localizer.t(L.Queue.remainingEstimating)
+        }
+        return nil
     }
 
     private var progressAccessibilityValue: String {
@@ -95,6 +109,20 @@ struct QueueOverlayView: View {
         .help(localizer.t(L.Queue.openQueue))
         .accessibilityLabel(localizer.t(L.Queue.openQueueWithLabel, handleLabel))
         .accessibilityValue(localizer.t(L.Queue.progressValue, progressAccessibilityValue))
+    }
+
+    private func approximateDurationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        if total < 60 {
+            return localizer.t(L.Queue.remainingLessThanMinute)
+        }
+        let minutes = Int(ceil(Double(total) / 60.0))
+        if minutes < 60 {
+            return localizer.t(L.Queue.remainingMinutes, minutes)
+        }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return localizer.t(L.Queue.remainingHoursMinutes, hours, rest)
     }
 }
 

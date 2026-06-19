@@ -68,15 +68,15 @@ struct QueueItemView: View {
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
         case .downloading:
-            if item.isPostDownloadProcessing { return postDownloadProcessingText }
-            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
-            return localizer.t(L.Queue.downloading)
+            if item.isPostDownloadProcessing { return statusWithDetails(postDownloadProcessingText, includeSpeed: false) }
+            if let p = item.progress { return statusWithDetails(localizer.t(L.Queue.downloadingPercent, Int(p * 100))) }
+            return statusWithDetails(localizer.t(L.Queue.downloading))
         case .translating:
-            if let p = item.progress { return localizer.t(L.Queue.translatingPercent, Int(p * 100)) }
-            return localizer.t(L.Queue.translating)
+            if let p = item.progress { return statusWithDetails(localizer.t(L.Queue.translatingPercent, Int(p * 100)), includeSpeed: false) }
+            return statusWithDetails(localizer.t(L.Queue.translating), includeSpeed: false)
         case .burning:
-            if let p = item.progress { return localizer.t(L.Queue.burningPercent, Int(p * 100)) }
-            return localizer.t(L.Queue.burning)
+            if let p = item.progress { return statusWithDetails(localizer.t(L.Queue.burningPercent, Int(p * 100)), includeSpeed: false) }
+            return statusWithDetails(localizer.t(L.Queue.burning), includeSpeed: false)
         case .done:
             return item.statusText ?? localizer.t(L.Queue.done)
         case .cancelled:
@@ -94,6 +94,55 @@ struct QueueItemView: View {
         case .generic, nil:
             return (item.statusText ?? localizer.t(L.Queue.processing)) + "…"
         }
+    }
+
+    private func statusWithDetails(_ base: String, includeSpeed: Bool = true) -> String {
+        var parts = [base]
+        if includeSpeed, let speed = item.speedText, !speed.isEmpty {
+            parts.append(speed)
+        }
+        if let remaining = remainingText {
+            parts.append(remaining)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var remainingText: String? {
+        if let seconds = item.remainingSeconds {
+            if item.remainingIsApproximate {
+                return localizer.t(L.Queue.remainingApprox, approximateDurationText(seconds))
+            }
+            return localizer.t(L.Queue.remainingExact, clockDurationText(seconds))
+        }
+        if item.isEstimatingRemaining {
+            return localizer.t(L.Queue.remainingEstimating)
+        }
+        return nil
+    }
+
+    private func clockDurationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+
+    private func approximateDurationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        if total < 60 {
+            return localizer.t(L.Queue.remainingLessThanMinute)
+        }
+        let minutes = Int(ceil(Double(total) / 60.0))
+        if minutes < 60 {
+            return localizer.t(L.Queue.remainingMinutes, minutes)
+        }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return localizer.t(L.Queue.remainingHoursMinutes, hours, rest)
     }
 
     private var isFailed: Bool {
@@ -114,7 +163,7 @@ struct QueueItemView: View {
 
     private var progressBar: some View {
         Group {
-            if let p = item.progress {
+            if let p = item.overallProgress {
                 ProgressView(value: min(max(p, 0), 1))
                     .tint(item.isPaused ? .gray : nil)
             } else {
@@ -153,7 +202,7 @@ struct QueueItemView: View {
 
     private var progressAccessibilityValue: String {
         if item.isPaused { return localizer.t(L.Queue.paused) }
-        if let p = item.progress {
+        if let p = item.overallProgress {
             let percent = Int((min(max(p, 0), 1) * 100).rounded())
             return "\(percent)%"
         }

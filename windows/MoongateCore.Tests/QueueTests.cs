@@ -118,6 +118,185 @@ public class QueueManagerTests
         Assert.Equal(current, QueueManager.NextDownloadProgressState(current, incoming));
     }
 
+    [Fact]
+    public void QueueProgressEstimator_KeepsOverallProgressMonotonicAcrossStreamRestart()
+    {
+        var plan = new QueueProgressPlan(shouldTranscode: true, shouldTranslate: true, shouldBurn: true);
+
+        var afterDownload = QueueProgressEstimator.TaskOverallProgress(
+            plan,
+            QueueProgressPhase.Download,
+            phaseProgress: 1.0,
+            previousOverallProgress: null);
+        var secondStreamRestart = QueueProgressEstimator.TaskOverallProgress(
+            plan,
+            QueueProgressPhase.Download,
+            phaseProgress: 0.05,
+            previousOverallProgress: afterDownload);
+        var translating = QueueProgressEstimator.TaskOverallProgress(
+            plan,
+            QueueProgressPhase.Translate,
+            phaseProgress: 0.10,
+            previousOverallProgress: secondStreamRestart);
+
+        Assert.NotNull(afterDownload);
+        Assert.NotNull(secondStreamRestart);
+        Assert.NotNull(translating);
+        Assert.Equal(0.25, afterDownload.Value, precision: 4);
+        Assert.Equal(afterDownload.Value, secondStreamRestart.Value);
+        Assert.True(translating.Value > secondStreamRestart.Value);
+    }
+
+    [Fact]
+    public void QueueProgressEstimator_ParsesEtaAndEstimatesSlopeRemaining()
+    {
+        Assert.Equal(45, QueueProgressEstimator.ParseEtaSeconds("00:45"));
+        Assert.Equal(3723, QueueProgressEstimator.ParseEtaSeconds("01:02:03"));
+        Assert.Null(QueueProgressEstimator.ParseEtaSeconds("Unknown"));
+
+        var remaining = QueueProgressEstimator.EstimatedRemainingSeconds(
+            elapsedSeconds: 10,
+            phaseProgress: 0.25,
+            sourceEtaSeconds: null);
+
+        Assert.NotNull(remaining);
+        Assert.Equal(30, remaining.Value.Seconds, precision: 4);
+        Assert.True(remaining.Value.IsApproximate);
+    }
+
+    [Fact]
+    public void QueueProgressEstimator_QueueSnapshotAveragesProgressAndKeepsUnknownEtaFlag()
+    {
+        var snapshot = QueueProgressEstimator.QueueSnapshot([
+            new TaskProgressSnapshot(OverallProgress: 0.50, RemainingSeconds: 120, IsEstimatingRemaining: false, IsTerminal: false),
+            new TaskProgressSnapshot(OverallProgress: 0.25, RemainingSeconds: 300, IsEstimatingRemaining: false, IsTerminal: false),
+            new TaskProgressSnapshot(OverallProgress: null, RemainingSeconds: null, IsEstimatingRemaining: true, IsTerminal: false),
+            new TaskProgressSnapshot(OverallProgress: 1.0, RemainingSeconds: null, IsEstimatingRemaining: false, IsTerminal: true),
+        ]);
+
+        Assert.Equal(0.4375, snapshot.OverallProgress, precision: 4);
+        Assert.Equal(300, snapshot.RemainingSeconds);
+        Assert.True(snapshot.IsEstimatingRemaining);
+    }
+
+    [Fact]
+    public void QueueProgressEstimator_UsesPhaseMediansForQueuedWork()
+    {
+        var plan = new QueueProgressPlan(shouldTranscode: false, shouldTranslate: true, shouldBurn: true);
+        var snapshot = QueueProgressEstimator.QueueSnapshot(
+            [
+                new TaskProgressSnapshot(
+                    OverallProgress: null,
+                    RemainingSeconds: null,
+                    IsEstimatingRemaining: false,
+                    IsTerminal: false,
+                    Plan: plan,
+                    CurrentPhase: null),
+            ],
+            new Dictionary<QueueProgressPhase, double>
+            {
+                [QueueProgressPhase.Download] = 60,
+                [QueueProgressPhase.Translate] = 120,
+                [QueueProgressPhase.Burn] = 180,
+            },
+            new Dictionary<QueueProgressPhase, int>
+            {
+                [QueueProgressPhase.Download] = 2,
+                [QueueProgressPhase.Translate] = 1,
+                [QueueProgressPhase.Burn] = 1,
+            });
+
+        Assert.Equal(360, snapshot.RemainingSeconds);
+        Assert.False(snapshot.IsEstimatingRemaining);
+    }
+
+    [Fact]
+    public void QueueProgressEstimator_StaysEstimatingWhenQueuedWorkLacksSamples()
+    {
+        var plan = new QueueProgressPlan(shouldTranscode: false, shouldTranslate: true, shouldBurn: true);
+        var snapshot = QueueProgressEstimator.QueueSnapshot(
+            [
+                new TaskProgressSnapshot(
+                    OverallProgress: null,
+                    RemainingSeconds: null,
+                    IsEstimatingRemaining: false,
+                    IsTerminal: false,
+                    Plan: plan,
+                    CurrentPhase: null),
+            ],
+            new Dictionary<QueueProgressPhase, double>
+            {
+                [QueueProgressPhase.Download] = 60,
+            },
+            new Dictionary<QueueProgressPhase, int>
+            {
+                [QueueProgressPhase.Download] = 2,
+                [QueueProgressPhase.Translate] = 1,
+                [QueueProgressPhase.Burn] = 1,
+            });
+
+        Assert.Null(snapshot.RemainingSeconds);
+        Assert.True(snapshot.IsEstimatingRemaining);
+    }
+
+    [Fact]
+    public async Task DownloadProgress_StoresPhasePercentButKeepsOverallProgressMonotonic()
+    {
+        var engine = new FakeEngine();
+        var queue = new QueueManager(engine, settings: Settings(downloads: 1));
+        var request = Request("a", subtitleLangs: ["en"], outputFormat: OutputFormat.Mp4H264);
+        var id = queue.Enqueue(Info("a"), request, ChineseSubtitleMode.BurnIn, Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "download started");
+        var call = engine.Calls[0];
+
+        call.Progress(new DownloadProgress
+        {
+            Phase = DownloadProgress.ProgressPhase.Downloading,
+            Percent = 100,
+            SpeedText = "1.2MiB/s",
+            EtaText = "00:20",
+        });
+        var atEndOfFirstStream = queue.Item(id)!;
+        Assert.Equal(1.0, atEndOfFirstStream.Progress);
+        Assert.Equal(0.25, atEndOfFirstStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal("1.2MiB/s", atEndOfFirstStream.SpeedText);
+        Assert.Equal(20, atEndOfFirstStream.RemainingSeconds);
+        Assert.False(atEndOfFirstStream.RemainingIsApproximate);
+
+        call.Progress(new DownloadProgress
+        {
+            Phase = DownloadProgress.ProgressPhase.Downloading,
+            Percent = 5,
+            SpeedText = "800KiB/s",
+            EtaText = "00:10",
+        });
+        var restartedStream = queue.Item(id)!;
+        Assert.Equal(0.05, restartedStream.Progress);
+        Assert.Equal(0.25, restartedStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal("800KiB/s", restartedStream.SpeedText);
+        Assert.Equal(10, restartedStream.RemainingSeconds);
+    }
+
+    [Fact]
+    public void WindowsQueueRowBindsProgressBarToOverallProgress()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateApp", "QueueItemViewModel.cs"));
+        var summarySource = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateApp", "MainViewModel.cs"));
+        var zh = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateApp", "Strings.zh.xaml"));
+        var en = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateApp", "Strings.en.xaml"));
+        var zhHant = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateApp", "Strings.zh-Hant.xaml"));
+
+        Assert.Contains("ProgressValue = CoerceProgressValue(item.OverallProgress)", source);
+        Assert.Contains("ProgressIndeterminate = open && item.OverallProgress is null", source);
+        Assert.Contains("item.SpeedText", source);
+        Assert.Contains("RemainingText(item)", source);
+        Assert.Contains("Queue.Items.All(item => item.Stage.Kind == ItemStageKind.Done)", summarySource);
+        Assert.Contains("Loc.S(\"L.Queue.AllEnded\")", summarySource);
+        Assert.Contains("x:Key=\"L.Queue.AllEnded\"", zh);
+        Assert.Contains("x:Key=\"L.Queue.AllEnded\"", en);
+        Assert.Contains("x:Key=\"L.Queue.AllEnded\"", zhHant);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)
     {
         var start = Environment.TickCount64;
@@ -141,13 +320,16 @@ public class QueueManagerTests
     };
 
     private static DownloadRequest Request(
-        string videoId = "vid1", IReadOnlyList<string>? subtitleLangs = null) => new()
+        string videoId = "vid1",
+        IReadOnlyList<string>? subtitleLangs = null,
+        OutputFormat outputFormat = OutputFormat.Original) => new()
     {
         Url = $"https://example.com/{videoId}",
         VideoId = videoId,
         FormatId = "bv*+ba/b",
         SubtitleLangs = subtitleLangs ?? [],
         DestinationDirectory = "/tmp/downloads",
+        OutputFormat = outputFormat,
     };
 
     private static AppSettings Settings(int downloads = 1, int burns = 1) => new()

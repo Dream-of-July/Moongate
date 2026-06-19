@@ -1157,7 +1157,9 @@ public sealed class MainViewModel : ObservableObject
         var finished = total - open;
         if (open == 0)
         {
-            QueueSummary = Loc.S("L.Queue.AllDone");
+            QueueSummary = Queue.Items.All(item => item.Stage.Kind == ItemStageKind.Done)
+                ? Loc.S("L.Queue.AllDone")
+                : Loc.S("L.Queue.AllEnded");
             return;
         }
         var summary = Loc.F("L.Queue.ActiveFmt", open);
@@ -1165,7 +1167,30 @@ public sealed class MainViewModel : ObservableObject
         {
             summary += Loc.S("L.Queue.SummarySep") + Loc.F("L.Queue.FinishedFmt", finished);
         }
+        if (QueueRemainingSummary() is { } remaining)
+        {
+            summary += Loc.S("L.Queue.SummarySep") + remaining;
+        }
         QueueSummary = summary;
+    }
+
+    private string? QueueRemainingSummary()
+    {
+        var snapshot = Queue.ProgressSnapshot;
+        if (snapshot.RemainingSeconds is { } seconds)
+        {
+            return Loc.F("L.Status.RemainingApprox", ApproximateDurationText(seconds));
+        }
+        return snapshot.IsEstimatingRemaining ? Loc.S("L.Status.RemainingEstimating") : null;
+    }
+
+    private static string ApproximateDurationText(double seconds)
+    {
+        var total = Math.Max(0, (int)Math.Ceiling(seconds));
+        if (total < 60) return Loc.S("L.Status.RemainingLessThanMinute");
+        var minutes = (int)Math.Ceiling(total / 60.0);
+        if (minutes < 60) return Loc.F("L.Status.RemainingMinutes", minutes);
+        return Loc.F("L.Status.RemainingHoursMinutes", minutes / 60, minutes % 60);
     }
 
     /// <summary>语言切换：重算代码侧派生文案并刷新队列行（XAML 文案由 DynamicResource 自动换）。</summary>

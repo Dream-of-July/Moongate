@@ -96,6 +96,14 @@ final class QueueManager: ObservableObject {
         var stage: ItemStage
         /// 0...1；nil 表示不确定（处理 / 翻译启动等）
         var progress: Double?
+        /// 整条任务的 0...1 进度；跨下载 / 转码 / 翻译 / 烧录保持单调。
+        var overallProgress: Double?
+        var speedText: String?
+        var remainingSeconds: Double?
+        var remainingIsApproximate: Bool = false
+        var isEstimatingRemaining: Bool = false
+        var progressPhase: QueueProgressPhase?
+        let progressPlan: QueueProgressPlan
         /// 暂停 / 部分成功 / 失败原因等附加说明
         var statusText: String?
         /// 已落盘的产物（下载文件、译文、烧录视频）
@@ -112,6 +120,21 @@ final class QueueManager: ObservableObject {
         /// 流水线代际：每次 enqueue/retry 递增；@MainActor 写回前校验，作废陈旧回调。
         var generation: Int = 0
         var task: Task<Void, Never>?
+
+        mutating func clearProgress(resetOverall: Bool = false) {
+            progress = nil
+            speedText = nil
+            remainingSeconds = nil
+            remainingIsApproximate = false
+            isEstimatingRemaining = false
+            progressPhase = nil
+            if resetOverall { overallProgress = nil }
+        }
+
+        mutating func completeProgress() {
+            clearProgress()
+            overallProgress = 1
+        }
     }
 
     @Published var items: [QueueItem] = []
@@ -140,6 +163,8 @@ final class QueueManager: ObservableObject {
     private var holdingPool: [UUID: (generation: Int, pool: StageSlotPool)] = [:]
     /// 暂停时让出的槽位池：恢复时需先重新领到槽位再 SIGCONT。
     private var resumePool: [UUID: (generation: Int, pool: StageSlotPool)] = [:]
+    private var progressPhaseStarts: [UUID: (generation: Int, phase: QueueProgressPhase, startedAt: Date)] = [:]
+    private var phaseDurationSamples: [QueueProgressPhase: [Double]] = [:]
 
     /// 视频文件后缀（用于在产物里识别可烧录的视频）
     private static let videoExtensions: Set<String> = [
@@ -228,6 +253,41 @@ final class QueueManager: ObservableObject {
         items.contains { !Self.isOpen($0.stage) }
     }
 
+    var progressSnapshot: QueueProgressSnapshot {
+        QueueProgressEstimator.queueSnapshot(items: items.map { item in
+            let terminal = !Self.isOpen(item.stage)
+            return TaskProgressSnapshot(
+                overallProgress: terminal ? 1 : item.overallProgress,
+                remainingSeconds: item.remainingSeconds,
+                isEstimatingRemaining: item.isEstimatingRemaining,
+                isTerminal: terminal,
+                plan: item.progressPlan,
+                currentPhase: item.progressPhase
+            )
+        }, phaseMedianDurations: phaseMedianDurations, phaseCapacities: [
+            .download: max(1, maxConcurrentDownloads),
+            .transcode: max(1, maxConcurrentDownloads),
+            .translate: 2,
+            .burn: max(1, effectiveBurnCapacity),
+        ])
+    }
+
+    private var phaseMedianDurations: [QueueProgressPhase: Double] {
+        phaseDurationSamples.compactMapValues { samples in
+            let valid = samples.filter { $0.isFinite && $0 >= 0 }.sorted()
+            guard !valid.isEmpty else { return nil }
+            return valid[valid.count / 2]
+        }
+    }
+
+    private static func progressPlan(for request: DownloadRequest, mode: ChineseSubtitleMode) -> QueueProgressPlan {
+        QueueProgressPlan(
+            shouldTranscode: Transcoder.needsProcessing(request.outputFormat),
+            shouldTranslate: mode.requiresTranslation,
+            shouldBurn: mode.requiresBurner
+        )
+    }
+
     // MARK: - 入队
 
     /// 去重键：优先 videoID，取不到用 sourceURL + formatID。
@@ -263,6 +323,11 @@ final class QueueManager: ObservableObject {
             settings: settings,
             stage: .queued,
             progress: nil,
+            overallProgress: nil,
+            speedText: nil,
+            remainingSeconds: nil,
+            progressPhase: nil,
+            progressPlan: Self.progressPlan(for: request, mode: chineseMode),
             statusText: nil,
             resultFiles: [],
             isPaused: false,
@@ -291,6 +356,15 @@ final class QueueManager: ObservableObject {
         var downloadFiles: [URL]
         if skipDownload {
             downloadFiles = current.resultFiles
+            update(id, generation: generation) {
+                $0.overallProgress = QueueProgressEstimator.taskOverallProgress(
+                    plan: $0.progressPlan,
+                    currentPhase: .download,
+                    phaseProgress: 1,
+                    previousOverallProgress: $0.overallProgress
+                )
+                $0.clearProgress()
+            }
         } else {
             do {
                 try await acquireSlot(
@@ -301,7 +375,14 @@ final class QueueManager: ObservableObject {
                     waitingText: CoreL10n.t(L.Queue.waitingForDownloadSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .downloading; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+                update(id, generation: generation) {
+                    $0.stage = .downloading
+                    $0.clearProgress(resetOverall: true)
+                    $0.statusText = nil
+                    $0.isPostDownloadProcessing = false
+                    $0.postDownloadProcessingKind = nil
+                    self.applyProgress(&$0, id: id, generation: generation, phase: .download, phaseProgress: nil)
+                }
                 let result = try await engine.download(current.request, control: control) { [weak self] p in
                     Task { @MainActor in
                         self?.applyDownloadProgress(id: id, generation: generation, p)
@@ -309,7 +390,8 @@ final class QueueManager: ObservableObject {
                 }
                 guard item(id)?.generation == generation else { return }
                 downloadFiles = result.files
-                update(id, generation: generation) { $0.resultFiles = result.files; $0.progress = nil }
+                completeProgressPhase(id, generation: generation, phase: .download)
+                update(id, generation: generation) { $0.resultFiles = result.files; $0.clearProgress() }
 
                 // 下载后转码/remux（用户选了非「保持源格式」时）。在下载槽内顺序执行。
                 if Transcoder.needsProcessing(current.request.outputFormat),
@@ -318,10 +400,11 @@ final class QueueManager: ObservableObject {
                    }) {
                     update(id, generation: generation) {
                         $0.stage = .downloading
-                        $0.progress = nil
+                        $0.clearProgress()
                         $0.statusText = nil
                         $0.isPostDownloadProcessing = true
                         $0.postDownloadProcessingKind = .transcoding
+                        self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: nil)
                     }
                     do {
                         // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
@@ -335,8 +418,10 @@ final class QueueManager: ObservableObject {
                             control: control
                         ) { [weak self] frac in
                             Task { @MainActor in
-                                guard self?.item(id)?.generation == generation else { return }
-                                self?.update(id, generation: generation) { $0.progress = frac }
+                                guard let self, self.item(id)?.generation == generation else { return }
+                                self.update(id, generation: generation) {
+                                    self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: frac)
+                                }
                             }
                         }
                         guard item(id)?.generation == generation else { return }
@@ -346,9 +431,10 @@ final class QueueManager: ObservableObject {
                         }
                         downloadFiles = downloadFiles.map { $0 == videoFile ? transcoded : $0 }
                         if !downloadFiles.contains(transcoded) { downloadFiles.append(transcoded) }
+                        completeProgressPhase(id, generation: generation, phase: .transcode)
                         update(id, generation: generation) {
                             $0.resultFiles = downloadFiles
-                            $0.progress = nil
+                            $0.clearProgress()
                             $0.statusText = nil
                             $0.isPostDownloadProcessing = false
                             $0.postDownloadProcessingKind = nil
@@ -357,16 +443,18 @@ final class QueueManager: ObservableObject {
                         guard item(id)?.generation == generation else { return }
                         if isCancellation(error) {
                             update(id, generation: generation) {
-                                $0.stage = .cancelled; $0.isPaused = false; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.cancelled)
+                                $0.stage = .cancelled; $0.isPaused = false; $0.clearProgress(); $0.statusText = CoreL10n.t(L.Queue.cancelled)
                                 $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
+                            clearProgressTracking(id)
                         } else {
                             update(id, generation: generation) {
                                 $0.stage = .failed(Self.shortReason(of: error))
-                                $0.isPaused = false; $0.progress = nil
+                                $0.isPaused = false; $0.clearProgress()
                                 $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
                                 $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
+                            clearProgressTracking(id)
                         }
                         return
                     }
@@ -377,20 +465,22 @@ final class QueueManager: ObservableObject {
                     update(id, generation: generation) {
                         $0.stage = .cancelled
                         $0.isPaused = false
-                        $0.progress = nil
+                        $0.clearProgress()
                         $0.statusText = CoreL10n.t(L.Queue.cancelled)
                         $0.isPostDownloadProcessing = false
                         $0.postDownloadProcessingKind = nil
                     }
+                    clearProgressTracking(id)
                 } else {
                     update(id, generation: generation) {
                         $0.stage = .failed(Self.shortReason(of: error))
                         $0.isPaused = false
-                        $0.progress = nil
+                        $0.clearProgress()
                         $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
                         $0.isPostDownloadProcessing = false
                         $0.postDownloadProcessingKind = nil
                     }
+                    clearProgressTracking(id)
                 }
                 return
             }
@@ -431,7 +521,14 @@ final class QueueManager: ObservableObject {
                     waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.burnOriginalSubtitle); $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+                update(id, generation: generation) {
+                    $0.stage = .burning
+                    $0.clearProgress()
+                    $0.statusText = CoreL10n.t(L.Queue.burnOriginalSubtitle)
+                    $0.isPostDownloadProcessing = false
+                    $0.postDownloadProcessingKind = nil
+                    self.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: nil)
+                }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -445,11 +542,12 @@ final class QueueManager: ObservableObject {
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
                             guard $0.stage == .burning else { return }
-                            $0.progress = p
+                            self?.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: p)
                         }
                     }
                 }
                 guard item(id)?.generation == generation else { return }
+                completeProgressPhase(id, generation: generation, phase: .burn)
                 update(id, generation: generation) {
                     $0.resultFiles.removeAll { $0 == burned }
                     $0.resultFiles.insert(burned, at: 0)
@@ -491,7 +589,14 @@ final class QueueManager: ObservableObject {
                     waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
-                update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = CoreL10n.t(L.Queue.sourceTargetSubtitleBurn); $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+                update(id, generation: generation) {
+                    $0.stage = .burning
+                    $0.clearProgress()
+                    $0.statusText = CoreL10n.t(L.Queue.sourceTargetSubtitleBurn)
+                    $0.isPostDownloadProcessing = false
+                    $0.postDownloadProcessingKind = nil
+                    self.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: nil)
+                }
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
@@ -504,11 +609,12 @@ final class QueueManager: ObservableObject {
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
                             guard $0.stage == .burning else { return }
-                            $0.progress = p
+                            self?.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: p)
                         }
                     }
                 }
                 guard item(id)?.generation == generation else { return }
+                completeProgressPhase(id, generation: generation, phase: .burn)
                 update(id, generation: generation) {
                     $0.resultFiles.removeAll { $0 == burned }
                     $0.resultFiles.insert(burned, at: 0)
@@ -532,7 +638,14 @@ final class QueueManager: ObservableObject {
                 waitingText: CoreL10n.t(L.Queue.waitingForTranslationSlot)
             )
             defer { releaseSlot(id, generation: generation) }
-            update(id, generation: generation) { $0.stage = .translating; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+            update(id, generation: generation) {
+                $0.stage = .translating
+                $0.clearProgress()
+                $0.statusText = nil
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
+                self.applyProgress(&$0, id: id, generation: generation, phase: .translate, phaseProgress: nil)
+            }
             let translator = makeTranslator(settings: settings)
             zhSrt = try await translator.translate(
                 srtFile: srtFile,
@@ -540,16 +653,17 @@ final class QueueManager: ObservableObject {
                 context: settings.makeTranslationContext(sourceLanguage: preferredLang),
                 control: control
             ) { [weak self] p in
-                Task { @MainActor in
-                    self?.update(id, generation: generation) {
-                        guard $0.stage == .translating else { return }
-                        $0.progress = p
+                    Task { @MainActor in
+                        self?.update(id, generation: generation) {
+                            guard $0.stage == .translating else { return }
+                            self?.applyProgress(&$0, id: id, generation: generation, phase: .translate, phaseProgress: p)
+                        }
                     }
                 }
-            }
             guard item(id)?.generation == generation else { return }
+            completeProgressPhase(id, generation: generation, phase: .translate)
             update(id, generation: generation) {
-                $0.progress = nil
+                $0.clearProgress()
                 if !$0.resultFiles.contains(zhSrt) { $0.resultFiles.append(zhSrt) }
             }
         } catch {
@@ -579,7 +693,14 @@ final class QueueManager: ObservableObject {
                 waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
             )
             defer { releaseSlot(id, generation: generation) }
-            update(id, generation: generation) { $0.stage = .burning; $0.progress = nil; $0.statusText = nil; $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil }
+            update(id, generation: generation) {
+                $0.stage = .burning
+                $0.clearProgress()
+                $0.statusText = nil
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
+                self.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: nil)
+            }
             let burner = makeBurner()
             let burned = try await burner.burn(
                 video: video,
@@ -589,14 +710,15 @@ final class QueueManager: ObservableObject {
                 alwaysH264: settings.burnAlwaysH264,
                 control: control
             ) { [weak self] p in
-                Task { @MainActor in
-                    self?.update(id, generation: generation) {
-                        guard $0.stage == .burning else { return }
-                        $0.progress = p
+                    Task { @MainActor in
+                        self?.update(id, generation: generation) {
+                            guard $0.stage == .burning else { return }
+                            self?.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: p)
+                        }
                     }
                 }
-            }
             guard item(id)?.generation == generation else { return }
+            completeProgressPhase(id, generation: generation, phase: .burn)
             update(id, generation: generation) {
                 $0.resultFiles.removeAll { $0 == burned }
                 $0.resultFiles.insert(burned, at: 0)
@@ -624,6 +746,72 @@ final class QueueManager: ObservableObject {
         return DownloadProgressState(progress: next, isProcessing: false)
     }
 
+    private func progressPhaseStart(id: UUID, generation: Int, phase: QueueProgressPhase, now: Date) -> Date {
+        if let existing = progressPhaseStarts[id],
+           existing.generation == generation,
+           existing.phase == phase {
+            return existing.startedAt
+        }
+        progressPhaseStarts[id] = (generation, phase, now)
+        return now
+    }
+
+    private func clearProgressTracking(_ id: UUID) {
+        progressPhaseStarts.removeValue(forKey: id)
+    }
+
+    private func completeProgressPhase(
+        _ id: UUID,
+        generation: Int,
+        phase expectedPhase: QueueProgressPhase,
+        now: Date = Date()
+    ) {
+        guard let existing = progressPhaseStarts[id],
+              existing.generation == generation,
+              existing.phase == expectedPhase else {
+            return
+        }
+        let duration = max(0.1, now.timeIntervalSince(existing.startedAt))
+        progressPhaseStarts.removeValue(forKey: id)
+        var samples = phaseDurationSamples[expectedPhase] ?? []
+        samples.append(duration)
+        if samples.count > 9 {
+            samples.removeFirst(samples.count - 9)
+        }
+        phaseDurationSamples[expectedPhase] = samples
+    }
+
+    private func applyProgress(
+        _ item: inout QueueItem,
+        id: UUID,
+        generation: Int,
+        phase: QueueProgressPhase,
+        phaseProgress: Double?,
+        speedText: String? = nil,
+        etaText: String? = nil,
+        now: Date = Date()
+    ) {
+        let normalized = QueueProgressEstimator.normalizedFraction(phaseProgress)
+        let startedAt = progressPhaseStart(id: id, generation: generation, phase: phase, now: now)
+        item.progress = normalized
+        item.progressPhase = phase
+        item.overallProgress = QueueProgressEstimator.taskOverallProgress(
+            plan: item.progressPlan,
+            currentPhase: phase,
+            phaseProgress: normalized,
+            previousOverallProgress: item.overallProgress
+        )
+        item.speedText = speedText
+        let remaining = QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: max(0, now.timeIntervalSince(startedAt)),
+            phaseProgress: normalized,
+            sourceEtaSeconds: QueueProgressEstimator.parseEtaSeconds(etaText)
+        )
+        item.remainingSeconds = remaining?.seconds
+        item.remainingIsApproximate = remaining?.isApproximate ?? false
+        item.isEstimatingRemaining = remaining == nil && normalized != 1 && !item.isPaused
+    }
+
     /// 下载进度上报：转 0...1（processing 阶段进度不确定，置 nil）。
     /// 节流：进度变化 < 1% 时不写 items，避免高频 objectWillChange 在长队列时拖累 UI。
     private func applyDownloadProgress(id: UUID, generation: Int, _ p: DownloadProgress) {
@@ -636,16 +824,29 @@ final class QueueManager: ObservableObject {
                 let isProcessing = $0.isPostDownloadProcessing && $0.postDownloadProcessingKind == .generic
                 let nextState = Self.nextDownloadProgressState(
                     DownloadProgressState(progress: $0.progress, isProcessing: isProcessing), incoming: newValue)
-                $0.progress = nextState.progress
+                self.applyProgress(
+                    &$0,
+                    id: id,
+                    generation: generation,
+                    phase: .download,
+                    phaseProgress: nextState.progress,
+                    speedText: p.speedText,
+                    etaText: p.etaText
+                )
                 $0.isPostDownloadProcessing = nextState.isProcessing
                 $0.postDownloadProcessingKind = nextState.isProcessing ? .generic : nil
-            case .preparing, .finished:
-                $0.progress = nil
+            case .preparing:
+                self.applyProgress(&$0, id: id, generation: generation, phase: .download, phaseProgress: nil)
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
+            case .finished:
+                self.applyProgress(&$0, id: id, generation: generation, phase: .download, phaseProgress: 1)
+                $0.clearProgress()
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             case .processing:
                 // 下载 100% 后的合并/转码：进度不确定，标记为「处理中」避免像卡死。
-                $0.progress = nil
+                self.applyProgress(&$0, id: id, generation: generation, phase: .download, phaseProgress: nil)
                 $0.isPostDownloadProcessing = true
                 $0.postDownloadProcessingKind = .generic
                 $0.statusText = p.detail
@@ -660,11 +861,12 @@ final class QueueManager: ObservableObject {
             update(id, generation: generation) {
                 $0.stage = .cancelled
                 $0.isPaused = false
-                $0.progress = nil
+                $0.clearProgress()
                 $0.statusText = files.isEmpty ? CoreL10n.t(L.Queue.cancelled) : CoreL10n.t(L.Queue.cancelledSaved)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
+            clearProgressTracking(id)
             return
         }
         let reason = Self.shortReason(of: error)
@@ -672,21 +874,23 @@ final class QueueManager: ObservableObject {
             update(id, generation: generation) {
                 $0.stage = .done
                 $0.isPaused = false
-                $0.progress = nil
+                $0.completeProgress()
                 $0.partialFailure = true
                 $0.statusText = CoreL10n.t(L.Queue.partialSubtitleFailed, phase, reason)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
+            clearProgressTracking(id)
         } else {
             update(id, generation: generation) {
                 $0.stage = .failed(reason)
                 $0.isPaused = false
-                $0.progress = nil
+                $0.clearProgress()
                 $0.statusText = CoreL10n.t(L.Queue.failedWithReason, reason)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
+            clearProgressTracking(id)
         }
     }
 
@@ -694,13 +898,14 @@ final class QueueManager: ObservableObject {
         update(id, generation: generation) {
             $0.stage = .done
             $0.isPaused = false
-            $0.progress = nil
+            $0.completeProgress()
             $0.partialFailure = false
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.resultFiles = files.isEmpty ? $0.resultFiles : files
             $0.statusText = statusText
         }
+        clearProgressTracking(id)
     }
 
     // MARK: - 单项控制
@@ -755,6 +960,7 @@ final class QueueManager: ObservableObject {
     func cancel(_ id: UUID) {
         guard let target = item(id) else { return }
         resumePool.removeValue(forKey: id)
+        clearProgressTracking(id)
         target.control.cancel()
         target.task?.cancel()
         // 还在排队等槽位的，唤出来让 acquire 循环抛出取消。
@@ -764,6 +970,7 @@ final class QueueManager: ObservableObject {
     func remove(_ id: UUID) {
         guard let target = item(id) else { return }
         resumePool.removeValue(forKey: id)
+        clearProgressTracking(id)
         target.control.cancel()
         target.task?.cancel()
         wakeFromAllPools(id)
@@ -775,6 +982,7 @@ final class QueueManager: ObservableObject {
         guard let old = item(id) else { return }
         // 旧 control 若仍登记着进程，确保释放；清掉旧代际的槽位记账。
         resumePool.removeValue(forKey: id)
+        clearProgressTracking(id)
         old.control.cancel()
         old.task?.cancel()
         wakeFromAllPools(id)
@@ -789,7 +997,7 @@ final class QueueManager: ObservableObject {
             $0.generation += 1
             $0.stage = .queued
             $0.isPaused = false
-            $0.progress = nil
+            $0.clearProgress(resetOverall: true)
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
