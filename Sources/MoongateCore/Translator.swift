@@ -269,7 +269,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     guard !input.isEmpty else { return input }
 
     // (a) 解析时间 + 稳定升序排序
-    struct Timed { var start: Double; var end: Double; var text: String; var order: Int }
+    struct Fragment { var start: Double; var end: Double; var text: String }
+    struct Timed { var start: Double; var end: Double; var text: String; var order: Int; var fragments: [Fragment] }
     var timed: [Timed] = []
     for (i, cue) in input.enumerated() {
         guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
@@ -277,7 +278,14 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         }
         let text = stripNonSpeechMarkers(normalizeSubtitleEscapes(cue.text))
         guard !text.isEmpty else { continue }
-        timed.append(Timed(start: start, end: max(end, start), text: text, order: i))
+        let clampedEnd = max(end, start)
+        timed.append(Timed(
+            start: start,
+            end: clampedEnd,
+            text: text,
+            order: i,
+            fragments: [Fragment(start: start, end: clampedEnd, text: text)]
+        ))
     }
     guard !timed.isEmpty else { return [] }
     timed.sort { $0.start != $1.start ? $0.start < $1.start : $0.order < $1.order }
@@ -327,6 +335,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             guard !newLines.isEmpty else { continue }
             var copy = item
             copy.text = newLines.joined(separator: "\n")
+            copy.fragments = [Fragment(start: copy.start, end: copy.end, text: copy.text)]
             deduped.append(copy)
         }
         if !deduped.isEmpty { timed = deduped }
@@ -344,6 +353,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             if let nextStart { compensated = min(compensated, nextStart) }
             timed[i].end = compensated
         }
+        timed[i].fragments = [Fragment(start: timed[i].start, end: timed[i].end, text: timed[i].text)]
     }
 
     func makeCues(_ items: [Timed]) -> [SubtitleCue] {
@@ -352,9 +362,6 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                         end: secondsToSRTTime(t.end), text: t.text)
         }
     }
-
-    // 非滚动字幕：只做去重叠，不合并
-    guard isRolling else { return makeCues(timed) }
 
     // (c) 按句合并：把碎条文本规整空白后用空格累积，满足任一断句条件即收一条
     let sentenceEnders: Set<Character> = [".", "!", "?", "。", "！", "？"]
@@ -399,32 +406,517 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     var curText = ""
     var curStart = 0.0
     var curEnd = 0.0
+    var curFragments: [Fragment] = []
     var hasCurrent = false
 
     func flush() {
         guard hasCurrent else { return }
-        merged.append(Timed(start: curStart, end: curEnd, text: curText, order: merged.count))
+        merged.append(Timed(start: curStart, end: curEnd, text: curText, order: merged.count, fragments: curFragments))
         hasCurrent = false
         curText = ""
+        curFragments = []
     }
 
     let softDuration = 6.0
     let softCharacterBudget = 84
     let hardDuration = 18.0
     let hardCharacterBudget = 220
+    let normalReadableCueSeconds = 9.0
+    let emergencyReadableCueSeconds = 12.0
+
+    func clamped(_ value: Double, min minValue: Double, max maxValue: Double) -> Double {
+        min(max(value, minValue), maxValue)
+    }
+
+    func textWeight(_ text: String) -> Int {
+        let words = wordTokens(text)
+        return words.isEmpty ? max(1, text.count) : words.count
+    }
+
+    func speechTokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        for scalar in text.lowercased().unicodeScalars {
+            let isASCIIAlnum = (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 97 && scalar.value <= 122)
+            if isASCIIAlnum {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    func speechAlignedVisibleSeconds(_ text: String) -> Double {
+        let tokens = speechTokens(text)
+        if tokens.isEmpty {
+            let visibleCharacterCount = collapseSubtitleWhitespace(text)
+                .filter { !$0.isWhitespace }
+                .count
+            return clamped(Double(visibleCharacterCount) * 0.18 + 0.8, min: 1.5, max: 6.0)
+        }
+
+        if tokens.count >= 2, tokens.allSatisfy({ $0.allSatisfy(\.isNumber) }) {
+            return clamped(Double(tokens.count) * 0.65 + 0.5, min: 2.0, max: 8.0)
+        }
+
+        if tokens.count <= 3 {
+            return 2.0
+        }
+
+        let sentencePause = endsSentence(text) ? 0.8 : 0.45
+        return clamped(Double(tokens.count) * 0.42 + sentencePause, min: 2.2, max: 9.0)
+    }
+
+    struct TokenTiming {
+        let start: Double
+        let end: Double
+        let fragmentIndex: Int
+        let fragmentStart: Double
+        let fragmentEnd: Double
+    }
+
+    func effectiveFragmentEnd(_ fragment: Fragment, speechAlignTimings: Bool) -> Double {
+        let duration = fragment.end - fragment.start
+        let tokenCount = speechTokens(fragment.text).count
+        guard speechAlignTimings,
+              tokenCount > 0,
+              (tokenCount <= 3 || duration > normalReadableCueSeconds) else {
+            return fragment.end
+        }
+        return min(fragment.end, fragment.start + speechAlignedVisibleSeconds(fragment.text))
+    }
+
+    func tokenTimings(for item: Timed, speechAlignTimings: Bool) -> [TokenTiming] {
+        var output: [TokenTiming] = []
+        for (fragmentIndex, fragment) in item.fragments.enumerated() {
+            let tokens = speechTokens(fragment.text)
+            guard !tokens.isEmpty else { continue }
+            let fragmentEnd = max(fragment.start, effectiveFragmentEnd(fragment, speechAlignTimings: speechAlignTimings))
+            let duration = fragmentEnd - fragment.start
+            for tokenIndex in tokens.indices {
+                let tokenStart = fragment.start + duration * Double(tokenIndex) / Double(tokens.count)
+                let tokenEnd = fragment.start + duration * Double(tokenIndex + 1) / Double(tokens.count)
+                output.append(TokenTiming(
+                    start: tokenStart,
+                    end: tokenEnd,
+                    fragmentIndex: fragmentIndex,
+                    fragmentStart: fragment.start,
+                    fragmentEnd: fragmentEnd
+                ))
+            }
+        }
+        return output
+    }
+
+    func splitSentencePieces(_ text: String) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        for char in text {
+            current.append(char)
+            guard sentenceEnders.contains(char) else { continue }
+            let piece = collapseSubtitleWhitespace(current)
+            if !piece.isEmpty { pieces.append(piece) }
+            current = ""
+        }
+        let tail = collapseSubtitleWhitespace(current)
+        if !tail.isEmpty { pieces.append(tail) }
+        return pieces
+    }
+
+    func packPiecesByWeight(_ pieces: [String], targetParts: Int) -> [String] {
+        guard targetParts > 1 else { return [collapseSubtitleWhitespace(pieces.joined(separator: " "))] }
+        let totalWeight = max(1, pieces.map(textWeight).reduce(0, +))
+        var output: [String] = []
+        var start = 0
+        var emittedWeight = 0
+        for part in 0..<targetParts {
+            let remainingParts = targetParts - part
+            let remainingPieces = pieces.count - start
+            var end = start
+            var currentWeight = 0
+            let targetWeight = Int(ceil(Double(totalWeight - emittedWeight) / Double(remainingParts)))
+            while end < pieces.count, remainingPieces - (end - start) > remainingParts - 1 {
+                currentWeight += textWeight(pieces[end])
+                end += 1
+                if currentWeight >= targetWeight { break }
+            }
+            if end == start { end += 1 }
+            let piece = collapseSubtitleWhitespace(pieces[start..<end].joined(separator: " "))
+            if !piece.isEmpty {
+                output.append(piece)
+                emittedWeight += textWeight(piece)
+            }
+            start = end
+        }
+        return output
+    }
+
+    func normalizedBoundaryWord(_ raw: String) -> String {
+        String(raw.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    func lastMeaningfulCharacter(_ text: String) -> Character? {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).reversed().first { char in
+            !trailingAllowed.contains(char) && char != " "
+        }
+    }
+
+    func semanticBoundaryBonus(leftToken: String) -> Double {
+        guard let last = lastMeaningfulCharacter(leftToken) else { return 0 }
+        if sentenceEnders.contains(last) { return 400 }
+        if [",", "，"].contains(last) { return 140 }
+        if [";", "；", ":", "：", "-", "–", "—"].contains(last) { return 220 }
+        return 0
+    }
+
+    func isBadBoundary(leftToken: String, rightToken: String) -> Bool {
+        let left = normalizedBoundaryWord(leftToken)
+        let right = normalizedBoundaryWord(rightToken)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        return continuationEnds.contains(left) || continuationStarts.contains(right)
+    }
+
+    func splitTextByCharacters(_ text: String, targetParts: Int) -> [String] {
+        let chars = Array(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !chars.isEmpty else { return [] }
+        let parts = min(max(1, targetParts), chars.count)
+        return (0..<parts).compactMap { part in
+            let start = chars.count * part / parts
+            let end = part == parts - 1 ? chars.count : chars.count * (part + 1) / parts
+            let piece = String(chars[start..<end]).trimmingCharacters(in: .whitespaces)
+            return piece.isEmpty ? nil : piece
+        }
+    }
+
+    func chooseSemanticBoundary(
+        words: [String],
+        previous: Int,
+        remainingParts: Int,
+        desired: Double,
+        allowBad: Bool
+    ) -> Int? {
+        let minWordsPerPiece = words.count - previous >= (remainingParts + 1) * 2 ? 2 : 1
+        let minBoundary = previous + minWordsPerPiece
+        let maxBoundary = words.count - remainingParts * minWordsPerPiece
+        guard minBoundary <= maxBoundary else { return nil }
+
+        var best: (index: Int, score: Double, bad: Bool)?
+        for boundary in minBoundary...maxBoundary {
+            let leftToken = words[boundary - 1]
+            let rightToken = words[boundary]
+            let bad = isBadBoundary(leftToken: leftToken, rightToken: rightToken)
+            if bad && !allowBad { continue }
+
+            let leftCount = boundary - previous
+            let rightCount = words.count - boundary
+            let shortEdgePenalty = Double(max(0, 3 - min(leftCount, rightCount))) * 45
+            let score = abs(Double(boundary) - desired) * 10
+                + shortEdgePenalty
+                + (bad ? 75 : 0)
+                - semanticBoundaryBonus(leftToken: leftToken)
+            if best == nil || score < best!.score {
+                best = (boundary, score, bad)
+            }
+        }
+        return best?.index
+    }
+
+    func splitTextSemantically(_ text: String, targetParts: Int, mustSplit: Bool) -> [String] {
+        let targetParts = max(1, targetParts)
+        guard targetParts > 1 else { return [collapseSubtitleWhitespace(text)] }
+
+        let words = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard words.count >= targetParts else {
+            return mustSplit ? splitTextByCharacters(text, targetParts: targetParts) : [collapseSubtitleWhitespace(text)]
+        }
+
+        var boundaries: [Int] = []
+        var previous = 0
+        for part in 1..<targetParts {
+            let remainingParts = targetParts - part
+            let desired = Double(words.count) * Double(part) / Double(targetParts)
+            if let boundary = chooseSemanticBoundary(
+                words: words,
+                previous: previous,
+                remainingParts: remainingParts,
+                desired: desired,
+                allowBad: mustSplit
+            ) {
+                boundaries.append(boundary)
+                previous = boundary
+                continue
+            }
+
+            guard mustSplit,
+                  let fallback = chooseSemanticBoundary(
+                    words: words,
+                    previous: previous,
+                    remainingParts: remainingParts,
+                    desired: desired,
+                    allowBad: true
+                  ) else {
+                return [collapseSubtitleWhitespace(text)]
+            }
+            boundaries.append(fallback)
+            previous = fallback
+        }
+
+        var output: [String] = []
+        var start = 0
+        for boundary in boundaries + [words.count] {
+            let piece = collapseSubtitleWhitespace(words[start..<boundary].joined(separator: " "))
+            if !piece.isEmpty { output.append(piece) }
+            start = boundary
+        }
+        return output.count > 1 ? output : [collapseSubtitleWhitespace(text)]
+    }
+
+    func splitReadableText(_ text: String, targetParts: Int, mustSplit: Bool) -> [String] {
+        let targetParts = max(1, targetParts)
+        let sentences = splitSentencePieces(text)
+        if sentences.count >= targetParts {
+            return packPiecesByWeight(sentences, targetParts: targetParts)
+        }
+        if sentences.count > 1 {
+            return sentences
+        }
+        return splitTextSemantically(text, targetParts: targetParts, mustSplit: mustSplit)
+    }
+
+    func isPunctuationIsland(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 4 else { return false }
+        return trimmed.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.punctuationCharacters.contains(scalar)
+                || CharacterSet.symbols.contains(scalar)
+        }
+    }
+
+    func appendPunctuationIsland(_ punctuation: String, to text: String) -> String {
+        let punctuation = punctuation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !punctuation.isEmpty else { return text }
+        if punctuation.first == "-" || punctuation.first == "–" || punctuation.first == "—" {
+            return collapseSubtitleWhitespace(text + " " + punctuation)
+        }
+        return collapseSubtitleWhitespace(text) + punctuation
+    }
+
+    func collapsePunctuationIslands(_ items: [Timed]) -> [Timed] {
+        var output: [Timed] = []
+        var pendingPrefix: Timed?
+        for item in items {
+            if isPunctuationIsland(item.text) {
+                if var previous = output.popLast() {
+                    previous.text = appendPunctuationIsland(item.text, to: previous.text)
+                    previous.end = max(previous.end, item.end)
+                    previous.order = output.count
+                    output.append(previous)
+                } else {
+                    pendingPrefix = item
+                }
+                continue
+            }
+
+            var current = item
+            if let prefix = pendingPrefix {
+                current.start = min(prefix.start, current.start)
+                current.text = collapseSubtitleWhitespace(prefix.text + " " + current.text)
+                pendingPrefix = nil
+            }
+            current.order = output.count
+            output.append(current)
+        }
+        return output
+    }
+
+    func sourceAnchoredPieces(_ pieces: [String], item: Timed, speechAlignTimings: Bool) -> [Timed]? {
+        let timings = tokenTimings(for: item, speechAlignTimings: speechAlignTimings)
+        guard !pieces.isEmpty, !timings.isEmpty else { return nil }
+
+        var output: [Timed] = []
+        var cursor = 0
+        var previousEnd = item.start
+        for piece in pieces {
+            let pieceTokenCount = speechTokens(piece).count
+            guard pieceTokenCount > 0, cursor < timings.count else { return nil }
+            let endCursor = min(cursor + pieceTokenCount, timings.count)
+            guard endCursor > cursor else { return nil }
+            let covered = Array(timings[cursor..<endCursor])
+            guard let first = covered.first, let last = covered.last else { return nil }
+
+            var start = first.start
+            let firstFragmentIndex = first.fragmentIndex
+            let firstFragmentCount = covered.prefix { $0.fragmentIndex == firstFragmentIndex }.count
+            if cursor > 0,
+               firstFragmentCount <= 4,
+               firstFragmentCount * 2 < covered.count,
+               let later = covered.first(where: { $0.fragmentIndex != firstFragmentIndex }) {
+                start = later.fragmentStart
+            }
+            start = max(start, previousEnd)
+
+            var end = last.end
+            if endsSentence(piece) {
+                end = max(end, min(last.fragmentEnd, end + 0.35))
+            } else if endCursor < timings.count {
+                end = min(max(end, end + 0.12), timings[endCursor].start)
+            }
+            end = max(end, start)
+
+            output.append(Timed(
+                start: start,
+                end: end,
+                text: piece,
+                order: output.count,
+                fragments: [Fragment(start: start, end: end, text: piece)]
+            ))
+            previousEnd = end
+            cursor = endCursor
+        }
+        return output
+    }
+
+    func splitLongReadableCues(_ items: [Timed], collapsePunctuation: Bool, speechAlignTimings: Bool) -> [Timed] {
+        var output: [Timed] = []
+        for item in items {
+            let originalDuration = item.end - item.start
+            let wordCount = wordTokens(item.text).count
+            let speechTokenCount = speechTokens(item.text).count
+            let canUseSourceAnchors = speechAlignTimings && !item.fragments.isEmpty
+            let shouldAlignToSpeech = !canUseSourceAnchors
+                && ((speechTokenCount > 0 && speechTokenCount <= 3)
+                    || (speechAlignTimings && originalDuration > normalReadableCueSeconds))
+            let effectiveEnd = shouldAlignToSpeech
+                ? min(item.end, item.start + speechAlignedVisibleSeconds(item.text))
+                : item.end
+            let effectiveItem = Timed(
+                start: item.start,
+                end: effectiveEnd,
+                text: item.text,
+                order: item.order,
+                fragments: item.fragments
+            )
+            let sentenceDrivenTargetParts = canUseSourceAnchors ? splitSentencePieces(effectiveItem.text).count : 1
+            let anchoredTimings = canUseSourceAnchors
+                ? tokenTimings(for: effectiveItem, speechAlignTimings: speechAlignTimings)
+                : []
+            let duration = anchoredTimings.isEmpty
+                ? effectiveItem.end - effectiveItem.start
+                : max(0, (anchoredTimings.last?.end ?? effectiveItem.end) - (anchoredTimings.first?.start ?? effectiveItem.start))
+            let textDrivenTargetParts = wordCount > 18 ? Int(ceil(Double(wordCount) / 14.0)) : 1
+            let durationDrivenTargetParts = duration > normalReadableCueSeconds
+                ? Int(ceil(duration / normalReadableCueSeconds))
+                : 1
+            var targetParts = max(durationDrivenTargetParts, textDrivenTargetParts, sentenceDrivenTargetParts)
+            guard targetParts > 1 else {
+                if canUseSourceAnchors,
+                   let anchored = sourceAnchoredPieces([effectiveItem.text], item: effectiveItem, speechAlignTimings: speechAlignTimings) {
+                    output.append(contentsOf: anchored.map {
+                        Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                    })
+                } else {
+                    output.append(Timed(
+                        start: effectiveItem.start,
+                        end: effectiveItem.end,
+                        text: effectiveItem.text,
+                        order: output.count,
+                        fragments: effectiveItem.fragments
+                    ))
+                }
+                continue
+            }
+
+            targetParts = max(2, targetParts)
+            let balancedMaxParts = max(2, wordCount / 2)
+            let maxTargetParts = max(targetParts, balancedMaxParts)
+            var pieces = splitReadableText(
+                effectiveItem.text,
+                targetParts: targetParts,
+                mustSplit: duration > emergencyReadableCueSeconds
+            )
+            while pieces.count > 1,
+                  targetParts < maxTargetParts {
+                let totalWeight = max(1, pieces.map(textWeight).reduce(0, +))
+                let longestEstimatedDuration = pieces
+                    .map { duration * Double(textWeight($0)) / Double(totalWeight) }
+                    .max() ?? 0
+                guard longestEstimatedDuration > emergencyReadableCueSeconds else { break }
+                targetParts += 1
+                pieces = splitReadableText(effectiveItem.text, targetParts: targetParts, mustSplit: true)
+            }
+            guard pieces.count > 1 else {
+                if canUseSourceAnchors,
+                   let anchored = sourceAnchoredPieces([effectiveItem.text], item: effectiveItem, speechAlignTimings: speechAlignTimings) {
+                    output.append(contentsOf: anchored.map {
+                        Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                    })
+                } else {
+                    output.append(Timed(
+                        start: effectiveItem.start,
+                        end: effectiveItem.end,
+                        text: effectiveItem.text,
+                        order: output.count,
+                        fragments: effectiveItem.fragments
+                    ))
+                }
+                continue
+            }
+
+            if canUseSourceAnchors,
+               let anchored = sourceAnchoredPieces(pieces, item: effectiveItem, speechAlignTimings: speechAlignTimings) {
+                output.append(contentsOf: anchored.map {
+                    Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                })
+                continue
+            }
+
+            let totalWeight = max(1, pieces.map(textWeight).reduce(0, +))
+            var emittedWeight = 0
+            for (index, piece) in pieces.enumerated() {
+                let pieceWeight = textWeight(piece)
+                let start = index == 0
+                    ? effectiveItem.start
+                    : effectiveItem.start + duration * Double(emittedWeight) / Double(totalWeight)
+                emittedWeight += pieceWeight
+                var end = index == pieces.count - 1
+                    ? effectiveItem.end
+                    : effectiveItem.start + duration * Double(emittedWeight) / Double(totalWeight)
+                if end < start { end = start }
+                output.append(Timed(
+                    start: start,
+                    end: end,
+                    text: piece,
+                    order: output.count,
+                    fragments: [Fragment(start: start, end: end, text: piece)]
+                ))
+            }
+        }
+        return collapsePunctuation ? collapsePunctuationIslands(output) : output
+    }
+
+    // 非滚动字幕：只做去重叠，不做滚动合并；但仍应用可读窗口兜底，避免原始长 cue 拖住画面。
+    guard isRolling else {
+        return makeCues(splitLongReadableCues(timed, collapsePunctuation: false, speechAlignTimings: false))
+    }
 
     for i in timed.indices {
         let t = timed[i]
         let piece = collapseSubtitleWhitespace(t.text)
-        if !hasCurrent {
-            curText = piece
-            curStart = t.start
-            curEnd = t.end
-            hasCurrent = true
-        } else {
-            curText = collapseSubtitleWhitespace(curText + " " + piece)
-            curEnd = t.end
-        }
+            if !hasCurrent {
+                curText = piece
+                curStart = t.start
+                curEnd = t.end
+                curFragments = t.fragments
+                hasCurrent = true
+            } else {
+                curText = collapseSubtitleWhitespace(curText + " " + piece)
+                curEnd = t.end
+                curFragments.append(contentsOf: t.fragments)
+            }
         let nextPiece = i + 1 < timed.count ? collapseSubtitleWhitespace(timed[i + 1].text) : nil
         let nextGap = i + 1 < timed.count ? timed[i + 1].start - curEnd : nil
         let hardLimitReached = (curEnd - curStart) >= hardDuration || curText.count >= hardCharacterBudget
@@ -439,9 +931,15 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     }
     flush()
 
-    // (d) 防误伤：合并后条数没减少则放弃合并
-    guard merged.count < timed.count else { return makeCues(timed) }
-    return makeCues(merged)
+    // (d) 防误伤：合并后条数没减少则放弃合并。
+    // (f) 可读窗口兜底：滚动字幕常把一整句拖成 10s+ 长 cue；即使语义上仍是同一句，
+    //     最终可见字幕也要拆到约 6s 以内，避免画面已经变化但字幕还停在上一大段。
+    let readable = splitLongReadableCues(
+        merged.count < timed.count ? merged : timed,
+        collapsePunctuation: true,
+        speechAlignTimings: textRepeatRatio > 0.3
+    )
+    return makeCues(readable)
 }
 
 // MARK: - LLM API 请求
@@ -1448,10 +1946,12 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
         }
         // 翻译前清洗：消除 YouTube 自动字幕的重叠滚动碎句、按句合并，减少疯狂刷新。
+        let sourceLooksLikeAutoCaption = Self.looksLikeAutoCaption(parsed)
         var cues = cleanCues(parsed)
         // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
         // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
-        if settings.smartTranslationPromptsEnabled, Self.looksLikeAutoCaption(cues) {
+        if settings.smartTranslationPromptsEnabled,
+           sourceLooksLikeAutoCaption || Self.looksLikeAutoCaption(cues) {
             cues = try await resegmentForReadability(cues, context: context)
         }
         let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
@@ -1500,17 +2000,18 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             }
         }
         for cueIndex in 0..<cues.count {
-            guard let rawChinese = merged[cueIndex + 1] else {
-                throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
-            }
-            let chinese = Self.sanitizeTranslation(rawChinese)
-            guard !chinese.isEmpty else {
+            let sourceText = cues[cueIndex].text
+            let rawChinese = merged[cueIndex + 1] ?? ""
+            let sanitizedChinese = Self.sanitizeTranslation(rawChinese)
+            let usedSourceFallback = sanitizedChinese.isEmpty
+            let chinese = usedSourceFallback ? sourceText : sanitizedChinese
+            guard !chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
             }
             switch style {
             case .bilingual:
                 // 译文在上、原文在下（烧录时原文用更小字号）
-                output[cueIndex].text = chinese + "\n" + cues[cueIndex].text
+                output[cueIndex].text = usedSourceFallback ? sourceText : chinese + "\n" + sourceText
             case .chineseOnly:
                 output[cueIndex].text = chinese
             }
@@ -1870,7 +2371,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
 
         // 多行比例：ASR 自动字幕基本每条单行；若大量条目本身就是多行排版，更像人工字幕。
         let multiline = cues.filter { $0.text.contains("\n") }.count
-        guard Double(multiline) / Double(cues.count) < 0.5 else { return false }
+        let multilineRatio = Double(multiline) / Double(cues.count)
+        guard multilineRatio < 0.5 || (cues.count >= 20 && avgDuration < 2.5) else { return false }
         return true
     }
 }
@@ -2093,4 +2595,3 @@ extension ConfiguredTranslator {
         return output
     }
 }
-

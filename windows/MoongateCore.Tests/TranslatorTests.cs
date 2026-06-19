@@ -511,6 +511,26 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Translate_PunctuationOnlyTranslation_FallsBackToSourceWithoutFailingWholeTranslation()
+    {
+        var srt = WriteSrt("punctuation.en.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "."),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "Ignition."),
+        ]);
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|。\n2|点火")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var cues = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal([".", "点火"], cues.Select(c => c.Text));
+    }
+
+    [Fact]
     public async Task Translate_JapaneseFilenamePassesSourceLanguageToChunkAndLineFallbackPrompts()
     {
         var srt = WriteSrt("video.ja.srt",
@@ -923,6 +943,15 @@ public class ConfiguredTranslatorTests : IDisposable
             i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
     }
 
+    private static List<SubtitleCue> MultilineAsrCues() =>
+        Enumerable.Range(0, 20)
+            .Select(i => new SubtitleCue(
+                i + 1,
+                SrtTools.SecondsToSrtTime(i),
+                SrtTools.SecondsToSrtTime(i + 1),
+                $"word{i} line\nnext{i} piece"))
+            .ToList();
+
     [Fact]
     public void LooksLikeAutoCaption_DetectsUnpunctuatedShortCues()
     {
@@ -941,6 +970,7 @@ public class ConfiguredTranslatorTests : IDisposable
             i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1),
             "first line\nsecond line")).ToList();
         Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(multiline));
+        Assert.True(ConfiguredTranslator.LooksLikeAutoCaption(MultilineAsrCues()));
     }
 
     [Fact]

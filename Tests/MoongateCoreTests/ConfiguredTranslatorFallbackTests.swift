@@ -47,6 +47,31 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(result.map(\.text), ["中1", "Second line.", "中3"])
     }
 
+    func testPunctuationOnlyTranslationFallsBackToSourceWithoutFailingWholeTranslation() async throws {
+        let source = try writeSRT("punctuation.en.srt", [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "."),
+            SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:04,000", text: "Ignition.")
+        ])
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(text: "1|。\n2|点火", reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.map(\.text), [".", "点火"])
+    }
+
     func testTransientChunkNetworkErrorRetriesInsideChunk() async throws {
         let source = try writeSRT("retry.en.srt", [
             SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "Hello."),
@@ -98,6 +123,14 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         }
     }
 
+    private func multilineAsrCues() -> [SubtitleCue] {
+        (0..<20).map { i in
+            SubtitleCue(index: i + 1,
+                        start: secondsToSRTTime(Double(i)),
+                        end: secondsToSRTTime(Double(i + 1)),
+                        text: "word\(i) line\nnext\(i) piece")
+        }
+    }
     func testResegmentForReadabilityRebuildsSentencesWithAlignedTime() async throws {
         // 模型把碎句断成 2 个完整句子；token 与原文一致 → 重分段成功，时间轴保留。
         let translator = ConfiguredTranslator(
@@ -154,6 +187,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                         end: secondsToSRTTime(Double($0) + 1), text: "first line\nsecond line")
         }
         XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(multiline))
+        XCTAssertTrue(ConfiguredTranslator.looksLikeAutoCaption(multilineAsrCues()))
     }
 
     func testTranslateResegmentsAsrCaptionWhenSmartEnabled() async throws {
@@ -189,6 +223,37 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(result.count, 2, "重分段后应是 2 条整句")
     }
 
+    func testTranslateResegmentsMultilineAsrCaptionWhenSmartEnabled() async throws {
+        let input = multilineAsrCues()
+        let source = try writeSRT("multiline-asr.en.srt", input)
+        let didSegment = AttemptCounter()
+        var settings = cloudSettings()
+        settings.smartTranslationPromptsEnabled = true
+        let translator = ConfiguredTranslator(
+            settings: settings,
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                if (system ?? "").contains("待断句文本") {
+                    _ = await didSegment.next()
+                    return ModelReply(text: "1|\(userContent).", reachedOutputLimit: false)
+                }
+                if (system ?? "").contains("字幕内容分析器") {
+                    return ModelReply(text: #"{"summary":"测试","preset":"general"}"#, reachedOutputLimit: false)
+                }
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source, style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+            control: nil, progress: { _ in })
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        let segmentCalls = await didSegment.value()
+        XCTAssertGreaterThan(segmentCalls, 0)
+        XCTAssertLessThan(result.count, input.count)
+    }
     func testTranslateSkipsResegmentWhenSmartDisabled() async throws {
         let source = try writeSRT("asr2.en.srt", asrCues())
         let didSegment = AttemptCounter()

@@ -1139,7 +1139,49 @@ final class TranslationSettingsTests: XCTestCase {
         ])
     }
 
-    func testCleanCuesAvoidsSoftBreakInsideAutoCaptionSentence() {
+    private func assertReadableSemanticWindows(
+        _ cleaned: [SubtitleCue],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertFalse(cleaned.isEmpty, file: file, line: line)
+        for cue in cleaned {
+            let start = try! XCTUnwrap(srtTimeToSeconds(cue.start), file: file, line: line)
+            let end = try! XCTUnwrap(srtTimeToSeconds(cue.end), file: file, line: line)
+            XCTAssertGreaterThanOrEqual(end, start, file: file, line: line)
+            XCTAssertLessThanOrEqual(end - start, 12.2, "Cue 过长：\(cue.start) --> \(cue.end)", file: file, line: line)
+        }
+        for index in 1..<cleaned.count {
+            let previousEnd = try! XCTUnwrap(srtTimeToSeconds(cleaned[index - 1].end), file: file, line: line)
+            let start = try! XCTUnwrap(srtTimeToSeconds(cleaned[index].start), file: file, line: line)
+            XCTAssertGreaterThanOrEqual(start, previousEnd, file: file, line: line)
+        }
+    }
+
+    private func assertNoBadSemanticBoundaries(
+        _ cleaned: [SubtitleCue],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let weakEnds: Set<String> = ["a", "an", "the", "to", "of", "and", "or", "but", "that", "which", "what", "is", "are", "in"]
+        let weakStarts: Set<String> = ["and", "or", "but", "that", "which", "who", "whose", "when", "where", "why", "how", "to", "of", "for", "with", "in"]
+        func words(_ text: String) -> [String] {
+            text.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+        }
+        for index in cleaned.indices {
+            let tokens = words(cleaned[index].text)
+            if index < cleaned.count - 1, let last = tokens.last {
+                XCTAssertFalse(weakEnds.contains(last), "Bad semantic tail: \(cleaned[index].text)", file: file, line: line)
+            }
+            if index > 0, let first = tokens.first {
+                XCTAssertFalse(weakStarts.contains(first), "Bad semantic head: \(cleaned[index].text)", file: file, line: line)
+            }
+        }
+    }
+
+    func testCleanCuesContinuationSentenceKeepsTextButSplitsReadableWindows() {
         let input = [
             SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:04,000", text: "we know it what is the vision for what"),
             SubtitleCue(index: 2, start: "00:00:03,500", end: "00:00:08,000", text: "you see coming next we asked ourselves"),
@@ -1149,11 +1191,287 @@ final class TranslationSettingsTests: XCTestCase {
 
         let cleaned = cleanCues(input)
 
-        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:00:00,000")
+        XCTAssertEqual(cleaned.last?.end, "00:00:15,000")
         XCTAssertEqual(
-            cleaned[0].text,
+            cleaned.map(\.text).joined(separator: " "),
             "we know it what is the vision for what you see coming next we asked ourselves if it can do this how far can it go how do we get from the robots we have now?"
         )
+        for cue in cleaned {
+            let start = try! XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try! XCTUnwrap(srtTimeToSeconds(cue.end))
+            XCTAssertLessThanOrEqual(end - start, 12.2, "Cue 过长：\(cue.start) --> \(cue.end)")
+        }
+        assertNoBadSemanticBoundaries(cleaned)
+    }
+
+    func testCleanCuesSplitsLongRollingCaptionWithoutWeakSemanticBoundaries() {
+        let raw = """
+        1
+        00:00:00,080 --> 00:00:02,000
+        this is the
+
+        2
+        00:00:02,000 --> 00:00:02,010
+        this is the
+
+
+        3
+        00:00:02,010 --> 00:00:05,000
+        this is the
+        story of the
+
+        4
+        00:00:05,000 --> 00:00:05,010
+        story of the
+
+
+        5
+        00:00:05,010 --> 00:00:08,000
+        story of the
+        people who
+
+        6
+        00:00:08,000 --> 00:00:08,010
+        people who
+
+
+        7
+        00:00:08,010 --> 00:00:12,000
+        people who
+        wanted to learn how to speak English.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.first?.start, "00:00:00,080")
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(cleaned.last?.end ?? "")),
+            try XCTUnwrap(srtTimeToSeconds("00:00:12,200"))
+        )
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(separator: " "),
+            "this is the story of the people who wanted to learn how to speak English."
+        )
+        assertReadableSemanticWindows(cleaned)
+        assertNoBadSemanticBoundaries(cleaned)
+    }
+
+    func testCleanCuesStarshipSnippetKeepsReadableSemanticBoundaries() throws {
+        let raw = """
+        1
+        00:02:28,239 --> 00:02:32,849
+        We are in Starfactory and this is an
+
+        2
+        00:02:32,849 --> 00:02:32,859
+        We are in Starfactory and this is an
+
+
+        3
+        00:02:32,859 --> 00:02:37,460
+        We are in Starfactory and this is an
+        almost 1 million square ft facility that we've built
+
+        4
+        00:02:37,460 --> 00:02:37,470
+        almost 1 million square ft facility that we've built
+
+
+        5
+        00:02:37,470 --> 00:02:42,070
+        almost 1 million square ft facility that we've built
+        to enable that production of both ship and booster.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertLessThan(cleaned.count, 3, "不应把一个完整意群硬切成三段残句")
+        XCTAssertEqual(cleaned.first?.start, "00:02:28,239")
+        let latestEnd = try XCTUnwrap(srtTimeToSeconds(cleaned.map(\.end).max() ?? ""))
+        let earliestStart = try XCTUnwrap(srtTimeToSeconds(cleaned.map(\.start).min() ?? ""))
+        XCTAssertLessThanOrEqual(latestEnd - earliestStart, 14.0)
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(separator: " "),
+            "We are in Starfactory and this is an almost 1 million square ft facility that we've built to enable that production of both ship and booster."
+        )
+        assertReadableSemanticWindows(cleaned)
+        assertNoBadSemanticBoundaries(cleaned)
+        XCTAssertFalse(cleaned.contains { $0.text == "." || $0.text == "。" || $0.text == "-" || $0.text == "—" })
+    }
+
+    func testCleanCuesShortLongCueIsCappedWithoutCharacterSplitting() {
+        let raw = """
+        1
+        00:14:21,040 --> 00:14:46,215
+        Copy.
+
+        2
+        00:15:06,800 --> 00:15:21,590
+        What heat?
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.map(\.text), ["Copy.", "What heat?"])
+        assertReadableSemanticWindows(cleaned)
+        XCTAssertEqual(cleaned.first?.start, "00:14:21,040")
+        XCTAssertEqual(cleaned.first?.end, "00:14:23,040")
+        XCTAssertEqual(cleaned.last?.start, "00:15:06,800")
+        XCTAssertEqual(cleaned.last?.end, "00:15:08,800")
+    }
+
+    func testCleanCuesRollingTailUsesSpeechAlignedWindowInsteadOfSourceDrag() {
+        let raw = """
+        1
+        00:05:36,240 --> 00:05:39,350
+        It's because we need that size to do the
+
+        2
+        00:05:39,350 --> 00:05:39,360
+        It's because we need that size to do the
+
+        3
+        00:05:39,360 --> 00:06:19,270
+        It's because we need that size to do the
+        things we dream of doing with it.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.first?.start, "00:05:36,240")
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(cleaned.last?.end ?? "")),
+            try XCTUnwrap(srtTimeToSeconds("00:05:45,240")),
+            "滚动字幕的异常源拖尾不应把完整短句拖到几十秒"
+        )
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(separator: " "),
+            "It's because we need that size to do the things we dream of doing with it."
+        )
+        XCTAssertFalse(cleaned.contains { $0.text == "C" || $0.text == "op" || $0.text == "y." })
+        assertReadableSemanticWindows(cleaned)
+        assertNoBadSemanticBoundaries(cleaned)
+    }
+
+    func testCleanCuesRollingSplitsStayAnchoredToSourceTiming() throws {
+        let questionRaw = """
+        1
+        00:00:43,120 --> 00:00:44,630
+        All right, test all B19 operators. This
+        final go now go pull for today's
+
+        2
+        00:00:44,630 --> 00:00:44,640
+        final go now go pull for today's
+
+        3
+        00:00:44,640 --> 00:00:46,869
+        final go now go pull for today's
+        operations. Our main objective today is
+
+        4
+        00:00:46,869 --> 00:00:46,879
+        operations. Our main objective today is
+
+        5
+        00:00:46,879 --> 00:00:48,950
+        operations. Our main objective today is
+        a 10 engine static fire.
+
+        6
+        00:00:48,950 --> 00:00:48,960
+        a 10 engine static fire.
+
+        7
+        00:00:48,960 --> 00:00:51,590
+        a 10 engine static fire.
+        >> Why 10 engines instead of all 33? This
+
+        8
+        00:00:51,590 --> 00:00:51,600
+        >> Why 10 engines instead of all 33? This
+
+        9
+        00:00:51,600 --> 00:00:53,750
+        >> Why 10 engines instead of all 33? This
+        is the first V3 booster down at the pad
+        """
+
+        let cleanedQuestion = cleanCues(parseSRT(questionRaw))
+        guard let whyCue = cleanedQuestion.first(where: { $0.text == "Why 10 engines instead of all 33?" }) else {
+            return XCTFail("Expected source-anchored question cue, got: \(cleanedQuestion.map(\.text))")
+        }
+        let whyStart = try XCTUnwrap(srtTimeToSeconds(whyCue.start))
+        let whyEnd = try XCTUnwrap(srtTimeToSeconds(whyCue.end))
+        XCTAssertGreaterThanOrEqual(
+            whyEnd - whyStart,
+            2.2
+        )
+        XCTAssertGreaterThanOrEqual(
+            whyEnd,
+            try XCTUnwrap(srtTimeToSeconds("00:00:51,000")),
+            "The question should stay visible until its source window has mostly completed."
+        )
+        if let firstV3Cue = cleanedQuestion.first(where: { $0.text.hasPrefix("This is the first V3") }) {
+            XCTAssertGreaterThanOrEqual(
+                try XCTUnwrap(srtTimeToSeconds(firstV3Cue.start)),
+                try XCTUnwrap(srtTimeToSeconds(whyCue.end)),
+                "The next sentence should not be pulled before the question finishes."
+            )
+        }
+
+        let moonRaw = """
+        1
+        00:05:03,520 --> 00:05:05,430
+        foundational design of Starship booster
+        in the pad. That's going to give us the
+
+        2
+        00:05:05,430 --> 00:05:05,440
+        in the pad. That's going to give us the
+
+        3
+        00:05:05,440 --> 00:05:07,430
+        in the pad. That's going to give us the
+        new capabilities we need to do the
+
+        4
+        00:05:07,430 --> 00:05:07,440
+        new capabilities we need to do the
+
+        5
+        00:05:07,440 --> 00:05:09,510
+        new capabilities we need to do the
+        missions in front of us. It'll be the
+
+        6
+        00:05:09,510 --> 00:05:09,520
+        missions in front of us. It'll be the
+
+        7
+        00:05:09,520 --> 00:05:11,670
+        missions in front of us. It'll be the
+        one that puts humans back on the moon.
+        """
+
+        let cleanedMoon = cleanCues(parseSRT(moonRaw))
+        guard let moonCue = cleanedMoon.first(where: { $0.text == "It'll be the one that puts humans back on the moon." }) else {
+            return XCTFail("Expected complete moon sentence, got: \(cleanedMoon.map(\.text))")
+        }
+        let moonStart = try XCTUnwrap(srtTimeToSeconds(moonCue.start))
+        let moonExpectedStart = try XCTUnwrap(srtTimeToSeconds("00:05:09,520"))
+        XCTAssertLessThanOrEqual(
+            abs(moonStart - moonExpectedStart),
+            0.25
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(moonCue.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:05:11,400"))
+        )
+        XCTAssertFalse(cleanedMoon.contains { $0.text == "It'll be the one that puts" })
+        XCTAssertFalse(cleanedMoon.contains { $0.text == "humans back on the moon." })
     }
 
     func testCloudTranslationRetriesMissingLinesBySplittingLongChunk() async throws {

@@ -115,6 +115,131 @@ public class CleanCuesTests
     private static SubtitleCue Cue(int index, string start, string end, string text) =>
         new(index, start, end, text);
 
+    private static readonly HashSet<string> WeakBoundaryEnds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "the", "to", "of", "and", "or", "but", "that", "which", "what", "is", "are", "in",
+    };
+
+    private static readonly HashSet<string> WeakBoundaryStarts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "or", "but", "that", "which", "who", "whose", "when", "where", "why", "how",
+        "to", "of", "for", "with", "in",
+    };
+
+    private static string? FirstWord(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => new string(word.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray()))
+            .FirstOrDefault(word => word.Length > 0);
+
+    private static string? LastWord(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Reverse()
+            .Select(word => new string(word.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray()))
+            .FirstOrDefault(word => word.Length > 0);
+
+    private static void AssertNoBadSemanticBoundaries(IReadOnlyList<SubtitleCue> cleaned)
+    {
+        for (var i = 0; i < cleaned.Count; i++)
+        {
+            var first = FirstWord(cleaned[i].Text);
+            var last = LastWord(cleaned[i].Text);
+            if (i < cleaned.Count - 1 && last is not null)
+            {
+                Assert.False(WeakBoundaryEnds.Contains(last), $"Bad semantic tail: {cleaned[i].Text}");
+            }
+            if (i > 0 && first is not null)
+            {
+                Assert.False(WeakBoundaryStarts.Contains(first), $"Bad semantic head: {cleaned[i].Text}");
+            }
+        }
+    }
+
+    private static void AssertReadableWindows(
+        IReadOnlyList<SubtitleCue> cleaned,
+        string expectedText,
+        string expectedStart,
+        string expectedEnd)
+    {
+        Assert.NotEmpty(cleaned);
+        Assert.Equal(expectedStart, cleaned[0].Start);
+        Assert.Equal(expectedEnd, cleaned[^1].End);
+        Assert.Equal(expectedText, string.Join(' ', cleaned.Select(c => c.Text)));
+        Assert.All(cleaned, cue =>
+        {
+            var start = SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+            var end = SrtTools.SrtTimeToSeconds(cue.End)!.Value;
+            Assert.True(end >= start);
+            Assert.True(end - start <= 12.2, $"Cue is too long: {cue.Start} --> {cue.End}");
+        });
+        for (var i = 1; i < cleaned.Count; i++)
+        {
+            Assert.True(
+                SrtTools.SrtTimeToSeconds(cleaned[i].Start) >= SrtTools.SrtTimeToSeconds(cleaned[i - 1].End),
+                "Readable splits must keep the timeline monotonic.");
+        }
+        AssertNoBadSemanticBoundaries(cleaned);
+    }
+
+    private const string LongStyleBSample =
+        "1\n" +
+        "00:00:00,080 --> 00:00:02,000\n" +
+        "this is the\n" +
+        "\n" +
+        "2\n" +
+        "00:00:02,000 --> 00:00:02,010\n" +
+        "this is the\n" +
+        " \n" +
+        "\n" +
+        "3\n" +
+        "00:00:02,010 --> 00:00:05,000\n" +
+        "this is the\n" +
+        "story of the\n" +
+        "\n" +
+        "4\n" +
+        "00:00:05,000 --> 00:00:05,010\n" +
+        "story of the\n" +
+        " \n" +
+        "\n" +
+        "5\n" +
+        "00:00:05,010 --> 00:00:08,000\n" +
+        "story of the\n" +
+        "people who\n" +
+        "\n" +
+        "6\n" +
+        "00:00:08,000 --> 00:00:08,010\n" +
+        "people who\n" +
+        " \n" +
+        "\n" +
+        "7\n" +
+        "00:00:08,010 --> 00:00:12,000\n" +
+        "people who\n" +
+        "wanted to learn how to speak English.\n";
+
+    private const string StarshipStyleBSample =
+        "1\n" +
+        "00:02:28,239 --> 00:02:32,849\n" +
+        "We are in Starfactory and this is an\n" +
+        "\n" +
+        "2\n" +
+        "00:02:32,849 --> 00:02:32,859\n" +
+        "We are in Starfactory and this is an\n" +
+        " \n" +
+        "\n" +
+        "3\n" +
+        "00:02:32,859 --> 00:02:37,460\n" +
+        "We are in Starfactory and this is an\n" +
+        "almost 1 million square ft facility that we've built\n" +
+        "\n" +
+        "4\n" +
+        "00:02:37,460 --> 00:02:37,470\n" +
+        "almost 1 million square ft facility that we've built\n" +
+        " \n" +
+        "\n" +
+        "5\n" +
+        "00:02:37,470 --> 00:02:42,070\n" +
+        "almost 1 million square ft facility that we've built\n" +
+        "to enable that production of both ship and booster.\n";
+
     /// <summary>样式 A：时间戳大面积重叠的碎句 → 去重叠 + 按句合并。</summary>
     [Fact]
     public void CleanCues_StyleA_OverlappingFragments_MergedIntoSentence()
@@ -126,10 +251,11 @@ public class CleanCuesTests
             Cue(3, "00:00:03,500", "00:00:08,000", "we ever wrote."),
         };
         var cleaned = SrtTools.CleanCues(input);
-        var cue = Assert.Single(cleaned);
-        Assert.Equal("so this is the first sentence we ever wrote.", cue.Text);
-        Assert.Equal("00:00:01,000", cue.Start);
-        Assert.Equal("00:00:08,000", cue.End);
+        AssertReadableWindows(
+            cleaned,
+            "so this is the first sentence we ever wrote.",
+            "00:00:01,000",
+            "00:00:08,000");
     }
 
     /// <summary>样式 B：文本重复 + 时间戳相接 → 行级去重、丢纯过渡条、按句合并。</summary>
@@ -138,12 +264,205 @@ public class CleanCuesTests
     {
         var parsed = SrtTools.ParseSrt(SrtParsingTests.StyleBSample);
         var cleaned = SrtTools.CleanCues(parsed);
-        var cue = Assert.Single(cleaned);
-        Assert.Equal(
+        AssertReadableWindows(
+            cleaned,
             "hey everyone welcome back to the channel today we are looking at the new device it is really impressive.",
-            cue.Text);
-        Assert.Equal("00:00:00,080", cue.Start);
-        Assert.Equal("00:00:07,160", cue.End);
+            "00:00:00,080",
+            "00:00:07,160");
+    }
+
+    [Fact]
+    public void CleanCues_StyleBLongNativeSpeedCue_SplitsIntoReadableWindows()
+    {
+        var parsed = SrtTools.ParseSrt(LongStyleBSample);
+        var cleaned = SrtTools.CleanCues(parsed);
+
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(cleaned[^1].End)!.Value <= SrtTools.SrtTimeToSeconds("00:00:12,200")!.Value,
+            "Long rolling captions should stay within the emergency readable window without ending early.");
+        AssertReadableWindows(
+            cleaned,
+            "this is the story of the people who wanted to learn how to speak English.",
+            "00:00:00,080",
+            cleaned[^1].End);
+    }
+
+    [Fact]
+    public void CleanCues_StarshipSnippetKeepsReadableSemanticBoundaries()
+    {
+        var parsed = SrtTools.ParseSrt(StarshipStyleBSample);
+        var cleaned = SrtTools.CleanCues(parsed);
+
+        Assert.True(cleaned.Count < 3, "A complete thought should not be hard-split into residual fragments.");
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(cleaned[^1].End)!.Value - SrtTools.SrtTimeToSeconds(cleaned[0].Start)!.Value <= 14.0,
+            "Starship rolling captions should keep source coverage without returning to a dragged long window.");
+        AssertReadableWindows(
+            cleaned,
+            "We are in Starfactory and this is an almost 1 million square ft facility that we've built to enable that production of both ship and booster.",
+            "00:02:28,239",
+            cleaned[^1].End);
+        Assert.DoesNotContain(cleaned, cue => cue.Text is "." or "。" or "-" or "—");
+    }
+
+    [Fact]
+    public void CleanCues_ShortLongCueIsCappedWithoutCharacterSplitting()
+    {
+        var parsed = SrtTools.ParseSrt(
+            "1\n" +
+            "00:14:21,040 --> 00:14:46,215\n" +
+            "Copy.\n" +
+            "\n" +
+            "2\n" +
+            "00:15:06,800 --> 00:15:21,590\n" +
+            "What heat?\n");
+
+        var cleaned = SrtTools.CleanCues(parsed);
+
+        Assert.Equal(["Copy.", "What heat?"], cleaned.Select(c => c.Text).ToArray());
+        Assert.Equal("00:14:21,040", cleaned[0].Start);
+        Assert.Equal("00:14:23,040", cleaned[0].End);
+        Assert.Equal("00:15:06,800", cleaned[1].Start);
+        Assert.Equal("00:15:08,800", cleaned[1].End);
+        AssertReadableWindows(cleaned, "Copy. What heat?", "00:14:21,040", "00:15:08,800");
+    }
+
+    [Fact]
+    public void CleanCues_RollingTailUsesSpeechAlignedWindowInsteadOfSourceDrag()
+    {
+        var parsed = SrtTools.ParseSrt(
+            "1\n" +
+            "00:05:36,240 --> 00:05:39,350\n" +
+            "It's because we need that size to do the\n" +
+            "\n" +
+            "2\n" +
+            "00:05:39,350 --> 00:05:39,360\n" +
+            "It's because we need that size to do the\n" +
+            "\n" +
+            "3\n" +
+            "00:05:39,360 --> 00:06:19,270\n" +
+            "It's because we need that size to do the\n" +
+            "things we dream of doing with it.\n");
+
+        var cleaned = SrtTools.CleanCues(parsed);
+
+        Assert.Equal("00:05:36,240", cleaned[0].Start);
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(cleaned[^1].End)!.Value <= SrtTools.SrtTimeToSeconds("00:05:45,240")!.Value,
+            "Rolling source drag should not keep a short sentence visible for tens of seconds.");
+        Assert.Equal(
+            "It's because we need that size to do the things we dream of doing with it.",
+            string.Join(' ', cleaned.Select(c => c.Text)));
+        Assert.DoesNotContain(cleaned, cue => cue.Text is "C" or "op" or "y.");
+        AssertReadableWindows(
+            cleaned,
+            "It's because we need that size to do the things we dream of doing with it.",
+            "00:05:36,240",
+            cleaned[^1].End);
+    }
+
+    [Fact]
+    public void CleanCues_RollingSplitsStayAnchoredToSourceTiming()
+    {
+        var cleanedQuestion = SrtTools.CleanCues(SrtTools.ParseSrt(
+            "1\n" +
+            "00:00:43,120 --> 00:00:44,630\n" +
+            "All right, test all B19 operators. This\n" +
+            "final go now go pull for today's\n" +
+            "\n" +
+            "2\n" +
+            "00:00:44,630 --> 00:00:44,640\n" +
+            "final go now go pull for today's\n" +
+            "\n" +
+            "3\n" +
+            "00:00:44,640 --> 00:00:46,869\n" +
+            "final go now go pull for today's\n" +
+            "operations. Our main objective today is\n" +
+            "\n" +
+            "4\n" +
+            "00:00:46,869 --> 00:00:46,879\n" +
+            "operations. Our main objective today is\n" +
+            "\n" +
+            "5\n" +
+            "00:00:46,879 --> 00:00:48,950\n" +
+            "operations. Our main objective today is\n" +
+            "a 10 engine static fire.\n" +
+            "\n" +
+            "6\n" +
+            "00:00:48,950 --> 00:00:48,960\n" +
+            "a 10 engine static fire.\n" +
+            "\n" +
+            "7\n" +
+            "00:00:48,960 --> 00:00:51,590\n" +
+            "a 10 engine static fire.\n" +
+            ">> Why 10 engines instead of all 33? This\n" +
+            "\n" +
+            "8\n" +
+            "00:00:51,590 --> 00:00:51,600\n" +
+            ">> Why 10 engines instead of all 33? This\n" +
+            "\n" +
+            "9\n" +
+            "00:00:51,600 --> 00:00:53,750\n" +
+            ">> Why 10 engines instead of all 33? This\n" +
+            "is the first V3 booster down at the pad\n"));
+
+        var whyCue = Assert.Single(cleanedQuestion, c => c.Text == "Why 10 engines instead of all 33?");
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(whyCue.End)!.Value - SrtTools.SrtTimeToSeconds(whyCue.Start)!.Value >= 2.2,
+            "The question should not be compressed into a blink-length cue.");
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(whyCue.End)!.Value >= SrtTools.SrtTimeToSeconds("00:00:51,000")!.Value,
+            "The question should stay visible until its source window has mostly completed.");
+        var firstV3Cue = cleanedQuestion.FirstOrDefault(c => c.Text.StartsWith("This is the first V3", StringComparison.Ordinal));
+        if (firstV3Cue is not null)
+        {
+            Assert.True(
+                SrtTools.SrtTimeToSeconds(firstV3Cue.Start)!.Value >= SrtTools.SrtTimeToSeconds(whyCue.End)!.Value,
+                "The next sentence should not be pulled before the question finishes.");
+        }
+
+        var cleanedMoon = SrtTools.CleanCues(SrtTools.ParseSrt(
+            "1\n" +
+            "00:05:03,520 --> 00:05:05,430\n" +
+            "foundational design of Starship booster\n" +
+            "in the pad. That's going to give us the\n" +
+            "\n" +
+            "2\n" +
+            "00:05:05,430 --> 00:05:05,440\n" +
+            "in the pad. That's going to give us the\n" +
+            "\n" +
+            "3\n" +
+            "00:05:05,440 --> 00:05:07,430\n" +
+            "in the pad. That's going to give us the\n" +
+            "new capabilities we need to do the\n" +
+            "\n" +
+            "4\n" +
+            "00:05:07,430 --> 00:05:07,440\n" +
+            "new capabilities we need to do the\n" +
+            "\n" +
+            "5\n" +
+            "00:05:07,440 --> 00:05:09,510\n" +
+            "new capabilities we need to do the\n" +
+            "missions in front of us. It'll be the\n" +
+            "\n" +
+            "6\n" +
+            "00:05:09,510 --> 00:05:09,520\n" +
+            "missions in front of us. It'll be the\n" +
+            "\n" +
+            "7\n" +
+            "00:05:09,520 --> 00:05:11,670\n" +
+            "missions in front of us. It'll be the\n" +
+            "one that puts humans back on the moon.\n"));
+
+        var moonCue = Assert.Single(cleanedMoon, c => c.Text == "It'll be the one that puts humans back on the moon.");
+        Assert.True(
+            Math.Abs(SrtTools.SrtTimeToSeconds(moonCue.Start)!.Value - SrtTools.SrtTimeToSeconds("00:05:09,520")!.Value) <= 0.25,
+            "The moon sentence should start near the source window where the full line appears.");
+        Assert.True(
+            SrtTools.SrtTimeToSeconds(moonCue.End)!.Value >= SrtTools.SrtTimeToSeconds("00:05:11,400")!.Value,
+            "The moon sentence should remain visible through the source speech window.");
+        Assert.DoesNotContain(cleanedMoon, c => c.Text == "It'll be the one that puts");
+        Assert.DoesNotContain(cleanedMoon, c => c.Text == "humans back on the moon.");
     }
 
     [Fact]
@@ -257,7 +576,7 @@ public class CleanCuesTests
     }
 
     [Fact]
-    public void CleanCues_AvoidsSoftBreakInsideAutoCaptionSentence()
+    public void CleanCues_ContinuationSentenceKeepsTextButSplitsReadableWindows()
     {
         var input = new List<SubtitleCue>
         {
@@ -269,10 +588,12 @@ public class CleanCuesTests
 
         var cleaned = SrtTools.CleanCues(input);
 
-        var cue = Assert.Single(cleaned);
-        Assert.Equal(
+        Assert.True(cleaned.Count > 1);
+        AssertReadableWindows(
+            cleaned,
             "we know it what is the vision for what you see coming next we asked ourselves if it can do this how far can it go how do we get from the robots we have now?",
-            cue.Text);
+            "00:00:00,000",
+            "00:00:15,000");
     }
 
     /// <summary>正常字幕 1:1 不变（不滚动 → 不合并、不改时间）。</summary>
@@ -307,11 +628,11 @@ public class CleanCuesTests
             Cue(3, "00:00:06,500", "00:00:09,000", "epsilon zeta"),
         };
         var cleaned = SrtTools.CleanCues(input);
-        Assert.Equal(2, cleaned.Count);
-        Assert.Equal("alpha beta gamma delta", cleaned[0].Text);
-        Assert.Equal("00:00:00,000", cleaned[0].Start);
-        Assert.Equal("00:00:06,500", cleaned[0].End);
-        Assert.Equal("epsilon zeta", cleaned[1].Text);
+        AssertReadableWindows(
+            cleaned,
+            "alpha beta gamma delta epsilon zeta",
+            "00:00:00,000",
+            "00:00:08,500");
     }
 
     /// <summary>句合并断点：累积 ≥84 字符也会断句。</summary>
