@@ -1,9 +1,13 @@
 .build/
+.build-codex/
 .swiftpm/
 sparkle-private-key*
 .DS_Store
+__pycache__/
+*.py[cod]
 android/**/build/
 artifacts/ios-simulator-smoke/
+artifacts/subtitle_timing_eval/
 *.xcodeproj
 !ios/MoongateiOSApp.xcodeproj/
 !ios/MoongateiOSApp.xcodeproj/**

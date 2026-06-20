@@ -7,7 +7,7 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
-VERSION="0.7.5"
+VERSION="0.7.6"
 OUT="${1:-$HOME/Downloads/Moongate-Windows-Setup-v$VERSION.exe}"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1

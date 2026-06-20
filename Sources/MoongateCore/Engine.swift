@@ -711,8 +711,8 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     }
 
     /// 只取字幕文本（不下载视频），供 AI 内容总结使用。最佳努力：失败/无字幕返回 nil。
-    /// yt-dlp --skip-download --write-subs --write-auto-subs --convert-subs srt 到临时目录，
-    /// 再用 parseSRT + cleanCues 提纯成纯文本。
+    /// yt-dlp --skip-download --write-subs --write-auto-subs 到临时目录，优先保留 VTT word timing，
+    /// 再用 parseSubtitleCues + cleanCues 提纯成纯文本。
     public func fetchSubtitleText(
         url: String,
         preferredLanguages: [String],
@@ -737,7 +737,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         var args = [
             "--skip-download", "--no-playlist", "--ffmpeg-location", ffmpegDir,
             "--write-subs", "--write-auto-subs", "--sub-langs", langArg,
-            "--convert-subs", "srt",
+            "--sub-format", "vtt/best",
             "-o", tempDir.appendingPathComponent("%(id)s.%(ext)s").path,
         ]
         args += Self.systemProxyArguments()
@@ -748,12 +748,12 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         if Task.isCancelled { throw MoongateError.cancelled }
         guard output != nil else { return nil }
 
-        // 收集临时目录里的 .srt，按语言偏好挑一个，转成纯文本。
+        // 收集临时目录里的字幕，按语言偏好挑一个，转成纯文本。
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: tempDir, includingPropertiesForKeys: nil
         ) else { return nil }
-        let srtFiles = files.filter { $0.pathExtension.lowercased() == "srt" }
-        guard !srtFiles.isEmpty else { return nil }
+        let subtitleFiles = files.filter { Self.subtitleExtensions.contains($0.pathExtension.lowercased()) }
+        guard !subtitleFiles.isEmpty else { return nil }
 
         func score(_ file: URL) -> Int {
             guard let code = Self.langCode(ofSubtitle: file) else { return langs.count }
@@ -762,10 +762,10 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             }
             return langs.count
         }
-        let chosen = srtFiles.min { score($0) < score($1) } ?? srtFiles[0]
+        let chosen = subtitleFiles.min { score($0) < score($1) } ?? subtitleFiles[0]
 
         guard let raw = try? String(contentsOf: chosen, encoding: .utf8) else { return nil }
-        let cues = cleanCues(parseSRT(raw))
+        let cues = cleanCues(parseSubtitleCues(raw, fileName: chosen.lastPathComponent))
         guard !cues.isEmpty else { return nil }
         let text = cues.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1138,7 +1138,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             args += ["--sub-langs", allSubLangs.joined(separator: ",")]
             if !request.subtitleLangs.isEmpty { args.append("--write-subs") }
             if !request.autoSubtitleLangs.isEmpty { args.append("--write-auto-subs") }
-            args += ["--convert-subs", "srt"]
+            if request.autoSubtitleLangs.isEmpty {
+                args += ["--convert-subs", "srt"]
+            } else {
+                args += ["--sub-format", "vtt/best"]
+            }
         }
         // --print 默认隐含 simulate/quiet，必须配 --no-simulate / --no-quiet 抵消。
         args += ["--print", "after_move:filepath", "--no-simulate", "--no-quiet"]
@@ -1242,7 +1246,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             }
             if let videoFile {
                 let presentLangs = Set(files
-                    .filter { $0.pathExtension.lowercased() == "srt" }
+                    .filter { Self.subtitleExtensions.contains($0.pathExtension.lowercased()) }
                     .compactMap { Self.langCode(ofSubtitle: $0) })
                 let missing = allSubLangs.filter { !presentLangs.contains($0.lowercased()) }
                 if !missing.isEmpty {

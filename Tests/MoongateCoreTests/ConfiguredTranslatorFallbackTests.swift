@@ -272,7 +272,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
         let segmentCalls = await didSegment.value()
         XCTAssertEqual(segmentCalls, 0, "smart 关 → 不触发重分段")
-        XCTAssertEqual(result.count, 8, "未重分段，保留原 8 条")
+        XCTAssertEqual(result.count, cleanCues(asrCues()).count, "smart 关 → 只走普通清洗，不走 LLM 重分段")
     }
 
     private func cloudSettings() -> AppSettings {

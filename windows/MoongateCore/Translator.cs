@@ -13,9 +13,19 @@ public static partial class SrtTools
 {
     private const double NormalReadableCueSeconds = 9.0;
     private const double EmergencyReadableCueSeconds = 12.0;
+    private const double HardDurationSeconds = 18.0;
 
     [GeneratedRegex(@"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})")]
     private static partial Regex TimeLineRegex();
+
+    [GeneratedRegex(@"\s*((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})")]
+    private static partial Regex VttTimeLineRegex();
+
+    [GeneratedRegex(@"<((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})>")]
+    private static partial Regex VttInlineTimeRegex();
+
+    [GeneratedRegex(@"<[^>]+>")]
+    private static partial Regex VttTagRegex();
 
     // 圆括号类音效/旁注：(...) 与全角（...）。只在内容命中词表时删，保留对话括号（如"(important note)"）。
     [GeneratedRegex(@"[\(（]\s*([^\)）]{1,48})\s*[\)）]", RegexOptions.IgnoreCase)]
@@ -36,15 +46,14 @@ public static partial class SrtTools
     [GeneratedRegex(@"(?:^|\s)[>＞]{2,}\s*")]
     private static partial Regex SpeakerChangeMarkerRegex();
 
-    [GeneratedRegex(@"[\p{L}\p{Nd}]+")]
-    private static partial Regex WordTokenRegex();
-
     private static readonly HashSet<string> NonSpeechMarkerTerms = new(StringComparer.OrdinalIgnoreCase)
     {
         "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
         "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
         "音乐", "音樂", "背景音乐", "背景音樂", "歌声", "歌聲",
         "applause", "applauding", "clapping", "claps", "applausecontinues", "clappingcontinues",
+        "acclamation", "acclamations", "applaudissement", "applaudissements",
+        "aplauso", "aplausos", "applauso", "applausi",
         "掌声", "掌聲", "掌声继续", "掌聲繼續", "鼓掌", "鼓掌声", "鼓掌聲", "拍手", "拍手声", "拍手聲",
         "laughter", "laugh", "laughs", "laughing", "chuckle", "chuckles", "chuckling", "giggle",
         "giggles", "giggling", "snicker", "snickers", "laughingcontinues",
@@ -120,6 +129,219 @@ public static partial class SrtTools
         return cues;
     }
 
+    /// <summary>
+    /// 解析 WebVTT 文本为字幕条。YouTube 自动字幕常在 VTT 中保留 &lt;00:00:00.000&gt;
+    /// 词级时间戳；这里把它们转成 SourceFragments，供清洗器做真实语音边界对齐。
+    /// </summary>
+    public static List<SubtitleCue> ParseVtt(string raw)
+    {
+        var text = raw;
+        if (text.StartsWith('\uFEFF')) text = text[1..];
+        var lines = text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+
+        var anchors = new List<(int LineIndex, double Start, double End)>();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var timing = ParseVttTimeLine(lines[i]);
+            if (timing is null) continue;
+            anchors.Add((i, timing.Value.Start, timing.Value.End));
+        }
+
+        var cues = new List<SubtitleCue>();
+        var previousVisible = "";
+        for (var anchorIndex = 0; anchorIndex < anchors.Count; anchorIndex++)
+        {
+            var anchor = anchors[anchorIndex];
+            var textStart = anchor.LineIndex + 1;
+            var textEnd = anchorIndex + 1 < anchors.Count ? anchors[anchorIndex + 1].LineIndex : lines.Length;
+            if (textStart >= textEnd) continue;
+            var bodyLines = lines[textStart..textEnd];
+            var parsed = ParseVttCueBody(bodyLines, anchor.Start, Math.Max(anchor.End, anchor.Start), previousVisible);
+            if (parsed is null) continue;
+
+            cues.Add(new SubtitleCue(
+                cues.Count + 1,
+                SecondsToSrtTime(anchor.Start),
+                SecondsToSrtTime(Math.Max(anchor.End, anchor.Start)),
+                parsed.Value.Text,
+                parsed.Value.Fragments));
+            previousVisible = parsed.Value.Text;
+        }
+        return cues;
+    }
+
+    private static (double Start, double End)? ParseVttTimeLine(string line)
+    {
+        var match = VttTimeLineRegex().Match(line);
+        if (!match.Success) return null;
+        var start = VttTimeToSeconds(match.Groups[1].Value);
+        var end = VttTimeToSeconds(match.Groups[2].Value);
+        return start is null || end is null ? null : (start.Value, end.Value);
+    }
+
+    private static double? VttTimeToSeconds(string raw)
+    {
+        var parts = raw.Replace(',', '.').Split(':');
+        if (parts.Length == 2)
+        {
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)) return null;
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)) return null;
+            return minutes * 60 + seconds;
+        }
+        if (parts.Length == 3)
+        {
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var hours)) return null;
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)) return null;
+            if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)) return null;
+            return hours * 3600 + minutes * 60 + seconds;
+        }
+        return null;
+    }
+
+    private static (string Text, List<SubtitleCueSourceFragment> Fragments)? ParseVttCueBody(
+        IReadOnlyList<string> bodyLines,
+        double cueStart,
+        double cueEnd,
+        string previousVisible)
+    {
+        var visibleLines = bodyLines
+            .Select(StripVttMarkup)
+            .Where(line => line.Length > 0)
+            .ToList();
+        if (visibleLines.Count == 0) return null;
+        var visibleText = string.Join('\n', visibleLines);
+
+        var body = string.Join('\n', bodyLines);
+        var matches = VttInlineTimeRegex().Matches(body);
+        if (matches.Count == 0)
+        {
+            var timingText = RemoveVttRollingPrefix(visibleText, previousVisible);
+            if (timingText.Length == 0) return (visibleText, []);
+            var tokens = timingText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var shouldCapNoInlineHold = timingText != visibleText
+                && cueEnd - cueStart > SubtitleTimingPlanner.VttUntimedLongCueSeconds;
+            var cappedEnd = shouldCapNoInlineHold
+                ? Math.Min(
+                    cueEnd,
+                    cueStart + Math.Max(1, tokens.Length) * SubtitleTimingPlanner.VttUntimedMaxSecondsPerToken)
+                : cueEnd;
+            return (visibleText, [new SubtitleCueSourceFragment(cueStart, cappedEnd, timingText)]);
+        }
+
+        var fragments = new List<SubtitleCueSourceFragment>();
+        var cursor = 0;
+        var segmentStart = cueStart;
+        var isLeadingSegment = true;
+
+        void AppendSegment(string rawSegment, double start, double end, bool capTokenSpan = false)
+        {
+            var text = StripVttMarkup(rawSegment);
+            if (isLeadingSegment)
+            {
+                text = RemoveVttRollingPrefix(text, previousVisible);
+            }
+            isLeadingSegment = false;
+            if (text.Length == 0) return;
+
+            var clampedStart = Math.Max(cueStart, start);
+            var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var clampedEnd = Math.Min(Math.Max(clampedStart, end), cueEnd);
+            if (capTokenSpan
+                && clampedEnd - clampedStart > 2.0)
+            {
+                var capUnitCount = SubtitleTimingPlanner.ContainsCjkText(text)
+                    ? SubtitleTimingPlanner.TimingTokens(text).Count
+                    : tokens.Length;
+                clampedEnd = Math.Min(
+                    clampedEnd,
+                    clampedStart + Math.Max(1, capUnitCount) * SubtitleTimingPlanner.VttUntimedMaxSecondsPerToken);
+            }
+            if (clampedEnd < clampedStart) return;
+            if (tokens.Length <= 1)
+            {
+                fragments.Add(new SubtitleCueSourceFragment(clampedStart, clampedEnd, text));
+                return;
+            }
+
+            var duration = clampedEnd - clampedStart;
+            for (var tokenIndex = 0; tokenIndex < tokens.Length; tokenIndex++)
+            {
+                var tokenStart = clampedStart + duration * tokenIndex / tokens.Length;
+                var tokenEnd = clampedStart + duration * (tokenIndex + 1) / tokens.Length;
+                fragments.Add(new SubtitleCueSourceFragment(tokenStart, tokenEnd, tokens[tokenIndex]));
+            }
+        }
+
+        foreach (Match match in matches)
+        {
+            var markerTime = VttTimeToSeconds(match.Groups[1].Value);
+            if (markerTime is null) continue;
+            AppendSegment(body[cursor..match.Index], segmentStart, markerTime.Value);
+            cursor = match.Index + match.Length;
+            segmentStart = markerTime.Value;
+        }
+        AppendSegment(body[cursor..], segmentStart, cueEnd, capTokenSpan: true);
+
+        return (visibleText, fragments);
+    }
+
+    private static string StripVttMarkup(string text)
+    {
+        var output = VttTagRegex().Replace(text, " ");
+        output = DecodeBasicHtmlEntities(output);
+        return NormalizeWhitespace(output);
+    }
+
+    private static string DecodeBasicHtmlEntities(string text) =>
+        text.Replace("&nbsp;", " ")
+            .Replace("&#160;", " ")
+            .Replace("&amp;", "&")
+            .Replace("&lt;", "<")
+            .Replace("&gt;", ">")
+            .Replace("&quot;", "\"")
+            .Replace("&#39;", "'")
+            .Replace("&apos;", "'");
+
+    private static string RemoveVttRollingPrefix(string text, string previousVisible)
+    {
+        var currentTokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var previousTokens = previousVisible
+            .Replace('\n', ' ')
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (currentTokens.Length == 0 || previousTokens.Length == 0) return text;
+
+        var overlap = Math.Min(currentTokens.Length, previousTokens.Length);
+        while (overlap > 0)
+        {
+            var equal = true;
+            for (var i = 0; i < overlap; i++)
+            {
+                if (previousTokens[previousTokens.Length - overlap + i] != currentTokens[i])
+                {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal)
+            {
+                var remaining = currentTokens.Skip(overlap).ToArray();
+                return remaining.Length == 0 ? "" : string.Join(' ', remaining);
+            }
+            overlap--;
+        }
+
+        var compactText = NormalizeWhitespace(text);
+        var compactPrevious = NormalizeWhitespace(previousVisible.Replace('\n', ' '));
+        if (compactPrevious.Length > 0
+            && compactText != compactPrevious
+            && compactText.StartsWith(compactPrevious, StringComparison.Ordinal))
+        {
+            var remaining = compactText[compactPrevious.Length..].Trim();
+            return remaining.Length == 0 ? "" : remaining;
+        }
+        return text;
+    }
+
     /// <summary>序列化为标准 SRT 文本。</summary>
     public static string SerializeSrt(IEnumerable<SubtitleCue> cues) =>
         string.Join("\n\n", cues.Select(c => $"{c.Index}\n{c.Start} --> {c.End}\n{c.Text}")) + "\n";
@@ -177,7 +399,8 @@ public static partial class SrtTools
                 clampedEnd,
                 text,
                 i,
-                [new SourceFragment(start.Value, clampedEnd, text)]));
+                SourceFragmentsForCue(input[i], start.Value, clampedEnd, text),
+                input[i].SourceFragments.Count > 0));
         }
         if (timed.Count == 0) return [];
         timed.Sort((x, y) => x.Start != y.Start ? x.Start.CompareTo(y.Start) : x.Order.CompareTo(y.Order));
@@ -221,7 +444,7 @@ public static partial class SrtTools
                 deduped.Add(item with
                 {
                     Text = text,
-                    Fragments = [new SourceFragment(item.Start, item.End, text)],
+                    Fragments = FragmentsMatching(text, item.Fragments, item.Start, item.End),
                 });
             }
             if (deduped.Count > 0) timed = deduped;
@@ -233,7 +456,8 @@ public static partial class SrtTools
         {
             double? nextStart = i + 1 < timed.Count ? timed[i + 1].Start : null;
             var item = timed[i];
-            if (nextStart is { } ns1)
+            var preserveSourceWindow = isRolling && item.HasSourceAnchors;
+            if (nextStart is { } ns1 && !preserveSourceWindow)
             {
                 item = item with { End = Math.Min(item.End, ns1) };
             }
@@ -243,17 +467,140 @@ public static partial class SrtTools
                 if (nextStart is { } ns2) compensated = Math.Min(compensated, ns2);
                 item = item with { End = compensated };
             }
-            timed[i] = item with
+            timed[i] = preserveSourceWindow
+                ? item
+                : item with
+                {
+                    Fragments = ClippedFragments(item.Fragments, item.Start, item.End, item.Text),
+                };
+        }
+
+        List<TimedCue> RebalanceHandoffBoundaries(List<TimedCue> items)
+        {
+            if (items.Count < 2) return items;
+            var adjusted = items.ToList();
+            for (var i = 0; i < adjusted.Count - 1; i++)
             {
-                Fragments = [new SourceFragment(item.Start, item.End, item.Text)],
-            };
+                var previous = adjusted[i];
+                var next = adjusted[i + 1];
+                if (Math.Abs(next.Start - previous.End) <= 0.05
+                    && SubtitleTimingPlanner.ShouldBorrowBoundaryForHandoff(previous.Text, next.Text))
+                {
+                    var borrow = Math.Min(
+                        SubtitleTimingPlanner.HandoffBoundaryBorrowSeconds,
+                        Math.Max(0, previous.End - previous.Start - minDuration));
+                    if (borrow <= 0) continue;
+
+                    var borrowedBoundary = previous.End - borrow;
+                    adjusted[i] = previous with
+                    {
+                        End = borrowedBoundary,
+                        Fragments = [new SourceFragment(previous.Start, borrowedBoundary, previous.Text)],
+                    };
+                    adjusted[i + 1] = next with
+                    {
+                        Start = borrowedBoundary,
+                        Fragments = [new SourceFragment(borrowedBoundary, next.End, next.Text)],
+                    };
+                    continue;
+                }
+
+                var handoffGap = next.Start - previous.End;
+                if (handoffGap < -0.001
+                    || handoffGap > SubtitleTimingPlanner.SentenceHandoffGapSeconds + 0.02
+                    || !EndsSentence(previous.Text)
+                    || !StartsLikeNewSentence(next.Text))
+                {
+                    continue;
+                }
+
+                var forward = Math.Min(
+                    SubtitleTimingPlanner.SentenceHandoffForwardSeconds,
+                    Math.Max(0, next.End - next.Start - minDuration));
+                if (forward <= 0) continue;
+
+                var boundary = Math.Min(next.Start + forward, next.End - minDuration);
+                if (boundary <= previous.End + 0.001) continue;
+
+                adjusted[i] = previous with
+                {
+                    End = boundary,
+                    Fragments = [new SourceFragment(previous.Start, boundary, previous.Text)],
+                };
+                adjusted[i + 1] = next with
+                {
+                    Start = boundary,
+                    Fragments = [new SourceFragment(boundary, next.End, next.Text)],
+                };
+            }
+            return adjusted;
+        }
+
+        static bool IsSingleFragmentVttSource(TimedCue item) =>
+            item.HasSourceAnchors
+            && item.Fragments.Count == 1
+            && NormalizeWhitespace(item.Fragments[0].Text) == NormalizeWhitespace(item.Text);
+
+        List<TimedCue> TrimNoInlineVttCjkIdleTails(List<TimedCue> items)
+        {
+            if (items.Count < 2) return items;
+            var adjusted = items.ToList();
+            for (var i = 0; i < adjusted.Count; i++)
+            {
+                var item = adjusted[i];
+                var duration = item.End - item.Start;
+                var cjkUnits = TimingUnits(item.Text).Count;
+                if (!IsSingleFragmentVttSource(item)
+                    || !SubtitleTimingPlanner.ContainsCjkText(item.Text)
+                    || cjkUnits < 8
+                    || duration <= 3.5)
+                {
+                    continue;
+                }
+
+                var changed = false;
+                if (i + 1 < adjusted.Count)
+                {
+                    var nextGap = adjusted[i + 1].Start - item.End;
+                    var characterDensity = cjkUnits / Math.Max(duration, 0.001);
+                    var tailTrim = Math.Min(1.6, Math.Max(0, (3.75 - characterDensity) * 0.95));
+                    if (nextGap > 0.03 && tailTrim >= 0.08)
+                    {
+                        item = item with { End = Math.Max(item.Start + minDuration, item.End - tailTrim) };
+                        changed = true;
+                    }
+                }
+
+                if (i > 0)
+                {
+                    var previousGap = item.Start - adjusted[i - 1].End;
+                    var characterDensity = cjkUnits / Math.Max(duration, 0.001);
+                    var delay = Math.Min(0.35, Math.Max(0, item.End - item.Start - minDuration));
+                    if (previousGap > 0.15 && characterDensity >= 3.35 && delay >= 0.08)
+                    {
+                        item = item with { Start = item.Start + delay };
+                        changed = true;
+                    }
+                }
+
+                if (!changed) continue;
+                adjusted[i] = item with
+                {
+                    Fragments = [new SourceFragment(item.Start, item.End, item.Text)],
+                };
+            }
+            return adjusted;
         }
 
         // 非滚动字幕：只做去重叠，不做滚动合并；但仍应用可读窗口兜底，避免原始长 cue 拖住画面。
-        if (!isRolling) return MakeCues(SplitLongReadableCues(
-            timed,
-            collapsePunctuation: false,
-            speechAlignTimings: false));
+        if (!isRolling)
+        {
+            var nonRollingReadable = SplitLongReadableCues(
+                TrimNoInlineVttCjkIdleTails(timed),
+                collapsePunctuation: false,
+                speechAlignTimings: false);
+            return MakeCues(RebalanceHandoffBoundaries(nonRollingReadable));
+        }
 
         // (c) 按句合并：把碎条文本规整空白后用空格累积，满足任一断句条件即收一条
         var merged = new List<TimedCue>();
@@ -261,15 +608,23 @@ public static partial class SrtTools
         var curStart = 0.0;
         var curEnd = 0.0;
         var curFragments = new List<SourceFragment>();
+        var curHasSourceAnchors = false;
         var hasCurrent = false;
 
         void Flush()
         {
             if (!hasCurrent) return;
-            merged.Add(new TimedCue(curStart, curEnd, curText, merged.Count, curFragments.ToList()));
+            merged.Add(new TimedCue(
+                curStart,
+                curEnd,
+                curText,
+                merged.Count,
+                curFragments.ToList(),
+                curHasSourceAnchors));
             hasCurrent = false;
             curText = "";
             curFragments.Clear();
+            curHasSourceAnchors = false;
         }
 
         const double softDuration = 6.0;
@@ -287,6 +642,7 @@ public static partial class SrtTools
                 curStart = t.Start;
                 curEnd = t.End;
                 curFragments = t.Fragments.ToList();
+                curHasSourceAnchors = t.HasSourceAnchors;
                 hasCurrent = true;
             }
             else
@@ -294,6 +650,7 @@ public static partial class SrtTools
                 curText = NormalizeWhitespace(curText + " " + piece);
                 curEnd = t.End;
                 curFragments.AddRange(t.Fragments);
+                curHasSourceAnchors = curHasSourceAnchors || t.HasSourceAnchors;
             }
             var nextPiece = i + 1 < timed.Count ? NormalizeWhitespace(timed[i + 1].Text) : null;
             double? nextGap = i + 1 < timed.Count ? timed[i + 1].Start - curEnd : null;
@@ -317,7 +674,7 @@ public static partial class SrtTools
             merged.Count < timed.Count ? merged : timed,
             collapsePunctuation: true,
             speechAlignTimings: textRepeatRatio > 0.3);
-        return MakeCues(readable);
+        return MakeCues(RebalanceHandoffBoundaries(readable));
     }
 
     private sealed record SourceFragment(double Start, double End, string Text);
@@ -327,9 +684,83 @@ public static partial class SrtTools
         double End,
         string Text,
         int Order,
-        IReadOnlyList<SourceFragment> Fragments);
+        IReadOnlyList<SourceFragment> Fragments,
+        bool HasSourceAnchors);
+
+    private static List<string> FragmentMatchTokens(string text) =>
+        SubtitleTimingPlanner.TimingTokens(text);
+
+    private static List<SourceFragment> FallbackFragment(double start, double end, string text) =>
+        [new SourceFragment(start, end, text)];
+
+    private static List<SourceFragment> SourceFragmentsForCue(SubtitleCue cue, double start, double end, string text)
+    {
+        var fragments = new List<SourceFragment>();
+        foreach (var fragment in cue.SourceFragments)
+        {
+            var fragmentText = StripNonSpeechMarkers(NormalizeSubtitleEscapes(fragment.Text));
+            if (fragmentText.Length == 0) continue;
+            var fragmentStart = Math.Max(start, fragment.StartSeconds);
+            var fragmentEnd = Math.Min(end, fragment.EndSeconds);
+            if (fragmentEnd < fragmentStart) continue;
+            fragments.Add(new SourceFragment(fragmentStart, fragmentEnd, fragmentText));
+        }
+        return fragments.Count == 0 ? FallbackFragment(start, end, text) : fragments;
+    }
+
+    private static IReadOnlyList<SourceFragment> ClippedFragments(
+        IReadOnlyList<SourceFragment> fragments,
+        double start,
+        double end,
+        string text)
+    {
+        var clipped = new List<SourceFragment>();
+        foreach (var fragment in fragments)
+        {
+            var fragmentStart = Math.Max(start, fragment.Start);
+            var fragmentEnd = Math.Min(end, fragment.End);
+            if (fragmentEnd < fragmentStart) continue;
+            clipped.Add(new SourceFragment(fragmentStart, fragmentEnd, fragment.Text));
+        }
+        return clipped.Count == 0 ? FallbackFragment(start, end, text) : clipped;
+    }
+
+    private static IReadOnlyList<SourceFragment> FragmentsMatching(
+        string text,
+        IReadOnlyList<SourceFragment> fragments,
+        double fallbackStart,
+        double fallbackEnd)
+    {
+        var targetTokens = FragmentMatchTokens(text);
+        if (targetTokens.Count == 0) return FallbackFragment(fallbackStart, fallbackEnd, text);
+
+        var cursor = 0;
+        var matched = new List<SourceFragment>();
+        foreach (var fragment in fragments)
+        {
+            var tokens = FragmentMatchTokens(fragment.Text);
+            if (tokens.Count == 0 || cursor + tokens.Count > targetTokens.Count) continue;
+            var equal = true;
+            for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
+            {
+                if (targetTokens[cursor + tokenIndex] == tokens[tokenIndex]) continue;
+                equal = false;
+                break;
+            }
+            if (!equal) continue;
+
+            matched.Add(fragment);
+            cursor += tokens.Count;
+            if (cursor == targetTokens.Count) break;
+        }
+
+        return cursor == targetTokens.Count && matched.Count > 0
+            ? matched
+            : FallbackFragment(fallbackStart, fallbackEnd, text);
+    }
 
     private sealed record TokenTiming(
+        string Token,
         double Start,
         double End,
         int FragmentIndex,
@@ -351,11 +782,22 @@ public static partial class SrtTools
         var output = new List<TimedCue>();
         var cursor = 0;
         var previousEnd = item.Start;
+        var previousEndedSentence = false;
         foreach (var piece in pieces)
         {
-            var pieceTokenCount = SpeechTokens(piece).Count;
+            var pieceTokens = TimingUnits(piece);
+            var pieceTokenCount = pieceTokens.Count;
             if (pieceTokenCount == 0 || cursor >= timings.Count) return null;
-            var endCursor = Math.Min(cursor + pieceTokenCount, timings.Count);
+            int endCursor;
+            if (AlignedTokenRange(pieceTokens, timings, cursor) is { } alignedRange)
+            {
+                cursor = alignedRange.Start;
+                endCursor = alignedRange.End;
+            }
+            else
+            {
+                endCursor = Math.Min(cursor + pieceTokenCount, timings.Count);
+            }
             if (endCursor <= cursor) return null;
 
             var covered = timings.GetRange(cursor, endCursor - cursor);
@@ -364,15 +806,21 @@ public static partial class SrtTools
             var start = first.Start;
             var firstFragmentIndex = first.FragmentIndex;
             var firstFragmentCount = covered.TakeWhile(timing => timing.FragmentIndex == firstFragmentIndex).Count();
+            var firstFragmentTokenCount = TimingUnits(item.Fragments[firstFragmentIndex].Text).Count;
             var later = covered.FirstOrDefault(timing => timing.FragmentIndex != firstFragmentIndex);
             if (cursor > 0
-                && firstFragmentCount <= 4
+                && firstFragmentTokenCount > firstFragmentCount
+                && (firstFragmentCount <= 2 || StartsLikeNewSentence(piece))
                 && firstFragmentCount * 2 < covered.Count
                 && later is not null)
             {
                 start = later.FragmentStart;
             }
             start = Math.Max(start, previousEnd);
+            if (previousEndedSentence)
+            {
+                start = Math.Min(Math.Max(start, previousEnd + SubtitleTimingPlanner.SentenceHandoffGapSeconds), last.End);
+            }
 
             var end = last.End;
             if (EndsSentence(piece))
@@ -390,12 +838,26 @@ public static partial class SrtTools
                 end,
                 piece,
                 output.Count,
-                [new SourceFragment(start, end, piece)]));
+                [new SourceFragment(start, end, piece)],
+                true));
             previousEnd = end;
+            previousEndedSentence = EndsSentence(piece);
             cursor = endCursor;
         }
 
         return output;
+    }
+
+    private static bool StartsLikeNewSentence(string text)
+    {
+        foreach (var ch in text.Trim())
+        {
+            if (ch is '"' or '\'' or '“' or '‘' or '(' or '（' or '¿' or '¡') continue;
+            if (char.IsLetter(ch)) return char.IsUpper(ch);
+            if (char.IsDigit(ch)) return true;
+            return false;
+        }
+        return false;
     }
 
     private static List<TimedCue> SplitLongReadableCues(
@@ -407,12 +869,29 @@ public static partial class SrtTools
         foreach (var item in items)
         {
             var originalDuration = item.End - item.Start;
+            var visibleLines = item.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (!collapsePunctuation
+                && !speechAlignTimings
+                && originalDuration <= EmergencyReadableCueSeconds
+                && visibleLines.Length > 1
+                && SubtitleTimingPlanner.ContainsCjkText(item.Text))
+            {
+                output.Add(item with { Order = output.Count });
+                continue;
+            }
             var wordCount = WordTokens(item.Text).Count;
-            var speechTokenCount = SpeechTokens(item.Text).Count;
-            var canUseSourceAnchors = speechAlignTimings && item.Fragments.Count > 0;
-            var shouldAlignToSpeech = !canUseSourceAnchors
-                && (speechTokenCount is > 0 and <= 3
-                    || (speechAlignTimings && originalDuration > NormalReadableCueSeconds));
+            var cjkUnitCount = SpeechTokens(item.Text).Count == 0 && SubtitleTimingPlanner.ContainsCjkText(item.Text)
+                ? TimingUnits(item.Text).Count
+                : 0;
+            var canUseSourceAnchors = speechAlignTimings
+                && item.Fragments.Count > 0
+                && (item.HasSourceAnchors || originalDuration <= HardDurationSeconds);
+            var shouldAlignToSpeech = SubtitleTimingPlanner.ShouldAlignToSpeechWindow(
+                item.Text,
+                originalDuration,
+                speechAlignTimings,
+                canUseSourceAnchors,
+                EndsSentence(item.Text));
             var effectiveEnd = shouldAlignToSpeech
                 ? Math.Min(item.End, item.Start + SpeechAlignedVisibleSeconds(item.Text))
                 : item.End;
@@ -422,9 +901,23 @@ public static partial class SrtTools
             var duration = anchoredTimings.Count == 0
                 ? effectiveItem.End - effectiveItem.Start
                 : Math.Max(0, anchoredTimings[^1].End - anchoredTimings[0].Start);
-            var textDrivenTargetParts = wordCount > 18 ? (int)Math.Ceiling((double)wordCount / 14.0) : 1;
-            var durationDrivenTargetParts = duration > NormalReadableCueSeconds
-                ? (int)Math.Ceiling(duration / NormalReadableCueSeconds)
+            var hasCjkWhitespaceWordBoundaries = cjkUnitCount > 0
+                && SubtitleTimingPlanner.ContainsHangulText(item.Text)
+                && item.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length > 1;
+            var noAnchorUnspacedCjk = cjkUnitCount > 0 && !canUseSourceAnchors && !hasCjkWhitespaceWordBoundaries;
+            var cjkReadableSplitThreshold = canUseSourceAnchors
+                ? 4.0
+                : noAnchorUnspacedCjk ? HardDurationSeconds : EmergencyReadableCueSeconds;
+            var shouldSplitCjkByReadableWindow = cjkUnitCount > 18
+                && duration > cjkReadableSplitThreshold;
+            var textDrivenTargetParts = wordCount > 18
+                ? (int)Math.Ceiling((double)wordCount / 14.0)
+                : shouldSplitCjkByReadableWindow ? (int)Math.Ceiling((double)cjkUnitCount / 14.0) : 1;
+            var durationSplitThreshold = noAnchorUnspacedCjk
+                ? HardDurationSeconds
+                : NormalReadableCueSeconds;
+            var durationDrivenTargetParts = duration > durationSplitThreshold
+                ? (int)Math.Ceiling(duration / durationSplitThreshold)
                 : 1;
             var targetParts = Math.Max(Math.Max(durationDrivenTargetParts, textDrivenTargetParts), sentenceDrivenTargetParts);
 
@@ -448,14 +941,25 @@ public static partial class SrtTools
             targetParts = Math.Max(2, targetParts);
             var balancedMaxParts = Math.Max(2, wordCount / 2);
             var maxTargetParts = Math.Max(targetParts, balancedMaxParts);
-            var pieces = SplitReadableText(effectiveItem.Text, targetParts, mustSplit: duration > EmergencyReadableCueSeconds);
+            List<string> ReadablePieces(int partCount, bool mustSplit)
+            {
+                if (canUseSourceAnchors
+                    && cjkUnitCount > 0
+                    && SourceAnchoredCjkReadablePieces(effectiveItem, partCount) is { } anchoredCjkPieces)
+                {
+                    return anchoredCjkPieces;
+                }
+                return SplitReadableText(effectiveItem.Text, partCount, mustSplit);
+            }
+
+            var pieces = ReadablePieces(targetParts, mustSplit: duration > EmergencyReadableCueSeconds);
             while (pieces.Count > 1 && targetParts < maxTargetParts)
             {
                 var candidateWeight = Math.Max(1, pieces.Sum(TextWeight));
                 var longestEstimatedDuration = pieces.Max(piece => duration * TextWeight(piece) / candidateWeight);
                 if (longestEstimatedDuration <= EmergencyReadableCueSeconds) break;
                 targetParts++;
-                pieces = SplitReadableText(effectiveItem.Text, targetParts, mustSplit: true);
+                pieces = ReadablePieces(targetParts, mustSplit: true);
             }
             if (pieces.Count <= 1)
             {
@@ -502,10 +1006,123 @@ public static partial class SrtTools
                     end,
                     pieces[i],
                     output.Count,
-                    [new SourceFragment(start, end, pieces[i])]));
+                    [new SourceFragment(start, end, pieces[i])],
+                    false));
             }
         }
-        return collapsePunctuation ? CollapsePunctuationIslands(output) : output;
+        var mergedContinuations = MergeShortContinuationPrefixes(output);
+        var mergedCjkSingletons = MergeShortCjkSingletons(mergedContinuations);
+        var dedupedTransitions = DropUltraShortCjkDuplicateTransitions(mergedCjkSingletons);
+        return collapsePunctuation ? CollapsePunctuationIslands(dedupedTransitions) : dedupedTransitions;
+    }
+
+    private static List<TimedCue> MergeShortContinuationPrefixes(List<TimedCue> items)
+    {
+        if (items.Count < 2) return items;
+        var output = new List<TimedCue>();
+        var index = 0;
+        while (index < items.Count)
+        {
+            if (index + 1 < items.Count)
+            {
+                var current = items[index];
+                var next = items[index + 1];
+                var currentTokens = WordTokens(current.Text);
+                var nextTokens = WordTokens(next.Text);
+                var combinedDuration = next.End - current.Start;
+                var handoffGap = next.Start - current.End;
+                if (currentTokens.Count is >= 2 and <= 3
+                    && handoffGap >= -0.001
+                    && handoffGap <= 0.12
+                    && combinedDuration <= NormalReadableCueSeconds
+                    && !EndsSentence(current.Text)
+                    && nextTokens.Count > 0
+                    && SubtitleTimingPlanner.IsWeakBoundary(currentTokens[^1], nextTokens[0]))
+                {
+                    output.Add(new TimedCue(
+                        current.Start,
+                        Math.Max(current.End, next.End),
+                        NormalizeWhitespace(current.Text + " " + next.Text),
+                        output.Count,
+                        current.Fragments.Concat(next.Fragments).ToList(),
+                        current.HasSourceAnchors || next.HasSourceAnchors));
+                    index += 2;
+                    continue;
+                }
+            }
+
+            output.Add(items[index] with { Order = output.Count });
+            index++;
+        }
+        return output;
+    }
+
+    private static List<TimedCue> MergeShortCjkSingletons(List<TimedCue> items)
+    {
+        if (items.Count < 2) return items;
+        var output = new List<TimedCue>();
+        var index = 0;
+        while (index < items.Count)
+        {
+            if (index + 1 < items.Count)
+            {
+                var current = items[index];
+                var next = items[index + 1];
+                var currentUnits = TimingUnits(current.Text).Count;
+                var nextUnits = TimingUnits(next.Text).Count;
+                var handoffGap = next.Start - current.End;
+                var combinedDuration = next.End - current.Start;
+                if (SubtitleTimingPlanner.ContainsCjkText(current.Text + next.Text)
+                    && (currentUnits <= 1 || nextUnits <= 1)
+                    && currentUnits + nextUnits <= 4
+                    && handoffGap >= -0.001
+                    && handoffGap <= 0.12
+                    && combinedDuration <= SubtitleTimingPlanner.ShortSourceFragmentWindowSeconds)
+                {
+                    output.Add(new TimedCue(
+                        current.Start,
+                        Math.Max(current.End, next.End),
+                        NormalizeWhitespace(current.Text + next.Text),
+                        output.Count,
+                        current.Fragments.Concat(next.Fragments).ToList(),
+                        current.HasSourceAnchors || next.HasSourceAnchors));
+                    index += 2;
+                    continue;
+                }
+            }
+
+            output.Add(items[index] with { Order = output.Count });
+            index++;
+        }
+        return output;
+    }
+
+    private static string CompactDuplicateKey(string text) =>
+        new(text.Where(ch => !char.IsWhiteSpace(ch)).ToArray());
+
+    private static List<TimedCue> DropUltraShortCjkDuplicateTransitions(List<TimedCue> items)
+    {
+        if (items.Count < 2) return items;
+        var output = new List<TimedCue>();
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            var key = CompactDuplicateKey(item.Text);
+            if (item.End - item.Start <= 0.08
+                && key.Length > 0
+                && SubtitleTimingPlanner.ContainsCjkText(item.Text))
+            {
+                var previousKey = output.Count > 0 ? CompactDuplicateKey(output[^1].Text) : "";
+                var nextKey = index + 1 < items.Count ? CompactDuplicateKey(items[index + 1].Text) : "";
+                if ((previousKey.Length > 0 && previousKey.Contains(key, StringComparison.Ordinal))
+                    || (nextKey.Length > 0 && nextKey.Contains(key, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+            }
+            output.Add(item with { Order = output.Count });
+        }
+        return output;
     }
 
     private static List<string> SplitReadableText(string text, int targetParts, bool mustSplit)
@@ -523,57 +1140,146 @@ public static partial class SrtTools
         return SplitTextSemantically(text, targetParts, mustSplit);
     }
 
-    private static double Clamp(double value, double min, double max) =>
-        Math.Min(Math.Max(value, min), max);
-
-    private static List<string> SpeechTokens(string text)
+    private static char? FirstMeaningfulCharacter(string text)
     {
-        var tokens = new List<string>();
-        var current = new StringBuilder();
-        foreach (var ch in text.ToLowerInvariant())
+        foreach (var ch in text.Trim())
         {
-            var isAsciiAlnum = ch is >= '0' and <= '9' or >= 'a' and <= 'z';
-            if (isAsciiAlnum)
-            {
-                current.Append(ch);
-            }
-            else if (current.Length > 0)
-            {
-                tokens.Add(current.ToString());
-                current.Clear();
-            }
+            if (TrailingAllowed.Contains(ch) || char.IsWhiteSpace(ch)) continue;
+            return ch;
         }
-        if (current.Length > 0) tokens.Add(current.ToString());
-        return tokens;
+        return null;
     }
 
-    private static double SpeechAlignedVisibleSeconds(string text)
+    private static bool IsSmallKanaContinuation(char ch) =>
+        SmallKanaContinuations.Contains(ch);
+
+    private static double CjkSourceBoundaryPenalty(string leftText, string rightText)
     {
-        var tokens = SpeechTokens(text);
-        if (tokens.Count == 0)
+        if (!SubtitleTimingPlanner.ContainsCjkText(leftText + rightText)) return 0;
+        var leftWeight = TimingUnits(leftText).Count;
+        var rightWeight = TimingUnits(rightText).Count;
+        var penalty = 0.0;
+
+        if (leftWeight <= 1 || rightWeight <= 1)
         {
-            var visibleCharacters = NormalizeWhitespace(text).Count(ch => !char.IsWhiteSpace(ch));
-            return Clamp(visibleCharacters * 0.18 + 0.8, 1.5, 6.0);
+            penalty += 320;
+        }
+        else if (leftWeight <= 2 || rightWeight <= 2)
+        {
+            penalty += 110;
         }
 
-        if (tokens.Count >= 2 && tokens.All(token => token.All(char.IsDigit)))
+        var left = LastMeaningfulCharacter(leftText);
+        if (left is not null && IsSmallKanaContinuation(left.Value))
         {
-            return Clamp(tokens.Count * 0.65 + 0.5, 2.0, 8.0);
+            penalty += 900;
         }
-
-        if (tokens.Count <= 3) return 2.0;
-
-        var sentencePause = EndsSentence(text) ? 0.8 : 0.45;
-        return Clamp(tokens.Count * 0.42 + sentencePause, 2.2, 9.0);
+        var right = FirstMeaningfulCharacter(rightText);
+        if (right is not null && IsSmallKanaContinuation(right.Value))
+        {
+            penalty += 900;
+        }
+        return penalty;
     }
 
-    private static double EffectiveFragmentEnd(SourceFragment fragment, bool speechAlignTimings)
+    private static List<string>? SourceAnchoredCjkReadablePieces(TimedCue item, int targetParts)
+    {
+        targetParts = Math.Max(2, targetParts);
+        var units = item.Fragments
+            .Select(fragment => NormalizeWhitespace(fragment.Text))
+            .Where(text => text.Length > 0)
+            .ToList();
+        if (units.Count < targetParts
+            || !SubtitleTimingPlanner.ContainsCjkText(item.Text)
+            || SpeechTokens(item.Text).Count > 0)
+        {
+            return null;
+        }
+
+        var unitTokens = TimingUnits(string.Concat(units));
+        var itemTokens = TimingUnits(item.Text);
+        if (unitTokens.Count == 0 || !unitTokens.SequenceEqual(itemTokens)) return null;
+
+        var weights = units.Select(unit => Math.Max(1, TimingUnits(unit).Count)).ToList();
+        var totalWeight = weights.Sum();
+        if (totalWeight < targetParts) return null;
+
+        var prefixWeights = new List<int> { 0 };
+        foreach (var weight in weights)
+        {
+            prefixWeights.Add(prefixWeights[^1] + weight);
+        }
+
+        var boundaries = new List<int>();
+        var previous = 0;
+        for (var part = 1; part < targetParts; part++)
+        {
+            var remainingParts = targetParts - part;
+            var minBoundary = previous + 1;
+            var maxBoundary = units.Count - remainingParts;
+            if (minBoundary > maxBoundary) return null;
+
+            var desired = (double)totalWeight * part / targetParts;
+            int? bestBoundary = null;
+            double bestScore = 0;
+            for (var boundary = minBoundary; boundary <= maxBoundary; boundary++)
+            {
+                var currentWeight = prefixWeights[boundary] - prefixWeights[previous];
+                var remainingWeight = totalWeight - prefixWeights[boundary];
+                var shortPiecePenalty = Math.Max(0, 4 - Math.Min(currentWeight, remainingWeight)) * 55.0;
+                var score = Math.Abs(prefixWeights[boundary] - desired) * 10
+                    + shortPiecePenalty
+                    + CjkSourceBoundaryPenalty(units[boundary - 1], units[boundary]);
+                if (bestBoundary is null || score < bestScore)
+                {
+                    bestBoundary = boundary;
+                    bestScore = score;
+                }
+            }
+            if (bestBoundary is null) return null;
+            boundaries.Add(bestBoundary.Value);
+            previous = bestBoundary.Value;
+        }
+
+        var output = new List<string>();
+        var start = 0;
+        foreach (var boundary in boundaries.Append(units.Count))
+        {
+            var piece = NormalizeWhitespace(string.Join(' ', units.GetRange(start, boundary - start)));
+            if (piece.Length > 0) output.Add(piece);
+            start = boundary;
+        }
+        return output.Count > 1 ? output : null;
+    }
+
+    private static List<string> SpeechTokens(string text) =>
+        SubtitleTimingPlanner.SpeechTokens(text);
+
+    private static List<string> TimingUnits(string text) =>
+        SubtitleTimingPlanner.TimingTokens(text);
+
+    private static double SpeechAlignedVisibleSeconds(string text) =>
+        SubtitleTimingPlanner.SpeechAlignedVisibleSeconds(text, EndsSentence(text));
+
+    private static double EffectiveFragmentEnd(
+        SourceFragment fragment,
+        bool speechAlignTimings,
+        bool isTerminalSourceFragment,
+        int itemTokenCount)
     {
         var duration = fragment.End - fragment.Start;
-        var tokenCount = SpeechTokens(fragment.Text).Count;
+        var tokenCount = TimingUnits(fragment.Text).Count;
         if (!speechAlignTimings
             || tokenCount == 0
             || (tokenCount > 3 && duration <= NormalReadableCueSeconds))
+        {
+            return fragment.End;
+        }
+        if (isTerminalSourceFragment && itemTokenCount > tokenCount)
+        {
+            return fragment.End;
+        }
+        if (tokenCount <= 3 && duration <= SubtitleTimingPlanner.ShortSourceFragmentWindowSeconds)
         {
             return fragment.End;
         }
@@ -584,21 +1290,65 @@ public static partial class SrtTools
     private static List<TokenTiming> TokenTimings(TimedCue item, bool speechAlignTimings)
     {
         var output = new List<TokenTiming>();
+        var itemTokenCount = TimingUnits(item.Text).Count;
         for (var fragmentIndex = 0; fragmentIndex < item.Fragments.Count; fragmentIndex++)
         {
             var fragment = item.Fragments[fragmentIndex];
-            var tokens = SpeechTokens(fragment.Text);
+            var tokens = TimingUnits(fragment.Text);
             if (tokens.Count == 0) continue;
-            var fragmentEnd = Math.Max(fragment.Start, EffectiveFragmentEnd(fragment, speechAlignTimings));
+            var fragmentEnd = Math.Max(
+                fragment.Start,
+                EffectiveFragmentEnd(
+                    fragment,
+                    speechAlignTimings,
+                    isTerminalSourceFragment: fragmentIndex == item.Fragments.Count - 1,
+                    itemTokenCount: itemTokenCount));
             var duration = fragmentEnd - fragment.Start;
             for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
             {
                 var tokenStart = fragment.Start + duration * tokenIndex / tokens.Count;
                 var tokenEnd = fragment.Start + duration * (tokenIndex + 1) / tokens.Count;
-                output.Add(new TokenTiming(tokenStart, tokenEnd, fragmentIndex, fragment.Start, fragmentEnd));
+                output.Add(new TokenTiming(tokens[tokenIndex], tokenStart, tokenEnd, fragmentIndex, fragment.Start, fragmentEnd));
             }
         }
         return output;
+    }
+
+    private static (int Start, int End)? AlignedTokenRange(
+        List<string> pieceTokens,
+        List<TokenTiming> timings,
+        int cursor)
+    {
+        if (pieceTokens.Count == 0) return null;
+        var lowerBound = Math.Max(0, cursor);
+        if (lowerBound >= timings.Count) return null;
+
+        var firstToken = pieceTokens[0];
+        for (var candidateStart = lowerBound; candidateStart < timings.Count; candidateStart++)
+        {
+            if (!string.Equals(timings[candidateStart].Token, firstToken, StringComparison.Ordinal)) continue;
+            var searchIndex = candidateStart;
+            var matchedLast = candidateStart;
+            var didMatch = true;
+            foreach (var token in pieceTokens)
+            {
+                while (searchIndex < timings.Count
+                       && !string.Equals(timings[searchIndex].Token, token, StringComparison.Ordinal))
+                {
+                    searchIndex++;
+                }
+                if (searchIndex >= timings.Count)
+                {
+                    didMatch = false;
+                    break;
+                }
+                matchedLast = searchIndex;
+                searchIndex++;
+            }
+            if (didMatch) return (candidateStart, matchedLast + 1);
+        }
+
+        return null;
     }
 
     private static List<string> SplitSentencePieces(string text)
@@ -649,16 +1399,6 @@ public static partial class SrtTools
         return output;
     }
 
-    private static string NormalizedBoundaryWord(string raw)
-    {
-        var builder = new StringBuilder();
-        foreach (var ch in raw.ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(ch)) builder.Append(ch);
-        }
-        return builder.ToString();
-    }
-
     private static char? LastMeaningfulCharacter(string text)
     {
         for (var i = text.Length - 1; i >= 0; i--)
@@ -680,19 +1420,14 @@ public static partial class SrtTools
         return 0;
     }
 
-    private static bool IsBadBoundary(string leftToken, string rightToken)
-    {
-        var left = NormalizedBoundaryWord(leftToken);
-        var right = NormalizedBoundaryWord(rightToken);
-        if (left.Length == 0 || right.Length == 0) return false;
-        return ContinuationEnds.Contains(left) || ContinuationStarts.Contains(right);
-    }
+    private static bool IsBadBoundary(string leftToken, string rightToken) =>
+        SubtitleTimingPlanner.IsWeakBoundary(leftToken, rightToken);
 
     private static List<string> SplitTextByCharacters(string text, int targetParts)
     {
         var chars = text.Trim().ToCharArray();
         if (chars.Length == 0) return [];
-        targetParts = Math.Min(Math.Max(1, targetParts), chars.Length);
+        targetParts = Math.Min(SubtitleTimingPlanner.CharacterSplitPartCount(text, targetParts), chars.Length);
         var charParts = new List<string>();
         for (var part = 0; part < targetParts; part++)
         {
@@ -747,6 +1482,10 @@ public static partial class SrtTools
         var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (words.Length < targetParts)
         {
+            if (SpeechTokens(text).Count == 0 && SubtitleTimingPlanner.ContainsCjkText(text))
+            {
+                return SplitTextByCharacters(text, targetParts);
+            }
             return mustSplit ? SplitTextByCharacters(text, targetParts) : [NormalizeWhitespace(text)];
         }
 
@@ -895,8 +1634,7 @@ public static partial class SrtTools
     private static bool IsCjkSubtitleCharacter(char ch) =>
         ch is >= '\u3400' and <= '\u4DBF'
         or >= '\u4E00' and <= '\u9FFF'
-        or >= '\u3040' and <= '\u30FF'
-        or >= '\uAC00' and <= '\uD7AF';
+        or >= '\u3040' and <= '\u30FF';
 
     private static string StripNonSpeechMarkers(string text)
     {
@@ -933,23 +1671,12 @@ public static partial class SrtTools
 
     private static readonly HashSet<char> SentenceEnders = ['.', '!', '?', '。', '！', '？'];
     private static readonly HashSet<char> TrailingAllowed = ['"', '\'', '”', '’', ')', '）', '」', '』', ']'];
-    private static readonly HashSet<string> ContinuationStarts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "if", "that", "which", "who", "whom", "whose", "when", "where", "why", "how",
-        "and", "or", "but", "because", "so", "then", "than", "to", "of", "for", "with",
-        "as", "in", "on", "at", "by", "from", "do", "does", "did", "is", "are", "was",
-        "were", "be", "been", "being", "have", "has", "had", "can", "could", "would",
-        "will", "should", "may", "might", "must", "not",
-    };
-    private static readonly HashSet<string> ContinuationEnds = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "the", "a", "an", "and", "or", "but", "if", "that", "which", "who", "what",
-        "when", "where", "why", "how", "to", "of", "for", "with", "from", "as",
-        "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
-        "have", "has", "had", "can", "could", "would", "will", "should", "may",
-        "might", "must", "we", "you", "i", "they", "he", "she", "it",
-    };
-
+    private static readonly HashSet<char> SmallKanaContinuations =
+    [
+        'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ', 'ゎ',
+        'ァ', 'ィ', 'ゥ', 'ェ', 'ォ', 'ッ', 'ャ', 'ュ', 'ョ', 'ヮ',
+        'ー'
+    ];
     private static bool EndsSentence(string text)
     {
         var end = text.Length;
@@ -967,13 +1694,11 @@ public static partial class SrtTools
         var currentWords = WordTokens(current);
         var nextWords = WordTokens(nextPiece);
         if (currentWords.Count == 0 || nextWords.Count == 0) return false;
-        return ContinuationEnds.Contains(currentWords[^1]) || ContinuationStarts.Contains(nextWords[0]);
+        return IsBadBoundary(currentWords[^1], nextWords[0]);
     }
 
     private static List<string> WordTokens(string text) =>
-        WordTokenRegex().Matches(text.ToLowerInvariant())
-            .Select(match => match.Value)
-            .ToList();
+        SubtitleTimingPlanner.WordTokens(text);
 
     /// <summary>
     /// 调试辅助：只清洗不翻译（解析 → CleanCues → 序列化），输出 "&lt;名&gt;.clean.srt"。
@@ -992,7 +1717,7 @@ public static partial class SrtTools
                 $"無法讀取字幕檔：{Path.GetFileName(path)}",
                 $"Could not read the subtitle file: {Path.GetFileName(path)}"));
         }
-        var parsed = ParseSrt(raw);
+        var parsed = ParseSubtitle(raw, path);
         if (parsed.Count == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("字幕文件里没有可识别的字幕内容。",
@@ -1001,11 +1726,22 @@ public static partial class SrtTools
         }
         var cleaned = CleanCues(parsed);
         var name = Path.GetFileName(path);
-        var stem = name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+        var stem = SubtitleOutputStem(name);
         var output = Path.Combine(Path.GetDirectoryName(path) ?? ".", stem + ".clean.srt");
         File.WriteAllText(output, SerializeSrt(cleaned));
         return (parsed.Count, cleaned.Count, output);
     }
+
+    public static List<SubtitleCue> ParseSubtitle(string raw, string pathOrFileName) =>
+        pathOrFileName.EndsWith(".vtt", StringComparison.OrdinalIgnoreCase)
+            ? ParseVtt(raw)
+            : ParseSrt(raw);
+
+    public static string SubtitleOutputStem(string fileName) =>
+        fileName.EndsWith(".srt", StringComparison.OrdinalIgnoreCase)
+        || fileName.EndsWith(".vtt", StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^4]
+            : fileName;
 }
 
 // MARK: - LLM API 请求
@@ -1926,7 +2662,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 $"無法讀取字幕檔：{Path.GetFileName(srtFile)}",
                 $"Could not read the subtitle file: {Path.GetFileName(srtFile)}"));
         }
-        var parsed = SrtTools.ParseSrt(raw);
+        var parsed = SrtTools.ParseSubtitle(raw, srtFile);
         if (parsed.Count == 0)
         {
             throw MoongateException.TranslateFailed(L10n.T("字幕文件里没有可识别的字幕内容。",
@@ -2028,9 +2764,9 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             };
         }
 
-        // 写 "<原文件名去.srt>.<target>.srt"
+        // 写 "<原文件名去字幕扩展>.<target>.srt"
         var name = Path.GetFileName(srtFile);
-        var stem = name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+        var stem = SrtTools.SubtitleOutputStem(name);
         var outputPath = Path.Combine(
             Path.GetDirectoryName(srtFile) ?? ".",
             stem + TranslationLanguage.TranslatedSubtitleFileSuffix(_settings.TranslationTargetLanguage));

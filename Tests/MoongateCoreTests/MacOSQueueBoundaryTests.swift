@@ -98,6 +98,7 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let pickerBody = try XCTUnwrap(functionBody(named: "pickSourceSubtitle", in: source))
 
         XCTAssertTrue(pickerBody.contains("TranslationLanguage.isTranslatedSubtitleFileName"))
+        XCTAssertTrue(pickerBody.contains("\"vtt\""))
         XCTAssertFalse(pickerBody.contains("hasSuffix(\".zh.srt\")"))
     }
 

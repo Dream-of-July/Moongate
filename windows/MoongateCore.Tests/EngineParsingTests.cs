@@ -567,6 +567,7 @@ public class DownloadRetryTests
     private sealed class ScriptedDownloadEngine : YtDlpEngine
     {
         public int Attempts { get; private set; }
+        public IReadOnlyList<string> LastArguments { get; private set; } = [];
         private readonly string _destDir;
         private readonly string _videoId;
         private readonly string _firstStderr;
@@ -583,6 +584,7 @@ public class DownloadRetryTests
             Action<string>? onLine, CancellationToken ct)
         {
             Attempts++;
+            LastArguments = arguments.ToList();
             if (Attempts == 1)
             {
                 return Task.FromResult((1, _firstStderr));
@@ -592,6 +594,80 @@ public class DownloadRetryTests
             File.WriteAllText(outFile, "fake mp4 bytes");
             onLine?.Invoke(outFile);
             return Task.FromResult((0, ""));
+        }
+    }
+
+    [Fact]
+    public async Task AutoSubtitleDownload_PreservesRawVttTiming()
+    {
+        var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-auto-vtt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var probe = typeof(DownloadRetryTests).Assembly.Location;
+        var prevYt = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var prevFf = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+        Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+        try
+        {
+            var engine = new ScriptedDownloadEngine(destDir, "abc123");
+            var request = new DownloadRequest
+            {
+                Url = "https://www.youtube.com/watch?v=abc123",
+                VideoId = "abc123",
+                FormatId = "137",
+                AutoSubtitleLangs = ["it-orig"],
+                DestinationDirectory = destDir,
+            };
+
+            _ = await engine.DownloadAsync(request, control: null, progress: _ => { });
+
+            Assert.Contains("--write-auto-subs", engine.LastArguments);
+            Assert.Contains("--sub-format", engine.LastArguments);
+            Assert.Contains("vtt/best", engine.LastArguments);
+            Assert.DoesNotContain("--convert-subs", engine.LastArguments);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", prevYt);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
+            try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public async Task ManualSubtitleDownload_KeepsSrtConversionCompatibility()
+    {
+        var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-manual-srt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var probe = typeof(DownloadRetryTests).Assembly.Location;
+        var prevYt = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var prevFf = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+        Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+        try
+        {
+            var engine = new ScriptedDownloadEngine(destDir, "abc123");
+            var request = new DownloadRequest
+            {
+                Url = "https://www.youtube.com/watch?v=abc123",
+                VideoId = "abc123",
+                FormatId = "137",
+                SubtitleLangs = ["en"],
+                DestinationDirectory = destDir,
+            };
+
+            _ = await engine.DownloadAsync(request, control: null, progress: _ => { });
+
+            Assert.Contains("--write-subs", engine.LastArguments);
+            Assert.Contains("--convert-subs", engine.LastArguments);
+            Assert.Contains("srt", engine.LastArguments);
+            Assert.DoesNotContain("--sub-format", engine.LastArguments);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", prevYt);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
+            try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
         }
     }
 

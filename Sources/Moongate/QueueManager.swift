@@ -494,7 +494,7 @@ final class QueueManager: ObservableObject {
 
         // 找翻译源字幕；没有就完成并提示已跳过
         let preferredLang = current.request.subtitleLangs.first ?? current.request.autoSubtitleLangs.first
-        guard let srtFile = Self.pickSourceSubtitle(from: downloadFiles, preferredLang: preferredLang) else {
+        guard let sourceSubtitle = Self.pickSourceSubtitle(from: downloadFiles, preferredLang: preferredLang) else {
             finishDone(
                 id, generation: generation, files: downloadFiles,
                 statusText: mode == .burnOriginal
@@ -529,10 +529,11 @@ final class QueueManager: ObservableObject {
                     $0.postDownloadProcessingKind = nil
                     self.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: nil)
                 }
+                let burnSubtitle = try Self.ensureSRTSubtitle(sourceSubtitle)
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
-                    subtitle: srtFile,
+                    subtitle: burnSubtitle,
                     maxHeight: settings.maxBurnHeight,
                     backend: settings.encodeBackend,
                     alwaysH264: settings.burnAlwaysH264,
@@ -561,19 +562,26 @@ final class QueueManager: ObservableObject {
         }
 
         // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
-        // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt" 解析。
-        let sourceLang = preferredLang ?? Self.langCode(of: srtFile)
+        // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt/.vtt" 解析。
+        let sourceLang = preferredLang ?? Self.langCode(of: sourceSubtitle)
         let sourceMatchesTarget = TranslationLanguage.matches(
             source: sourceLang,
             target: settings.translationTargetLanguage
         )
         if sourceMatchesTarget {
-            // srtOnly：原目标语言 srt 即结果（已在 downloadFiles 里），不再生成译文副本。
+            // srtOnly：原目标语言字幕即结果；若源是 VTT，先转成 SRT，保持模式语义。
             guard mode == .burnIn else {
-                finishDone(id, generation: generation, files: downloadFiles, statusText: CoreL10n.t(L.Queue.sourceTargetSubtitleSkippedTranslation))
+                do {
+                    let normalized = try Self.ensureSRTSubtitle(sourceSubtitle)
+                    var files = downloadFiles
+                    if !files.contains(normalized) { files.append(normalized) }
+                    finishDone(id, generation: generation, files: files, statusText: CoreL10n.t(L.Queue.sourceTargetSubtitleSkippedTranslation))
+                } catch {
+                    settlePartial(id, generation: generation, files: downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseTranslation))
+                }
                 return
             }
-            // burnIn：直接拿原中文 srt 去烧录。
+            // burnIn：直接拿目标语言字幕去烧录；VTT 先转成 SRT。
             guard let video = downloadFiles.first(where: {
                 Self.videoExtensions.contains($0.pathExtension.lowercased())
             }) else {
@@ -597,10 +605,11 @@ final class QueueManager: ObservableObject {
                     $0.postDownloadProcessingKind = nil
                     self.applyProgress(&$0, id: id, generation: generation, phase: .burn, phaseProgress: nil)
                 }
+                let burnSubtitle = try Self.ensureSRTSubtitle(sourceSubtitle)
                 let burner = makeBurner()
                 let burned = try await burner.burn(
                     video: video,
-                    subtitle: srtFile,
+                    subtitle: burnSubtitle,
                     maxHeight: settings.maxBurnHeight,
                     backend: settings.encodeBackend,
                     alwaysH264: settings.burnAlwaysH264,
@@ -648,7 +657,7 @@ final class QueueManager: ObservableObject {
             }
             let translator = makeTranslator(settings: settings)
             zhSrt = try await translator.translate(
-                srtFile: srtFile,
+                srtFile: sourceSubtitle,
                 style: settings.subtitleStyle,
                 context: settings.makeTranslationContext(sourceLanguage: preferredLang),
                 control: control
@@ -1059,7 +1068,7 @@ final class QueueManager: ObservableObject {
         }
     }
 
-    /// 从字幕文件名 "<名>.<lang>.srt" 解析出 lang code（无法解析返回 nil）。
+    /// 从字幕文件名 "<名>.<lang>.srt/.vtt" 解析出 lang code（无法解析返回 nil）。
     private static func langCode(of file: URL) -> String? {
         let stem = file.deletingPathExtension().lastPathComponent
         guard let dotIndex = stem.lastIndex(of: ".") else { return nil }
@@ -1068,19 +1077,34 @@ final class QueueManager: ObservableObject {
 
     /// 按勾选语言挑翻译源字幕（与 ViewModel 旧逻辑一致）：大小写不敏感、允许前缀匹配。
     /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文 .srt，避免把上次译文当源二次翻译。
+    /// 没有 preferredLang 时回退第一个非译文字幕，避免把上次译文当源二次翻译。
     private static func pickSourceSubtitle(from files: [URL], preferredLang: String?) -> URL? {
-        let srtFiles = files.filter { $0.pathExtension.lowercased() == "srt" }
+        let subtitleFiles = files
+            .filter { ["srt", "vtt"].contains($0.pathExtension.lowercased()) }
+            .sorted { subtitleSourceRank($0) < subtitleSourceRank($1) }
         if let lang = preferredLang?.lowercased(), !lang.isEmpty,
-           let matched = srtFiles.first(where: { file in
+           let matched = subtitleFiles.first(where: { file in
                guard let code = langCode(of: file) else { return false }
                return code == lang || code.hasPrefix(lang + "-") || lang.hasPrefix(code + "-")
            }) {
             return matched
         }
-        let nonTranslated = srtFiles.filter { file in
+        let nonTranslated = subtitleFiles.filter { file in
             !TranslationLanguage.isTranslatedSubtitleFileName(file.lastPathComponent)
         }
-        return nonTranslated.first ?? srtFiles.first
+        return nonTranslated.first ?? subtitleFiles.first
+    }
+
+    private static func subtitleSourceRank(_ file: URL) -> Int {
+        switch file.pathExtension.lowercased() {
+        case "vtt": return 0
+        case "srt": return 1
+        default: return 2
+        }
+    }
+
+    private static func ensureSRTSubtitle(_ file: URL) throws -> URL {
+        if file.pathExtension.lowercased() == "srt" { return file }
+        return try cleanSRTFile(at: file).output
     }
 }

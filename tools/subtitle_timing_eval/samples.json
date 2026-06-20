@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "Artifacts generated from these samples belong under artifacts/subtitle_timing_eval/ and are not committed.",
+    "source may be a stable YouTube URL or a yt-dlp ytsearch1: query when the exact fixture video should be selected at run time and recorded in the generated report.",
+    "Scope is intentionally mainstream-language coverage, not every language on YouTube."
+  ],
+  "coverage_goal": {
+    "id": "mainstream_language_timing_gate",
+    "description": "Product-pragmatic target for mainstream languages/users Moongate is most likely to serve: en/zh/yue/ja/ko/es/fr/it plus translated subtitle timing. This keeps the 90% human-like gate bounded instead of tuning every long-tail language on YouTube.",
+    "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "fr", "it", "translated"]
+  },
+  "samples": [
+    {
+      "id": "starship_test_like_you_fly_en",
+      "title": "Starship - Test Like You Fly",
+      "source": "https://www.youtube.com/watch?v=ANe_HW4X8oc",
+      "category": "english_interview",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 40, "duration_seconds": 300 },
+      "stressors": ["long_pause_short_feedback", "rolling_captions"]
+    },
+    {
+      "id": "ted_school_creativity_en",
+      "title": "TED talk: Do schools kill creativity?",
+      "source": "https://www.youtube.com/watch?v=iG9CE55wbtY",
+      "category": "english_lecture",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 60, "duration_seconds": 300 },
+      "stressors": ["dense_speech"]
+    },
+    {
+      "id": "tedx_twenty_hours_en",
+      "title": "TEDx talk: The first 20 hours",
+      "source": "https://www.youtube.com/watch?v=5MgBikgcWnY",
+      "category": "english_tutorial",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 90, "duration_seconds": 300 },
+      "stressors": ["dense_speech", "semantic_boundaries"]
+    },
+    {
+      "id": "youtube_first_upload_en",
+      "title": "Me at the zoo",
+      "source": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "category": "english_vlog",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 0, "duration_seconds": 120 },
+      "stressors": ["short_clip", "short_feedback"]
+    },
+    {
+      "id": "music_lyrics_english",
+      "title": "English music lyrics stress case",
+      "source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "category": "music_lyrics",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 35, "duration_seconds": 180 },
+      "stressors": ["music", "lyrics"]
+    },
+    {
+      "id": "tedx_nagoyau_happiness_ja",
+      "title": "TEDxNagoyaU: Japanese talk with manual captions",
+      "source": "https://www.youtube.com/watch?v=SaalrFGgTIw",
+      "category": "japanese_talk",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": ["ja"],
+      "section": { "start_seconds": 120, "duration_seconds": 300 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
+    },
+    {
+      "id": "japanese_auto_vlog_ja",
+      "title": "Easy Japanese vlog with YouTube automatic rolling captions",
+      "source": "https://www.youtube.com/watch?v=5pYk7pxgwac",
+      "category": "japanese_auto_caption",
+      "language_group": "ja",
+      "subtitle_lang": "ja-orig",
+      "spoken_languages": ["ja"],
+      "section": { "start_seconds": 0, "duration_seconds": 300 },
+      "stressors": ["automatic_captions", "cjk_no_spaces", "rolling_captions", "long_pause_short_feedback", "vtt_word_timing"]
+    },
+    {
+      "id": "tedx_yonsei_visual_language_ko",
+      "title": "TEDxYonseiUniversity: Korean talk with manual captions",
+      "source": "https://www.youtube.com/watch?v=7euUE1s6GKo",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": ["ko"],
+      "section": { "start_seconds": 203, "duration_seconds": 300 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
+    },
+    {
+      "id": "korean_auto_ko",
+      "title": "Korean automatic captions with rolling carry and long idle holds",
+      "source": "https://www.youtube.com/watch?v=C4Vxt492DAc",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": ["ko"],
+      "section": { "start_seconds": 0, "duration_seconds": 120 },
+      "stressors": ["automatic_captions", "cjk_no_spaces", "rolling_captions", "long_pause_short_feedback", "vtt_word_timing"]
+    },
+    {
+      "id": "the_do_show_jimmy_o_yang_yue",
+      "title": "The Do Show: Jimmy O. Yang Cantonese interview",
+      "source": "https://www.youtube.com/watch?v=4403CZzUfwI",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": ["yue", "en"],
+      "section": { "start_seconds": 120, "duration_seconds": 300 },
+      "stressors": ["cjk_no_spaces", "code_switching", "manual_captions"]
+    },
+    {
+      "id": "cantonese_ai_subanana_yue",
+      "title": "Cantonese AI subtitle workflow demo with zh-HK captions",
+      "source": "https://www.youtube.com/watch?v=nH7RX67QZ38",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": ["yue"],
+      "section": { "start_seconds": 120, "duration_seconds": 120 },
+      "stressors": ["automatic_captions", "cjk_no_spaces", "no_vtt_word_timing", "long_pause_short_feedback"]
+    },
+    {
+      "id": "tedx_taipei_dont_work_too_hard_zh",
+      "title": "TEDxTaipei: Don't Work Too Hard",
+      "source": "https://www.youtube.com/watch?v=t7ZI9c6Ze7E",
+      "category": "mandarin_talk",
+      "language_group": "zh",
+      "subtitle_lang": "zh-TW",
+      "spoken_languages": ["zh"],
+      "section": { "start_seconds": 120, "duration_seconds": 300 },
+      "stressors": ["cjk_no_spaces", "long_pause_short_feedback", "manual_captions"]
+    },
+    {
+      "id": "chinese_auto_zh",
+      "title": "Taiwanese Mandarin vlog with YouTube automatic captions",
+      "source": "https://www.youtube.com/watch?v=4Gq1hsmpWs8",
+      "category": "mandarin_auto_caption",
+      "language_group": "zh",
+      "subtitle_lang": "zh-TW",
+      "spoken_languages": ["zh"],
+      "section": { "start_seconds": 50, "duration_seconds": 120 },
+      "stressors": ["automatic_captions", "cjk_no_spaces", "long_pause_short_feedback", "no_vtt_word_timing"]
+    },
+    {
+      "id": "spanish_talk_public_es",
+      "title": "Spanish talk with native captions",
+      "source": "ytsearch1:TEDx Spanish talk Spanish subtitles",
+      "category": "spanish_talk",
+      "language_group": "es",
+      "subtitle_lang": "es",
+      "spoken_languages": ["es"],
+      "section": { "start_seconds": 90, "duration_seconds": 300 },
+      "stressors": ["dense_speech", "romance_word_boundaries"]
+    },
+    {
+      "id": "french_auto_fr",
+      "title": "Super Easy French 167: French market talk with automatic captions",
+      "source": "https://www.youtube.com/watch?v=3jdRN1LZvSg",
+      "category": "french_talk",
+      "language_group": "fr",
+      "subtitle_lang": "fr-orig",
+      "spoken_languages": ["fr"],
+      "section": { "start_seconds": 90, "duration_seconds": 300 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "rolling_captions", "automatic_captions"]
+    },
+    {
+      "id": "italian_auto_it",
+      "title": "Italian talk with YouTube automatic captions",
+      "source": "https://www.youtube.com/watch?v=1D1QvZYVIkU",
+      "category": "italian_talk",
+      "language_group": "it",
+      "subtitle_lang": "it-orig",
+      "spoken_languages": ["it"],
+      "section": { "start_seconds": 360, "duration_seconds": 300 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "rolling_captions", "automatic_captions", "vtt_word_timing"]
+    },
+    {
+      "id": "news_explainer_en",
+      "title": "English news explainer with fast narration",
+      "source": "https://www.youtube.com/watch?v=Qf6uZe4SDuY",
+      "category": "news_explainer",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 60, "duration_seconds": 300 },
+      "stressors": ["dense_speech", "semantic_boundaries"]
+    },
+    {
+      "id": "short_social_fast_en",
+      "title": "Fast social video speech",
+      "source": "https://www.youtube.com/watch?v=kmm2w1hwEvY",
+      "category": "short_social",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 0, "duration_seconds": 120 },
+      "stressors": ["fast_cuts", "short_clip"]
+    },
+    {
+      "id": "moongate_translate_timing_proxy",
+      "title": "Moongate app translation timing proxy from cleaned English source cues",
+      "source": "https://www.youtube.com/watch?v=5MgBikgcWnY",
+      "category": "app_translate_proxy",
+      "language_group": "translated",
+      "subtitle_lang": "zh-CN",
+      "alignment_mode": "text",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 90, "duration_seconds": 120 },
+      "stressors": ["translated_timing", "app_translation_timing_proxy", "dense_speech"]
+    },
+    {
+      "id": "english_to_chinese_auto_translate",
+      "title": "TED English source with Chinese translated subtitles",
+      "source": "https://www.youtube.com/watch?v=iG9CE55wbtY",
+      "category": "auto_translate",
+      "language_group": "translated",
+      "subtitle_lang": "zh-CN",
+      "alignment_mode": "overlap",
+      "spoken_languages": ["en"],
+      "section": { "start_seconds": 60, "duration_seconds": 300 },
+      "stressors": ["translated_timing", "dense_speech", "manual_captions"]
+    },
+    {
+      "id": "chinese_to_english_public_translate",
+      "title": "Mandarin listening practice with English translated subtitles",
+      "source": "https://www.youtube.com/watch?v=nSeVUZDzCUY",
+      "category": "translated_public_subtitle",
+      "language_group": "translated",
+      "subtitle_lang": "en",
+      "spoken_languages": ["zh"],
+      "section": { "start_seconds": 0, "duration_seconds": 120 },
+      "stressors": ["translated_timing", "manual_captions", "cjk_no_spaces", "multiline_bilingual_subtitles"]
+    }
+  ]
+}

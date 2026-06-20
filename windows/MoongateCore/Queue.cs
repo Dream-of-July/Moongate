@@ -649,8 +649,8 @@ public sealed class QueueManager
         // 找翻译源字幕；没有就完成并提示已跳过
         var preferredLang = current.Request.SubtitleLangs.FirstOrDefault()
             ?? current.Request.AutoSubtitleLangs.FirstOrDefault();
-        var srtFile = PickSourceSubtitle(downloadFiles, preferredLang);
-        if (srtFile is null)
+        var sourceSubtitle = PickSourceSubtitle(downloadFiles, preferredLang);
+        if (sourceSubtitle is null)
         {
             FinishDone(id, generation, downloadFiles, mode == ChineseSubtitleMode.BurnOriginal
                 ? L10n.T("没有字幕文件，已跳过烧录", "沒有字幕檔，已跳過燒錄", "No subtitle file; burn-in skipped")
@@ -683,9 +683,10 @@ public sealed class QueueManager
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                         ApplyProgress(item, id, generation, QueueProgressPhase.Burn, null);
                     });
+                    var burnSubtitle = EnsureSrtSubtitle(sourceSubtitle);
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
-                        rawVideo, srtFile, settings.MaxBurnHeight, control,
+                        rawVideo, burnSubtitle, settings.MaxBurnHeight, control,
                         p => Update(id, generation, item =>
                         {
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
@@ -721,21 +722,32 @@ public sealed class QueueManager
         }
 
         // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
-        // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt" 解析。
+        // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt/.vtt" 解析。
         var sourceMatchesTarget = TranslationLanguage.Matches(
-            preferredLang ?? LangCode(srtFile), settings.TranslationTargetLanguage);
+            preferredLang ?? LangCode(sourceSubtitle), settings.TranslationTargetLanguage);
         if (sourceMatchesTarget)
         {
-            // srtOnly：原目标语言 srt 即结果（已在 downloadFiles 里），不再生成译文副本。
+            // srtOnly：原目标语言字幕即结果；若源是 VTT，先转成 SRT，保持模式语义。
             if (mode != ChineseSubtitleMode.BurnIn)
             {
-                FinishDone(id, generation, downloadFiles,
-                    L10n.T("使用视频自带目标语言字幕，已跳过翻译",
-                        "使用影片內建目標語言字幕，已跳過翻譯",
-                        "Using the video's target-language subtitle; translation skipped"));
+                try
+                {
+                    var normalized = EnsureSrtSubtitle(sourceSubtitle);
+                    var files = downloadFiles.ToList();
+                    if (!files.Contains(normalized)) files.Add(normalized);
+                    FinishDone(id, generation, files,
+                        L10n.T("使用视频自带目标语言字幕，已跳过翻译",
+                            "使用影片內建目標語言字幕，已跳過翻譯",
+                            "Using the video's target-language subtitle; translation skipped"));
+                }
+                catch (Exception error)
+                {
+                    SettlePartial(id, generation, downloadFiles, error,
+                        L10n.T("翻译", "翻譯", "translation"));
+                }
                 return;
             }
-            // burnIn：直接拿目标语言 srt 去烧录。
+            // burnIn：直接拿目标语言字幕去烧录；VTT 先转成 SRT。
             var chineseVideo = downloadFiles.FirstOrDefault(f => VideoExtensions.Contains(ExtensionOf(f)));
             if (chineseVideo is null)
             {
@@ -760,9 +772,10 @@ public sealed class QueueManager
                         item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
                         ApplyProgress(item, id, generation, QueueProgressPhase.Burn, null);
                     });
+                    var burnSubtitle = EnsureSrtSubtitle(sourceSubtitle);
                     var burner = _burnerFactory();
                     var burned = await burner.BurnAsync(
-                        chineseVideo, srtFile, settings.MaxBurnHeight, control,
+                        chineseVideo, burnSubtitle, settings.MaxBurnHeight, control,
                         p => Update(id, generation, item =>
                         {
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
@@ -818,7 +831,7 @@ public sealed class QueueManager
                 var translationSettings = settings.ForTranslation();
                 var translator = _translatorFactory(translationSettings);
                 zhSrt = await translator.TranslateAsync(
-                    srtFile, translationSettings.SubtitleStyle, control,
+                    sourceSubtitle, translationSettings.SubtitleStyle, control,
                     p => Update(id, generation, item =>
                     {
                         if (item.Stage.Kind != ItemStageKind.Translating) return;
@@ -1345,7 +1358,7 @@ public sealed class QueueManager
         return prefix == "zh";
     }
 
-    /// <summary>从字幕文件名 "&lt;名&gt;.&lt;lang&gt;.srt" 解析出 lang code（无法解析返回 null）。</summary>
+    /// <summary>从字幕文件名 "&lt;名&gt;.&lt;lang&gt;.srt/.vtt" 解析出 lang code（无法解析返回 null）。</summary>
     internal static string? LangCode(string file)
     {
         var stem = Path.GetFileNameWithoutExtension(file);
@@ -1357,15 +1370,18 @@ public sealed class QueueManager
     /// <summary>
     /// 按勾选语言挑翻译源字幕：大小写不敏感、允许前缀匹配。
     /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文 .srt，避免把上次译文当源二次翻译。
+    /// 没有 preferredLang 时回退第一个非译文字幕，避免把上次译文当源二次翻译。
     /// </summary>
     internal static string? PickSourceSubtitle(IReadOnlyList<string> files, string? preferredLang)
     {
-        var srtFiles = files.Where(f => ExtensionOf(f) == "srt").ToList();
+        var subtitleFiles = files
+            .Where(f => ExtensionOf(f) is "srt" or "vtt")
+            .OrderBy(SubtitleSourceRank)
+            .ToList();
         if (preferredLang is { Length: > 0 })
         {
             var lang = preferredLang.ToLowerInvariant();
-            var matched = srtFiles.FirstOrDefault(file =>
+            var matched = subtitleFiles.FirstOrDefault(file =>
             {
                 var code = LangCode(file);
                 if (code is null) return false;
@@ -1373,9 +1389,22 @@ public sealed class QueueManager
             });
             if (matched is not null) return matched;
         }
-        var nonTranslated = srtFiles
+        var nonTranslated = subtitleFiles
             .Where(f => !TranslationLanguage.IsTranslatedSubtitleFileName(f))
             .ToList();
-        return nonTranslated.FirstOrDefault() ?? srtFiles.FirstOrDefault();
+        return nonTranslated.FirstOrDefault() ?? subtitleFiles.FirstOrDefault();
+    }
+
+    private static int SubtitleSourceRank(string file) => ExtensionOf(file) switch
+    {
+        "vtt" => 0,
+        "srt" => 1,
+        _ => 2,
+    };
+
+    private static string EnsureSrtSubtitle(string file)
+    {
+        if (ExtensionOf(file) == "srt") return file;
+        return SrtTools.CleanSrtFile(file).OutputPath;
     }
 }

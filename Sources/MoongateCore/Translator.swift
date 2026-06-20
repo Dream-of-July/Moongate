@@ -8,6 +8,18 @@ private let srtTimeLineRegex: NSRegularExpression? = try? NSRegularExpression(
     pattern: #"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})"#
 )
 
+private let vttTimeLineRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"\s*((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})"#
+)
+
+private let vttInlineTimeRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"<((?:\d{1,2}:)?\d{2}:\d{2}[,\.]\d{1,3})>"#
+)
+
+private let vttTagRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"<[^>]+>"#
+)
+
 // MARK: - 默认翻译器
 
 public func makeTranslator(settings: AppSettings) -> any SubtitleTranslator {
@@ -74,6 +86,226 @@ func parseSRT(_ raw: String) -> [SubtitleCue] {
     return cues
 }
 
+/// 解析 WebVTT 文本为字幕条。YouTube 自动字幕常在 VTT 中保留 `<00:00:00.000>`
+/// 词级时间戳；这里把它们转成 `sourceFragments`，供清洗器做真实语音边界对齐。
+func parseVTT(_ raw: String) -> [SubtitleCue] {
+    var text = raw
+    if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
+    let lines = text
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+        .components(separatedBy: "\n")
+
+    struct Anchor {
+        let lineIndex: Int
+        let start: Double
+        let end: Double
+    }
+
+    var anchors: [Anchor] = []
+    for (index, line) in lines.enumerated() {
+        guard let timing = parseVTTTimeLine(line) else { continue }
+        anchors.append(Anchor(lineIndex: index, start: timing.start, end: timing.end))
+    }
+
+    var cues: [SubtitleCue] = []
+    var previousVisible = ""
+    for (anchorIndex, anchor) in anchors.enumerated() {
+        let textStart = anchor.lineIndex + 1
+        let textEnd = anchorIndex + 1 < anchors.count ? anchors[anchorIndex + 1].lineIndex : lines.count
+        guard textStart < textEnd else { continue }
+        let bodyLines = Array(lines[textStart..<textEnd])
+        guard let parsed = parseVTTCueBody(
+            bodyLines,
+            cueStart: anchor.start,
+            cueEnd: max(anchor.end, anchor.start),
+            previousVisible: previousVisible
+        ) else { continue }
+
+        cues.append(SubtitleCue(
+            index: cues.count + 1,
+            start: secondsToSRTTime(anchor.start),
+            end: secondsToSRTTime(max(anchor.end, anchor.start)),
+            text: parsed.text,
+            sourceFragments: parsed.fragments
+        ))
+        previousVisible = parsed.text
+    }
+    return cues
+}
+
+private func parseVTTTimeLine(_ line: String) -> (start: Double, end: Double)? {
+    guard let regex = vttTimeLineRegex,
+          let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+          let startRange = Range(match.range(at: 1), in: line),
+          let endRange = Range(match.range(at: 2), in: line),
+          let start = vttTimeToSeconds(String(line[startRange])),
+          let end = vttTimeToSeconds(String(line[endRange])) else { return nil }
+    return (start, end)
+}
+
+private func vttTimeToSeconds(_ raw: String) -> Double? {
+    let parts = raw.replacingOccurrences(of: ",", with: ".").split(separator: ":")
+    if parts.count == 2 {
+        guard let minutes = Double(parts[0]), let seconds = Double(parts[1]) else { return nil }
+        return minutes * 60 + seconds
+    }
+    if parts.count == 3 {
+        guard let hours = Double(parts[0]),
+              let minutes = Double(parts[1]),
+              let seconds = Double(parts[2]) else { return nil }
+        return hours * 3600 + minutes * 60 + seconds
+    }
+    return nil
+}
+
+private func parseVTTCueBody(
+    _ bodyLines: [String],
+    cueStart: Double,
+    cueEnd: Double,
+    previousVisible: String
+) -> (text: String, fragments: [SubtitleCueSourceFragment])? {
+    let visibleLines = bodyLines
+        .map(stripVTTMarkup)
+        .filter { !$0.isEmpty }
+    guard !visibleLines.isEmpty else { return nil }
+    let visibleText = visibleLines.joined(separator: "\n")
+
+    let body = bodyLines.joined(separator: "\n")
+    guard let inlineRegex = vttInlineTimeRegex else {
+        return (visibleText, [])
+    }
+    let matches = inlineRegex.matches(in: body, range: NSRange(body.startIndex..., in: body))
+    guard !matches.isEmpty else {
+        let timingText = removeVTTRollingPrefix(visibleText, previousVisible: previousVisible)
+        guard !timingText.isEmpty else { return (visibleText, []) }
+        let tokens = timingText.split(whereSeparator: { $0.isWhitespace })
+        let shouldCapNoInlineHold = timingText != visibleText
+            && cueEnd - cueStart > SubtitleTimingPlanner.vttUntimedLongCueSeconds
+        let cappedEnd = shouldCapNoInlineHold ? min(
+            cueEnd,
+            cueStart + Double(max(1, tokens.count)) * SubtitleTimingPlanner.vttUntimedMaxSecondsPerToken
+        ) : cueEnd
+        return (
+            visibleText,
+            [SubtitleCueSourceFragment(startSeconds: cueStart, endSeconds: cappedEnd, text: timingText)]
+        )
+    }
+
+    var fragments: [SubtitleCueSourceFragment] = []
+    var cursor = body.startIndex
+    var segmentStart = cueStart
+    var isLeadingSegment = true
+
+    func appendSegment(_ rawSegment: Substring, start: Double, end: Double, capTokenSpan: Bool = false) {
+        var text = stripVTTMarkup(String(rawSegment))
+        if isLeadingSegment {
+            text = removeVTTRollingPrefix(text, previousVisible: previousVisible)
+        }
+        isLeadingSegment = false
+        guard !text.isEmpty else { return }
+
+        let clampedStart = max(cueStart, start)
+        let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var clampedEnd = min(max(clampedStart, end), cueEnd)
+        if capTokenSpan,
+           clampedEnd - clampedStart > 2.0 {
+            let capUnitCount = SubtitleTimingPlanner.containsCJKText(text)
+                ? SubtitleTimingPlanner.timingTokens(text).count
+                : tokens.count
+            clampedEnd = min(
+                clampedEnd,
+                clampedStart + Double(max(1, capUnitCount)) * SubtitleTimingPlanner.vttUntimedMaxSecondsPerToken
+            )
+        }
+        guard clampedEnd >= clampedStart else { return }
+        guard tokens.count > 1 else {
+            fragments.append(SubtitleCueSourceFragment(
+                startSeconds: clampedStart,
+                endSeconds: clampedEnd,
+                text: text
+            ))
+            return
+        }
+
+        let duration = clampedEnd - clampedStart
+        for (tokenIndex, token) in tokens.enumerated() {
+            let tokenStart = clampedStart + duration * Double(tokenIndex) / Double(tokens.count)
+            let tokenEnd = clampedStart + duration * Double(tokenIndex + 1) / Double(tokens.count)
+            fragments.append(SubtitleCueSourceFragment(
+                startSeconds: tokenStart,
+                endSeconds: tokenEnd,
+                text: token
+            ))
+        }
+    }
+
+    for match in matches {
+        guard let markerRange = Range(match.range(at: 0), in: body),
+              let timeRange = Range(match.range(at: 1), in: body),
+              let markerTime = vttTimeToSeconds(String(body[timeRange])) else { continue }
+        appendSegment(body[cursor..<markerRange.lowerBound], start: segmentStart, end: markerTime)
+        cursor = markerRange.upperBound
+        segmentStart = markerTime
+    }
+    appendSegment(body[cursor..<body.endIndex], start: segmentStart, end: cueEnd, capTokenSpan: true)
+
+    return (visibleText, fragments)
+}
+
+private func stripVTTMarkup(_ text: String) -> String {
+    var output = text
+    if let tagRegex = vttTagRegex {
+        output = tagRegex.stringByReplacingMatches(
+            in: output,
+            range: NSRange(output.startIndex..., in: output),
+            withTemplate: " "
+        )
+    }
+    output = decodeBasicHTMLEntities(output)
+    return collapseSubtitleWhitespace(output)
+}
+
+private func decodeBasicHTMLEntities(_ text: String) -> String {
+    text.replacingOccurrences(of: "&nbsp;", with: " ")
+        .replacingOccurrences(of: "&#160;", with: " ")
+        .replacingOccurrences(of: "&amp;", with: "&")
+        .replacingOccurrences(of: "&lt;", with: "<")
+        .replacingOccurrences(of: "&gt;", with: ">")
+        .replacingOccurrences(of: "&quot;", with: "\"")
+        .replacingOccurrences(of: "&#39;", with: "'")
+        .replacingOccurrences(of: "&apos;", with: "'")
+}
+
+private func removeVTTRollingPrefix(_ text: String, previousVisible: String) -> String {
+    let currentTokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    let previousTokens = previousVisible
+        .replacingOccurrences(of: "\n", with: " ")
+        .split(whereSeparator: { $0.isWhitespace })
+        .map(String.init)
+    guard !currentTokens.isEmpty, !previousTokens.isEmpty else { return text }
+
+    var overlap = min(currentTokens.count, previousTokens.count)
+    while overlap > 0 {
+        if Array(previousTokens.suffix(overlap)) == Array(currentTokens.prefix(overlap)) {
+            let remaining = currentTokens.dropFirst(overlap).joined(separator: " ")
+            return remaining.isEmpty ? "" : remaining
+        }
+        overlap -= 1
+    }
+
+    let compactText = collapseSubtitleWhitespace(text)
+    let compactPrevious = collapseSubtitleWhitespace(previousVisible.replacingOccurrences(of: "\n", with: " "))
+    if !compactPrevious.isEmpty,
+       compactText != compactPrevious,
+       compactText.hasPrefix(compactPrevious) {
+        let remainingStart = compactText.index(compactText.startIndex, offsetBy: compactPrevious.count)
+        let remaining = String(compactText[remainingStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return remaining.isEmpty ? "" : remaining
+    }
+    return text
+}
+
 /// 解析时间行 "HH:MM:SS,mmm --> HH:MM:SS,mmm"（毫秒分隔符容忍 "," 与 "."）。
 private func parseSRTTimeLine(_ line: String) -> (start: String, end: String)? {
     guard let regex = srtTimeLineRegex,
@@ -125,6 +357,8 @@ private let nonSpeechMarkerTerms: Set<String> = [
     "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
     "音乐", "音樂", "背景音乐", "背景音樂", "歌声", "歌聲",
     "applause", "applauding", "clapping", "claps", "applausecontinues", "clappingcontinues",
+    "acclamation", "acclamations", "applaudissement", "applaudissements",
+    "aplauso", "aplausos", "applauso", "applausi",
     "掌声", "掌聲", "掌声继续", "掌聲繼續", "鼓掌", "鼓掌声", "鼓掌聲", "拍手", "拍手声", "拍手聲",
     "laughter", "laugh", "laughs", "laughing", "chuckle", "chuckles", "chuckling", "giggle",
     "giggles", "giggling", "snicker", "snickers", "laughingcontinues",
@@ -229,7 +463,7 @@ private func removeSpacesBetweenCJKCharacters(_ text: String) -> String {
 private func isCJKSubtitleCharacter(_ char: Character) -> Bool {
     char.unicodeScalars.contains { scalar in
         switch scalar.value {
-        case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0x3040...0x30FF, 0xAC00...0xD7AF:
+        case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0x3040...0x30FF:
             return true
         default:
             return false
@@ -270,7 +504,61 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
 
     // (a) 解析时间 + 稳定升序排序
     struct Fragment { var start: Double; var end: Double; var text: String }
-    struct Timed { var start: Double; var end: Double; var text: String; var order: Int; var fragments: [Fragment] }
+    struct Timed {
+        var start: Double
+        var end: Double
+        var text: String
+        var order: Int
+        var fragments: [Fragment]
+        var hasSourceAnchors: Bool
+    }
+    func fragmentMatchTokens(_ text: String) -> [String] {
+        SubtitleTimingPlanner.timingTokens(text)
+    }
+    func fallbackFragment(start: Double, end: Double, text: String) -> [Fragment] {
+        [Fragment(start: start, end: end, text: text)]
+    }
+    func sourceFragments(for cue: SubtitleCue, start: Double, end: Double, text: String) -> [Fragment] {
+        let fragments = cue.sourceFragments.compactMap { fragment -> Fragment? in
+            let fragmentText = stripNonSpeechMarkers(normalizeSubtitleEscapes(fragment.text))
+            guard !fragmentText.isEmpty else { return nil }
+            let fragmentStart = max(start, fragment.startSeconds)
+            let fragmentEnd = min(end, fragment.endSeconds)
+            guard fragmentEnd >= fragmentStart else { return nil }
+            return Fragment(start: fragmentStart, end: fragmentEnd, text: fragmentText)
+        }
+        return fragments.isEmpty ? fallbackFragment(start: start, end: end, text: text) : fragments
+    }
+    func clippedFragments(_ fragments: [Fragment], start: Double, end: Double, text: String) -> [Fragment] {
+        let clipped = fragments.compactMap { fragment -> Fragment? in
+            let fragmentStart = max(start, fragment.start)
+            let fragmentEnd = min(end, fragment.end)
+            guard fragmentEnd >= fragmentStart else { return nil }
+            return Fragment(start: fragmentStart, end: fragmentEnd, text: fragment.text)
+        }
+        return clipped.isEmpty ? fallbackFragment(start: start, end: end, text: text) : clipped
+    }
+    func fragmentsMatching(text: String, from fragments: [Fragment], fallbackStart: Double, fallbackEnd: Double) -> [Fragment] {
+        let targetTokens = fragmentMatchTokens(text)
+        guard !targetTokens.isEmpty else {
+            return fallbackFragment(start: fallbackStart, end: fallbackEnd, text: text)
+        }
+        var cursor = 0
+        var matched: [Fragment] = []
+        for fragment in fragments {
+            let tokens = fragmentMatchTokens(fragment.text)
+            guard !tokens.isEmpty, cursor + tokens.count <= targetTokens.count else { continue }
+            let targetSlice = Array(targetTokens[cursor..<(cursor + tokens.count)])
+            guard targetSlice == tokens else { continue }
+            matched.append(fragment)
+            cursor += tokens.count
+            if cursor == targetTokens.count { break }
+        }
+        return cursor == targetTokens.count && !matched.isEmpty
+            ? matched
+            : fallbackFragment(start: fallbackStart, end: fallbackEnd, text: text)
+    }
+
     var timed: [Timed] = []
     for (i, cue) in input.enumerated() {
         guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
@@ -284,7 +572,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             end: clampedEnd,
             text: text,
             order: i,
-            fragments: [Fragment(start: start, end: clampedEnd, text: text)]
+            fragments: sourceFragments(for: cue, start: start, end: clampedEnd, text: text),
+            hasSourceAnchors: !cue.sourceFragments.isEmpty
         ))
     }
     guard !timed.isEmpty else { return [] }
@@ -335,7 +624,12 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             guard !newLines.isEmpty else { continue }
             var copy = item
             copy.text = newLines.joined(separator: "\n")
-            copy.fragments = [Fragment(start: copy.start, end: copy.end, text: copy.text)]
+            copy.fragments = fragmentsMatching(
+                text: copy.text,
+                from: item.fragments,
+                fallbackStart: copy.start,
+                fallbackEnd: copy.end
+            )
             deduped.append(copy)
         }
         if !deduped.isEmpty { timed = deduped }
@@ -345,7 +639,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     let minDuration = 0.3
     for i in 0..<timed.count {
         let nextStart = i + 1 < timed.count ? timed[i + 1].start : nil
-        if let nextStart {
+        let preserveSourceWindow = isRolling && timed[i].hasSourceAnchors
+        if let nextStart, !preserveSourceWindow {
             timed[i].end = min(timed[i].end, nextStart)
         }
         if timed[i].end - timed[i].start < minDuration {
@@ -353,7 +648,14 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             if let nextStart { compensated = min(compensated, nextStart) }
             timed[i].end = compensated
         }
-        timed[i].fragments = [Fragment(start: timed[i].start, end: timed[i].end, text: timed[i].text)]
+        if !preserveSourceWindow {
+            timed[i].fragments = clippedFragments(
+                timed[i].fragments,
+                start: timed[i].start,
+                end: timed[i].end,
+                text: timed[i].text
+            )
+        }
     }
 
     func makeCues(_ items: [Timed]) -> [SubtitleCue] {
@@ -375,31 +677,15 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         guard let last = chars.last else { return false }
         return sentenceEnders.contains(last)
     }
-    let continuationStarts: Set<String> = [
-        "if", "that", "which", "who", "whom", "whose", "when", "where", "why", "how",
-        "and", "or", "but", "because", "so", "then", "than", "to", "of", "for", "with",
-        "as", "in", "on", "at", "by", "from", "do", "does", "did", "is", "are", "was",
-        "were", "be", "been", "being", "have", "has", "had", "can", "could", "would",
-        "will", "should", "may", "might", "must", "not"
-    ]
-    let continuationEnds: Set<String> = [
-        "the", "a", "an", "and", "or", "but", "if", "that", "which", "who", "what",
-        "when", "where", "why", "how", "to", "of", "for", "with", "from", "as",
-        "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
-        "have", "has", "had", "can", "could", "would", "will", "should", "may",
-        "might", "must", "we", "you", "i", "they", "he", "she", "it"
-    ]
     func wordTokens(_ text: String) -> [String] {
-        text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
+        SubtitleTimingPlanner.wordTokens(text)
     }
     func looksLikeContinuation(current: String, nextPiece: String?) -> Bool {
         guard let nextPiece, !endsSentence(current) else { return false }
         let currentWords = wordTokens(current)
         let nextWords = wordTokens(nextPiece)
         guard let last = currentWords.last, let first = nextWords.first else { return false }
-        return continuationEnds.contains(last) || continuationStarts.contains(first)
+        return SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first)
     }
 
     var merged: [Timed] = []
@@ -407,26 +693,31 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     var curStart = 0.0
     var curEnd = 0.0
     var curFragments: [Fragment] = []
+    var curHasSourceAnchors = false
     var hasCurrent = false
 
     func flush() {
         guard hasCurrent else { return }
-        merged.append(Timed(start: curStart, end: curEnd, text: curText, order: merged.count, fragments: curFragments))
+        merged.append(Timed(
+            start: curStart,
+            end: curEnd,
+            text: curText,
+            order: merged.count,
+            fragments: curFragments,
+            hasSourceAnchors: curHasSourceAnchors
+        ))
         hasCurrent = false
         curText = ""
         curFragments = []
+        curHasSourceAnchors = false
     }
 
     let softDuration = 6.0
     let softCharacterBudget = 84
     let hardDuration = 18.0
     let hardCharacterBudget = 220
-    let normalReadableCueSeconds = 9.0
-    let emergencyReadableCueSeconds = 12.0
-
-    func clamped(_ value: Double, min minValue: Double, max maxValue: Double) -> Double {
-        min(max(value, minValue), maxValue)
-    }
+    let normalReadableCueSeconds = SubtitleTimingPlanner.normalReadableCueSeconds
+    let emergencyReadableCueSeconds = SubtitleTimingPlanner.emergencyReadableCueSeconds
 
     func textWeight(_ text: String) -> Int {
         let words = wordTokens(text)
@@ -434,44 +725,19 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     }
 
     func speechTokens(_ text: String) -> [String] {
-        var tokens: [String] = []
-        var current = ""
-        for scalar in text.lowercased().unicodeScalars {
-            let isASCIIAlnum = (scalar.value >= 48 && scalar.value <= 57)
-                || (scalar.value >= 97 && scalar.value <= 122)
-            if isASCIIAlnum {
-                current.unicodeScalars.append(scalar)
-            } else if !current.isEmpty {
-                tokens.append(current)
-                current = ""
-            }
-        }
-        if !current.isEmpty { tokens.append(current) }
-        return tokens
+        SubtitleTimingPlanner.speechTokens(text)
+    }
+
+    func timingUnits(_ text: String) -> [String] {
+        SubtitleTimingPlanner.timingTokens(text)
     }
 
     func speechAlignedVisibleSeconds(_ text: String) -> Double {
-        let tokens = speechTokens(text)
-        if tokens.isEmpty {
-            let visibleCharacterCount = collapseSubtitleWhitespace(text)
-                .filter { !$0.isWhitespace }
-                .count
-            return clamped(Double(visibleCharacterCount) * 0.18 + 0.8, min: 1.5, max: 6.0)
-        }
-
-        if tokens.count >= 2, tokens.allSatisfy({ $0.allSatisfy(\.isNumber) }) {
-            return clamped(Double(tokens.count) * 0.65 + 0.5, min: 2.0, max: 8.0)
-        }
-
-        if tokens.count <= 3 {
-            return 2.0
-        }
-
-        let sentencePause = endsSentence(text) ? 0.8 : 0.45
-        return clamped(Double(tokens.count) * 0.42 + sentencePause, min: 2.2, max: 9.0)
+        SubtitleTimingPlanner.speechAlignedVisibleSeconds(text, endsSentence: endsSentence(text))
     }
 
     struct TokenTiming {
+        let token: String
         let start: Double
         let end: Double
         let fragmentIndex: Int
@@ -479,12 +745,23 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         let fragmentEnd: Double
     }
 
-    func effectiveFragmentEnd(_ fragment: Fragment, speechAlignTimings: Bool) -> Double {
+    func effectiveFragmentEnd(
+        _ fragment: Fragment,
+        speechAlignTimings: Bool,
+        isTerminalSourceFragment: Bool,
+        itemTokenCount: Int
+    ) -> Double {
         let duration = fragment.end - fragment.start
-        let tokenCount = speechTokens(fragment.text).count
+        let tokenCount = timingUnits(fragment.text).count
         guard speechAlignTimings,
               tokenCount > 0,
               (tokenCount <= 3 || duration > normalReadableCueSeconds) else {
+            return fragment.end
+        }
+        if isTerminalSourceFragment, itemTokenCount > tokenCount {
+            return fragment.end
+        }
+        if tokenCount <= 3, duration <= SubtitleTimingPlanner.shortSourceFragmentWindowSeconds {
             return fragment.end
         }
         return min(fragment.end, fragment.start + speechAlignedVisibleSeconds(fragment.text))
@@ -492,15 +769,22 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
 
     func tokenTimings(for item: Timed, speechAlignTimings: Bool) -> [TokenTiming] {
         var output: [TokenTiming] = []
+        let itemTokenCount = timingUnits(item.text).count
         for (fragmentIndex, fragment) in item.fragments.enumerated() {
-            let tokens = speechTokens(fragment.text)
+            let tokens = timingUnits(fragment.text)
             guard !tokens.isEmpty else { continue }
-            let fragmentEnd = max(fragment.start, effectiveFragmentEnd(fragment, speechAlignTimings: speechAlignTimings))
+            let fragmentEnd = max(fragment.start, effectiveFragmentEnd(
+                fragment,
+                speechAlignTimings: speechAlignTimings,
+                isTerminalSourceFragment: fragmentIndex == item.fragments.count - 1,
+                itemTokenCount: itemTokenCount
+            ))
             let duration = fragmentEnd - fragment.start
             for tokenIndex in tokens.indices {
                 let tokenStart = fragment.start + duration * Double(tokenIndex) / Double(tokens.count)
                 let tokenEnd = fragment.start + duration * Double(tokenIndex + 1) / Double(tokens.count)
                 output.append(TokenTiming(
+                    token: tokens[tokenIndex],
                     start: tokenStart,
                     end: tokenEnd,
                     fragmentIndex: fragmentIndex,
@@ -510,6 +794,33 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             }
         }
         return output
+    }
+
+    func alignedTokenRange(pieceTokens: [String], timings: [TokenTiming], from cursor: Int) -> Range<Int>? {
+        guard let firstToken = pieceTokens.first else { return nil }
+        let lowerBound = max(0, cursor)
+        guard lowerBound < timings.count else { return nil }
+
+        for candidateStart in lowerBound..<timings.count where timings[candidateStart].token == firstToken {
+            var searchIndex = candidateStart
+            var matchedLast = candidateStart
+            var didMatch = true
+            for token in pieceTokens {
+                while searchIndex < timings.count, timings[searchIndex].token != token {
+                    searchIndex += 1
+                }
+                guard searchIndex < timings.count else {
+                    didMatch = false
+                    break
+                }
+                matchedLast = searchIndex
+                searchIndex += 1
+            }
+            if didMatch {
+                return candidateStart..<(matchedLast + 1)
+            }
+        }
+        return nil
     }
 
     func splitSentencePieces(_ text: String) -> [String] {
@@ -555,10 +866,6 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         return output
     }
 
-    func normalizedBoundaryWord(_ raw: String) -> String {
-        String(raw.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
-    }
-
     func lastMeaningfulCharacter(_ text: String) -> Character? {
         text.trimmingCharacters(in: .whitespacesAndNewlines).reversed().first { char in
             !trailingAllowed.contains(char) && char != " "
@@ -574,16 +881,29 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     }
 
     func isBadBoundary(leftToken: String, rightToken: String) -> Bool {
-        let left = normalizedBoundaryWord(leftToken)
-        let right = normalizedBoundaryWord(rightToken)
-        guard !left.isEmpty, !right.isEmpty else { return false }
-        return continuationEnds.contains(left) || continuationStarts.contains(right)
+        SubtitleTimingPlanner.isWeakBoundary(leftToken: leftToken, rightToken: rightToken)
+    }
+
+    func startsLikeNewSentence(_ text: String) -> Bool {
+        let skippableOpeners: Set<Character> = ["\"", "'", "“", "‘", "(", "（", "¿", "¡"]
+        for char in text.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if skippableOpeners.contains(char) { continue }
+            let scalars = String(char).unicodeScalars
+            if scalars.contains(where: { CharacterSet.letters.contains($0) }) {
+                return scalars.contains(where: { CharacterSet.uppercaseLetters.contains($0) })
+            }
+            if scalars.contains(where: { CharacterSet.decimalDigits.contains($0) }) {
+                return true
+            }
+            return false
+        }
+        return false
     }
 
     func splitTextByCharacters(_ text: String, targetParts: Int) -> [String] {
         let chars = Array(text.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !chars.isEmpty else { return [] }
-        let parts = min(max(1, targetParts), chars.count)
+        let parts = min(SubtitleTimingPlanner.characterSplitPartCount(text: text, requestedParts: targetParts), chars.count)
         return (0..<parts).compactMap { part in
             let start = chars.count * part / parts
             let end = part == parts - 1 ? chars.count : chars.count * (part + 1) / parts
@@ -631,6 +951,9 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
 
         let words = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard words.count >= targetParts else {
+            if speechTokens(text).isEmpty, SubtitleTimingPlanner.containsCJKText(text) {
+                return splitTextByCharacters(text, targetParts: targetParts)
+            }
             return mustSplit ? splitTextByCharacters(text, targetParts: targetParts) : [collapseSubtitleWhitespace(text)]
         }
 
@@ -687,6 +1010,98 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         return splitTextSemantically(text, targetParts: targetParts, mustSplit: mustSplit)
     }
 
+    func firstMeaningfulCharacter(_ text: String) -> Character? {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).first { char in
+            !trailingAllowed.contains(char) && char != " "
+        }
+    }
+
+    func isSmallKanaContinuation(_ char: Character) -> Bool {
+        let smallKana: Set<Character> = [
+            "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "っ", "ゃ", "ゅ", "ょ", "ゎ",
+            "ァ", "ィ", "ゥ", "ェ", "ォ", "ッ", "ャ", "ュ", "ョ", "ヮ",
+            "ー"
+        ]
+        return smallKana.contains(char)
+    }
+
+    func cjkSourceBoundaryPenalty(leftText: String, rightText: String) -> Double {
+        guard SubtitleTimingPlanner.containsCJKText(leftText + rightText) else { return 0 }
+        let leftWeight = timingUnits(leftText).count
+        let rightWeight = timingUnits(rightText).count
+        var penalty = 0.0
+
+        if leftWeight <= 1 || rightWeight <= 1 {
+            penalty += 320
+        } else if leftWeight <= 2 || rightWeight <= 2 {
+            penalty += 110
+        }
+
+        if let left = lastMeaningfulCharacter(leftText), isSmallKanaContinuation(left) {
+            penalty += 900
+        }
+        if let right = firstMeaningfulCharacter(rightText), isSmallKanaContinuation(right) {
+            penalty += 900
+        }
+        return penalty
+    }
+
+    func sourceAnchoredCJKReadablePieces(_ item: Timed, targetParts: Int) -> [String]? {
+        let targetParts = max(2, targetParts)
+        let units = item.fragments.map { collapseSubtitleWhitespace($0.text) }.filter { !$0.isEmpty }
+        guard units.count >= targetParts,
+              SubtitleTimingPlanner.containsCJKText(item.text),
+              speechTokens(item.text).isEmpty else {
+            return nil
+        }
+
+        let unitTokens = timingUnits(units.joined())
+        let itemTokens = timingUnits(item.text)
+        guard !unitTokens.isEmpty, unitTokens == itemTokens else { return nil }
+
+        let weights = units.map { max(1, timingUnits($0).count) }
+        let totalWeight = weights.reduce(0, +)
+        guard totalWeight >= targetParts else { return nil }
+        let prefixWeights = weights.reduce(into: [0]) { partial, weight in
+            partial.append((partial.last ?? 0) + weight)
+        }
+
+        var boundaries: [Int] = []
+        var previous = 0
+        for part in 1..<targetParts {
+            let remainingParts = targetParts - part
+            let minBoundary = previous + 1
+            let maxBoundary = units.count - remainingParts
+            guard minBoundary <= maxBoundary else { return nil }
+
+            let desired = Double(totalWeight) * Double(part) / Double(targetParts)
+            var best: (boundary: Int, score: Double)?
+            for boundary in minBoundary...maxBoundary {
+                let currentWeight = prefixWeights[boundary] - prefixWeights[previous]
+                let remainingWeight = totalWeight - prefixWeights[boundary]
+                let shortPiecePenalty = Double(max(0, 4 - min(currentWeight, remainingWeight))) * 55
+                let score = abs(Double(prefixWeights[boundary]) - desired) * 10
+                    + shortPiecePenalty
+                    + cjkSourceBoundaryPenalty(leftText: units[boundary - 1], rightText: units[boundary])
+                if best == nil || score < best!.score {
+                    best = (boundary, score)
+                }
+            }
+            guard let chosen = best?.boundary else { return nil }
+            boundaries.append(chosen)
+            previous = chosen
+        }
+
+        var output: [String] = []
+        var start = 0
+        for boundary in boundaries + [units.count] {
+            let piece = collapseSubtitleWhitespace(units[start..<boundary].joined(separator: " "))
+            if !piece.isEmpty { output.append(piece) }
+            start = boundary
+        }
+        return output.count > 1 ? output : nil
+    }
+
     func isPunctuationIsland(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 4 else { return false }
@@ -733,6 +1148,158 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         return output
     }
 
+    func rebalanceHandoffBoundaries(_ items: [Timed]) -> [Timed] {
+        guard items.count >= 2 else { return items }
+        var adjusted = items
+        for index in 0..<(adjusted.count - 1) {
+            let previous = adjusted[index]
+            let next = adjusted[index + 1]
+            if abs(next.start - previous.end) <= 0.05,
+               SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(
+                    previousText: previous.text,
+                    nextText: next.text
+               ) {
+                let borrow = min(
+                    SubtitleTimingPlanner.handoffBoundaryBorrowSeconds,
+                    max(0, previous.end - previous.start - minDuration)
+                )
+                guard borrow > 0 else { continue }
+                let boundary = previous.end - borrow
+                adjusted[index].end = boundary
+                adjusted[index].fragments = [Fragment(start: previous.start, end: boundary, text: previous.text)]
+                adjusted[index + 1].start = boundary
+                adjusted[index + 1].fragments = [Fragment(start: boundary, end: next.end, text: next.text)]
+                continue
+            }
+
+            let handoffGap = next.start - previous.end
+            guard handoffGap >= -0.001,
+                  handoffGap <= SubtitleTimingPlanner.sentenceHandoffGapSeconds + 0.02,
+                  endsSentence(previous.text),
+                  startsLikeNewSentence(next.text) else {
+                continue
+            }
+            let forward = min(
+                SubtitleTimingPlanner.sentenceHandoffForwardSeconds,
+                max(0, next.end - next.start - minDuration)
+            )
+            guard forward > 0 else { continue }
+            let boundary = min(next.start + forward, next.end - minDuration)
+            guard boundary > previous.end + 0.001 else { continue }
+            adjusted[index].end = boundary
+            adjusted[index].fragments = [Fragment(start: previous.start, end: boundary, text: previous.text)]
+            adjusted[index + 1].start = boundary
+            adjusted[index + 1].fragments = [Fragment(start: boundary, end: next.end, text: next.text)]
+        }
+        return adjusted
+    }
+
+    func mergeShortContinuationPrefixes(_ items: [Timed]) -> [Timed] {
+        guard items.count >= 2 else { return items }
+        var output: [Timed] = []
+        var index = 0
+        while index < items.count {
+            if index + 1 < items.count {
+                let current = items[index]
+                let next = items[index + 1]
+                let currentTokens = wordTokens(current.text)
+                let nextTokens = wordTokens(next.text)
+                let combinedDuration = next.end - current.start
+                let handoffGap = next.start - current.end
+                if currentTokens.count >= 2,
+                   currentTokens.count <= 3,
+                   handoffGap >= -0.001,
+                   handoffGap <= 0.12,
+                   combinedDuration <= normalReadableCueSeconds,
+                   !endsSentence(current.text),
+                   let last = currentTokens.last,
+                   let first = nextTokens.first,
+                   SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first) {
+                    output.append(Timed(
+                        start: current.start,
+                        end: max(current.end, next.end),
+                        text: collapseSubtitleWhitespace(current.text + " " + next.text),
+                        order: output.count,
+                        fragments: current.fragments + next.fragments,
+                        hasSourceAnchors: current.hasSourceAnchors || next.hasSourceAnchors
+                    ))
+                    index += 2
+                    continue
+                }
+            }
+            var item = items[index]
+            item.order = output.count
+            output.append(item)
+            index += 1
+        }
+        return output
+    }
+
+    func mergeShortCJKSingletons(_ items: [Timed]) -> [Timed] {
+        guard items.count >= 2 else { return items }
+        var output: [Timed] = []
+        var index = 0
+        while index < items.count {
+            if index + 1 < items.count {
+                let current = items[index]
+                let next = items[index + 1]
+                let currentUnits = timingUnits(current.text).count
+                let nextUnits = timingUnits(next.text).count
+                let handoffGap = next.start - current.end
+                let combinedDuration = next.end - current.start
+                if SubtitleTimingPlanner.containsCJKText(current.text + next.text),
+                   (currentUnits <= 1 || nextUnits <= 1),
+                   currentUnits + nextUnits <= 4,
+                   handoffGap >= -0.001,
+                   handoffGap <= 0.12,
+                   combinedDuration <= SubtitleTimingPlanner.shortSourceFragmentWindowSeconds {
+                    output.append(Timed(
+                        start: current.start,
+                        end: max(current.end, next.end),
+                        text: collapseSubtitleWhitespace(current.text + next.text),
+                        order: output.count,
+                        fragments: current.fragments + next.fragments,
+                        hasSourceAnchors: current.hasSourceAnchors || next.hasSourceAnchors
+                    ))
+                    index += 2
+                    continue
+                }
+            }
+            var item = items[index]
+            item.order = output.count
+            output.append(item)
+            index += 1
+        }
+        return output
+    }
+
+    func compactDuplicateKey(_ text: String) -> String {
+        text.filter { !$0.isWhitespace }
+    }
+
+    func dropUltraShortCJKDuplicateTransitions(_ items: [Timed]) -> [Timed] {
+        guard items.count >= 2 else { return items }
+        var output: [Timed] = []
+        for index in items.indices {
+            let item = items[index]
+            let key = compactDuplicateKey(item.text)
+            if item.end - item.start <= 0.08,
+               !key.isEmpty,
+               SubtitleTimingPlanner.containsCJKText(item.text) {
+                let previousKey = output.last.map { compactDuplicateKey($0.text) } ?? ""
+                let nextKey = index + 1 < items.count ? compactDuplicateKey(items[index + 1].text) : ""
+                if (!previousKey.isEmpty && previousKey.contains(key))
+                    || (!nextKey.isEmpty && nextKey.contains(key)) {
+                    continue
+                }
+            }
+            var copy = item
+            copy.order = output.count
+            output.append(copy)
+        }
+        return output
+    }
+
     func sourceAnchoredPieces(_ pieces: [String], item: Timed, speechAlignTimings: Bool) -> [Timed]? {
         let timings = tokenTimings(for: item, speechAlignTimings: speechAlignTimings)
         guard !pieces.isEmpty, !timings.isEmpty else { return nil }
@@ -740,10 +1307,18 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         var output: [Timed] = []
         var cursor = 0
         var previousEnd = item.start
+        var previousEndedSentence = false
         for piece in pieces {
-            let pieceTokenCount = speechTokens(piece).count
+            let pieceTokens = timingUnits(piece)
+            let pieceTokenCount = pieceTokens.count
             guard pieceTokenCount > 0, cursor < timings.count else { return nil }
-            let endCursor = min(cursor + pieceTokenCount, timings.count)
+            let endCursor: Int
+            if let alignedRange = alignedTokenRange(pieceTokens: pieceTokens, timings: timings, from: cursor) {
+                cursor = alignedRange.lowerBound
+                endCursor = alignedRange.upperBound
+            } else {
+                endCursor = min(cursor + pieceTokenCount, timings.count)
+            }
             guard endCursor > cursor else { return nil }
             let covered = Array(timings[cursor..<endCursor])
             guard let first = covered.first, let last = covered.last else { return nil }
@@ -751,13 +1326,18 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             var start = first.start
             let firstFragmentIndex = first.fragmentIndex
             let firstFragmentCount = covered.prefix { $0.fragmentIndex == firstFragmentIndex }.count
+            let firstFragmentTokenCount = timingUnits(item.fragments[firstFragmentIndex].text).count
             if cursor > 0,
-               firstFragmentCount <= 4,
+               firstFragmentTokenCount > firstFragmentCount,
+               (firstFragmentCount <= 2 || startsLikeNewSentence(piece)),
                firstFragmentCount * 2 < covered.count,
                let later = covered.first(where: { $0.fragmentIndex != firstFragmentIndex }) {
                 start = later.fragmentStart
             }
             start = max(start, previousEnd)
+            if previousEndedSentence {
+                start = min(max(start, previousEnd + SubtitleTimingPlanner.sentenceHandoffGapSeconds), last.end)
+            }
 
             var end = last.end
             if endsSentence(piece) {
@@ -772,9 +1352,11 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 end: end,
                 text: piece,
                 order: output.count,
-                fragments: [Fragment(start: start, end: end, text: piece)]
+                fragments: [Fragment(start: start, end: end, text: piece)],
+                hasSourceAnchors: true
             ))
             previousEnd = end
+            previousEndedSentence = endsSentence(piece)
             cursor = endCursor
         }
         return output
@@ -784,12 +1366,37 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         var output: [Timed] = []
         for item in items {
             let originalDuration = item.end - item.start
+            let visibleLines = item.text
+                .split(separator: "\n", omittingEmptySubsequences: true)
+            if !collapsePunctuation,
+               !speechAlignTimings,
+               originalDuration <= emergencyReadableCueSeconds,
+               visibleLines.count > 1,
+               SubtitleTimingPlanner.containsCJKText(item.text) {
+                output.append(Timed(
+                    start: item.start,
+                    end: item.end,
+                    text: item.text,
+                    order: output.count,
+                    fragments: item.fragments,
+                    hasSourceAnchors: item.hasSourceAnchors
+                ))
+                continue
+            }
             let wordCount = wordTokens(item.text).count
-            let speechTokenCount = speechTokens(item.text).count
-            let canUseSourceAnchors = speechAlignTimings && !item.fragments.isEmpty
-            let shouldAlignToSpeech = !canUseSourceAnchors
-                && ((speechTokenCount > 0 && speechTokenCount <= 3)
-                    || (speechAlignTimings && originalDuration > normalReadableCueSeconds))
+            let cjkUnitCount = speechTokens(item.text).isEmpty && SubtitleTimingPlanner.containsCJKText(item.text)
+                ? timingUnits(item.text).count
+                : 0
+            let canUseSourceAnchors = speechAlignTimings
+                && !item.fragments.isEmpty
+                && (item.hasSourceAnchors || originalDuration <= hardDuration)
+            let shouldAlignToSpeech = SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+                text: item.text,
+                originalDuration: originalDuration,
+                speechAlignTimings: speechAlignTimings,
+                canUseSourceAnchors: canUseSourceAnchors,
+                endsSentence: endsSentence(item.text)
+            )
             let effectiveEnd = shouldAlignToSpeech
                 ? min(item.end, item.start + speechAlignedVisibleSeconds(item.text))
                 : item.end
@@ -798,7 +1405,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 end: effectiveEnd,
                 text: item.text,
                 order: item.order,
-                fragments: item.fragments
+                fragments: item.fragments,
+                hasSourceAnchors: item.hasSourceAnchors
             )
             let sentenceDrivenTargetParts = canUseSourceAnchors ? splitSentencePieces(effectiveItem.text).count : 1
             let anchoredTimings = canUseSourceAnchors
@@ -807,16 +1415,37 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             let duration = anchoredTimings.isEmpty
                 ? effectiveItem.end - effectiveItem.start
                 : max(0, (anchoredTimings.last?.end ?? effectiveItem.end) - (anchoredTimings.first?.start ?? effectiveItem.start))
-            let textDrivenTargetParts = wordCount > 18 ? Int(ceil(Double(wordCount) / 14.0)) : 1
-            let durationDrivenTargetParts = duration > normalReadableCueSeconds
-                ? Int(ceil(duration / normalReadableCueSeconds))
+            let hasCJKWhitespaceWordBoundaries = cjkUnitCount > 0
+                && SubtitleTimingPlanner.containsHangulText(item.text)
+                && item.text.split(whereSeparator: { $0.isWhitespace }).count > 1
+            let noAnchorUnspacedCJK = cjkUnitCount > 0 && !canUseSourceAnchors && !hasCJKWhitespaceWordBoundaries
+            let cjkReadableSplitThreshold = canUseSourceAnchors
+                ? 4.0
+                : (noAnchorUnspacedCJK ? hardDuration : emergencyReadableCueSeconds)
+            let shouldSplitCJKByReadableWindow = cjkUnitCount > 18
+                && duration > cjkReadableSplitThreshold
+            let textDrivenTargetParts = wordCount > 18
+                ? Int(ceil(Double(wordCount) / 14.0))
+                : (shouldSplitCJKByReadableWindow ? Int(ceil(Double(cjkUnitCount) / 14.0)) : 1)
+            let durationSplitThreshold = noAnchorUnspacedCJK
+                ? hardDuration
+                : normalReadableCueSeconds
+            let durationDrivenTargetParts = duration > durationSplitThreshold
+                ? Int(ceil(duration / durationSplitThreshold))
                 : 1
             var targetParts = max(durationDrivenTargetParts, textDrivenTargetParts, sentenceDrivenTargetParts)
             guard targetParts > 1 else {
                 if canUseSourceAnchors,
                    let anchored = sourceAnchoredPieces([effectiveItem.text], item: effectiveItem, speechAlignTimings: speechAlignTimings) {
                     output.append(contentsOf: anchored.map {
-                        Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                        Timed(
+                            start: $0.start,
+                            end: $0.end,
+                            text: $0.text,
+                            order: output.count + $0.order,
+                            fragments: $0.fragments,
+                            hasSourceAnchors: $0.hasSourceAnchors
+                        )
                     })
                 } else {
                     output.append(Timed(
@@ -824,7 +1453,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                         end: effectiveItem.end,
                         text: effectiveItem.text,
                         order: output.count,
-                        fragments: effectiveItem.fragments
+                        fragments: effectiveItem.fragments,
+                        hasSourceAnchors: effectiveItem.hasSourceAnchors
                     ))
                 }
                 continue
@@ -833,9 +1463,21 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             targetParts = max(2, targetParts)
             let balancedMaxParts = max(2, wordCount / 2)
             let maxTargetParts = max(targetParts, balancedMaxParts)
-            var pieces = splitReadableText(
-                effectiveItem.text,
-                targetParts: targetParts,
+            func readablePieces(for partCount: Int, mustSplit: Bool) -> [String] {
+                if canUseSourceAnchors,
+                   cjkUnitCount > 0,
+                   let anchoredCJKPieces = sourceAnchoredCJKReadablePieces(effectiveItem, targetParts: partCount) {
+                    return anchoredCJKPieces
+                }
+                return splitReadableText(
+                    effectiveItem.text,
+                    targetParts: partCount,
+                    mustSplit: mustSplit
+                )
+            }
+
+            var pieces = readablePieces(
+                for: targetParts,
                 mustSplit: duration > emergencyReadableCueSeconds
             )
             while pieces.count > 1,
@@ -846,13 +1488,20 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                     .max() ?? 0
                 guard longestEstimatedDuration > emergencyReadableCueSeconds else { break }
                 targetParts += 1
-                pieces = splitReadableText(effectiveItem.text, targetParts: targetParts, mustSplit: true)
+                pieces = readablePieces(for: targetParts, mustSplit: true)
             }
             guard pieces.count > 1 else {
                 if canUseSourceAnchors,
                    let anchored = sourceAnchoredPieces([effectiveItem.text], item: effectiveItem, speechAlignTimings: speechAlignTimings) {
                     output.append(contentsOf: anchored.map {
-                        Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                        Timed(
+                            start: $0.start,
+                            end: $0.end,
+                            text: $0.text,
+                            order: output.count + $0.order,
+                            fragments: $0.fragments,
+                            hasSourceAnchors: $0.hasSourceAnchors
+                        )
                     })
                 } else {
                     output.append(Timed(
@@ -860,7 +1509,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                         end: effectiveItem.end,
                         text: effectiveItem.text,
                         order: output.count,
-                        fragments: effectiveItem.fragments
+                        fragments: effectiveItem.fragments,
+                        hasSourceAnchors: effectiveItem.hasSourceAnchors
                     ))
                 }
                 continue
@@ -869,7 +1519,14 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             if canUseSourceAnchors,
                let anchored = sourceAnchoredPieces(pieces, item: effectiveItem, speechAlignTimings: speechAlignTimings) {
                 output.append(contentsOf: anchored.map {
-                    Timed(start: $0.start, end: $0.end, text: $0.text, order: output.count + $0.order, fragments: $0.fragments)
+                    Timed(
+                        start: $0.start,
+                        end: $0.end,
+                        text: $0.text,
+                        order: output.count + $0.order,
+                        fragments: $0.fragments,
+                        hasSourceAnchors: $0.hasSourceAnchors
+                    )
                 })
                 continue
             }
@@ -891,16 +1548,72 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                     end: end,
                     text: piece,
                     order: output.count,
-                    fragments: [Fragment(start: start, end: end, text: piece)]
+                    fragments: [Fragment(start: start, end: end, text: piece)],
+                    hasSourceAnchors: false
                 ))
             }
         }
-        return collapsePunctuation ? collapsePunctuationIslands(output) : output
+        let mergedContinuations = mergeShortContinuationPrefixes(output)
+        let mergedCJKSingletons = mergeShortCJKSingletons(mergedContinuations)
+        let dedupedTransitions = dropUltraShortCJKDuplicateTransitions(mergedCJKSingletons)
+        return collapsePunctuation ? collapsePunctuationIslands(dedupedTransitions) : dedupedTransitions
+    }
+
+    func isSingleFragmentVTTSource(_ item: Timed) -> Bool {
+        guard item.hasSourceAnchors, item.fragments.count == 1, let fragment = item.fragments.first else {
+            return false
+        }
+        return collapseSubtitleWhitespace(fragment.text) == collapseSubtitleWhitespace(item.text)
+    }
+
+    func trimNoInlineVTTCJKIdleTails(_ items: [Timed]) -> [Timed] {
+        guard items.count >= 2 else { return items }
+        var adjusted = items
+        for index in adjusted.indices {
+            var item = adjusted[index]
+            let duration = item.end - item.start
+            let cjkUnits = timingUnits(item.text).count
+            guard isSingleFragmentVTTSource(item),
+                  SubtitleTimingPlanner.containsCJKText(item.text),
+                  cjkUnits >= 8,
+                  duration > 3.5 else {
+                continue
+            }
+
+            var changed = false
+            if index + 1 < adjusted.count {
+                let nextGap = adjusted[index + 1].start - item.end
+                let characterDensity = Double(cjkUnits) / max(duration, 0.001)
+                let tailTrim = min(1.6, max(0, (3.75 - characterDensity) * 0.95))
+                if nextGap > 0.03, tailTrim >= 0.08 {
+                    item.end = max(item.start + minDuration, item.end - tailTrim)
+                    changed = true
+                }
+            }
+
+            if index > 0 {
+                let previousGap = item.start - adjusted[index - 1].end
+                let characterDensity = Double(cjkUnits) / max(duration, 0.001)
+                let delay = min(0.35, max(0, item.end - item.start - minDuration))
+                if previousGap > 0.15, characterDensity >= 3.35, delay >= 0.08 {
+                    item.start += delay
+                    changed = true
+                }
+            }
+
+            if changed {
+                item.fragments = [Fragment(start: item.start, end: item.end, text: item.text)]
+                adjusted[index] = item
+            }
+        }
+        return adjusted
     }
 
     // 非滚动字幕：只做去重叠，不做滚动合并；但仍应用可读窗口兜底，避免原始长 cue 拖住画面。
     guard isRolling else {
-        return makeCues(splitLongReadableCues(timed, collapsePunctuation: false, speechAlignTimings: false))
+        let timingAdjusted = trimNoInlineVTTCJKIdleTails(timed)
+        let readable = splitLongReadableCues(timingAdjusted, collapsePunctuation: false, speechAlignTimings: false)
+        return makeCues(rebalanceHandoffBoundaries(readable))
     }
 
     for i in timed.indices {
@@ -911,11 +1624,13 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 curStart = t.start
                 curEnd = t.end
                 curFragments = t.fragments
+                curHasSourceAnchors = t.hasSourceAnchors
                 hasCurrent = true
             } else {
                 curText = collapseSubtitleWhitespace(curText + " " + piece)
                 curEnd = t.end
                 curFragments.append(contentsOf: t.fragments)
+                curHasSourceAnchors = curHasSourceAnchors || t.hasSourceAnchors
             }
         let nextPiece = i + 1 < timed.count ? collapseSubtitleWhitespace(timed[i + 1].text) : nil
         let nextGap = i + 1 < timed.count ? timed[i + 1].start - curEnd : nil
@@ -939,7 +1654,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         collapsePunctuation: true,
         speechAlignTimings: textRepeatRatio > 0.3
     )
-    return makeCues(readable)
+    return makeCues(rebalanceHandoffBoundaries(readable))
 }
 
 // MARK: - LLM API 请求
@@ -1739,16 +2454,28 @@ public func cleanSRTFile(at url: URL) throws -> (parsed: Int, cleaned: Int, outp
     } catch {
         throw MoongateError.translateFailed(TranslatorL10n.cannotReadSubtitle(url.lastPathComponent))
     }
-    let parsed = parseSRT(raw)
+    let parsed = parseSubtitleCues(raw, fileName: url.lastPathComponent)
     guard !parsed.isEmpty else {
         throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
     }
     let cleaned = cleanCues(parsed)
     let name = url.lastPathComponent
-    let stem = name.lowercased().hasSuffix(".srt") ? String(name.dropLast(4)) : name
+    let stem = subtitleOutputStem(name)
     let outputURL = url.deletingLastPathComponent().appendingPathComponent(stem + ".clean.srt")
     try serializeSRT(cleaned).write(to: outputURL, atomically: true, encoding: .utf8)
     return (parsed.count, cleaned.count, outputURL)
+}
+
+func parseSubtitleCues(_ raw: String, fileName: String) -> [SubtitleCue] {
+    fileName.lowercased().hasSuffix(".vtt") ? parseVTT(raw) : parseSRT(raw)
+}
+
+private func subtitleOutputStem(_ fileName: String) -> String {
+    let lowercased = fileName.lowercased()
+    if lowercased.hasSuffix(".srt") || lowercased.hasSuffix(".vtt") {
+        return String(fileName.dropLast(4))
+    }
+    return fileName
 }
 
 // MARK: - ConfiguredTranslator
@@ -1941,7 +2668,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         } catch {
             throw MoongateError.translateFailed(TranslatorL10n.cannotReadSubtitle(srtFile.lastPathComponent))
         }
-        let parsed = parseSRT(raw)
+        let parsed = parseSubtitleCues(raw, fileName: srtFile.lastPathComponent)
         guard !parsed.isEmpty else {
             throw MoongateError.translateFailed(TranslatorL10n.emptySubtitle)
         }
@@ -2017,9 +2744,9 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             }
         }
 
-        // 写 "<原文件名去.srt>.<target>.srt"
+        // 写 "<原文件名去字幕扩展>.<target>.srt"
         let name = srtFile.lastPathComponent
-        let stem = name.lowercased().hasSuffix(".srt") ? String(name.dropLast(4)) : name
+        let stem = subtitleOutputStem(name)
         let outputURL = srtFile.deletingLastPathComponent()
             .appendingPathComponent(stem + TranslationLanguage.translatedSubtitleFileSuffix(for: context.targetLanguage))
         do {

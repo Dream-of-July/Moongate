@@ -47,8 +47,8 @@ macOS App 内更新包（Sparkle）：
 
 ```sh
 ./init-sparkle-keys.sh     # 首次设置 Sparkle EdDSA 密钥；私钥保存到本机 Keychain
-./make-sparkle-zip.sh      # 生成 Moongate-macOS-v0.7.3.zip
-./make-appcast.sh ~/Downloads/Moongate-macOS-v0.7.3.zip
+./make-sparkle-zip.sh      # 生成 Moongate-macOS-v0.7.6.zip
+./make-appcast.sh ~/Downloads/Moongate-macOS-v0.7.6.zip
 ```
 
 Sparkle 更新资产使用 ZIP + appcast：ZIP 上传 GitHub Release，`docs/appcast.xml` 通过 GitHub Pages 发布到 `https://dream-of-july.github.io/moongate/appcast.xml`。`./make-dmg.sh` 仍可生成手动拖拽安装用 DMG；`./make-pkg.sh` 仅保留为未来 Developer ID Installer 链路备用，不作为当前免 Apple Developer Program 的主更新资产。
@@ -113,10 +113,10 @@ swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --prov
 ## Windows
 
 Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 + NSIS 安装器），
-在 macOS 上执行 `./build-windows.sh` 即可产出 `Moongate-Windows-Setup-v0.7.5.exe`
+在 macOS 上执行 `./build-windows.sh` 即可产出 `Moongate-Windows-Setup-v0.7.6.exe`
 （同时生成 `.sha256` 校验文件；
 双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
-详见 [docs/WINDOWS.md](docs/WINDOWS.md)。当前 0.7.5 已在 Parallels Windows on ARM 虚拟机完成基础验证；普通 Windows x64 仍建议发布后补一轮回归。
+详见 [docs/WINDOWS.md](docs/WINDOWS.md)。当前 0.7.6 已在本地测试覆盖核心逻辑；普通 Windows x64 仍建议发布后补一轮真机回归。
 
 ## 移动端状态
 

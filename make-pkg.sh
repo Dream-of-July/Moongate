@@ -7,7 +7,7 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
-VERSION="${MOONGATE_VERSION:-0.7.3}"
+VERSION="${MOONGATE_VERSION:-0.7.6}"
 OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.pkg}"
 IDENTIFIER="com.moongate.app.pkg"
 STAGING="$(mktemp -d /tmp/moongate-pkg-XXXXXX)"

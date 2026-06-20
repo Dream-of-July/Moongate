@@ -842,7 +842,7 @@ public class YtDlpEngine : IDownloadEngine
                 {
                     "--skip-download", "--no-playlist", "--ffmpeg-location", ffmpegDir,
                     "--write-subs", "--write-auto-subs", "--sub-langs", langArg,
-                    "--convert-subs", "srt",
+                    "--sub-format", "vtt/best",
                     "-o", Path.Combine(tempDir, "%(id)s.%(ext)s"),
                 };
                 args.AddRange(cookieArgs);
@@ -859,10 +859,10 @@ public class YtDlpEngine : IDownloadEngine
                 cleanup();
             }
 
-            var srtFiles = Directory.Exists(tempDir)
-                ? Directory.GetFiles(tempDir).Where(f => f.ToLowerInvariant().EndsWith(".srt")).ToList()
+            var subtitleFiles = Directory.Exists(tempDir)
+                ? Directory.GetFiles(tempDir).Where(f => SubtitleExtensions.Contains(ExtensionOf(f))).ToList()
                 : [];
-            if (srtFiles.Count == 0) return null;
+            if (subtitleFiles.Count == 0) return null;
 
             int Score(string file)
             {
@@ -872,12 +872,12 @@ public class YtDlpEngine : IDownloadEngine
                     if (code.StartsWith(langs[i].ToLowerInvariant(), StringComparison.Ordinal)) return i;
                 return langs.Count;
             }
-            var chosen = srtFiles.OrderBy(Score).First();
+            var chosen = subtitleFiles.OrderBy(Score).First();
 
             string raw;
             try { raw = await File.ReadAllTextAsync(chosen, ct).ConfigureAwait(false); }
             catch { return null; }
-            var cues = SrtTools.CleanCues(SrtTools.ParseSrt(raw));
+            var cues = SrtTools.CleanCues(SrtTools.ParseSubtitle(raw, chosen));
             if (cues.Count == 0) return null;
             var text = string.Join(" ", cues.Select(c => c.Text)).Trim();
             return text.Length == 0 ? null : text;
@@ -1249,7 +1249,14 @@ public class YtDlpEngine : IDownloadEngine
                 args.AddRange(["--sub-langs", string.Join(",", allSubLangs)]);
                 if (request.SubtitleLangs.Count > 0) args.Add("--write-subs");
                 if (request.AutoSubtitleLangs.Count > 0) args.Add("--write-auto-subs");
-                args.AddRange(["--convert-subs", "srt"]);
+                if (request.AutoSubtitleLangs.Count == 0)
+                {
+                    args.AddRange(["--convert-subs", "srt"]);
+                }
+                else
+                {
+                    args.AddRange(["--sub-format", "vtt/best"]);
+                }
             }
             // --print 默认隐含 simulate/quiet，必须配 --no-simulate / --no-quiet 抵消。
             args.AddRange(["--print", "after_move:filepath", "--no-simulate", "--no-quiet"]);
@@ -1369,7 +1376,7 @@ public class YtDlpEngine : IDownloadEngine
                 if (videoFile is not null)
                 {
                     var presentLangs = new HashSet<string>(files
-                        .Where(f => ExtensionOf(f) == "srt")
+                        .Where(f => SubtitleExtensions.Contains(ExtensionOf(f)))
                         .Select(LangCodeOfSubtitle)
                         .Where(l => l is not null)
                         .Select(l => l!));

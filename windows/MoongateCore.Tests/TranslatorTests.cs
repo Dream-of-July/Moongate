@@ -1025,7 +1025,7 @@ public class ConfiguredTranslatorTests : IDisposable
 
         var result = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal(0, segmentCalls);
-        Assert.Equal(8, result.Count);
+        Assert.Equal(SrtTools.CleanCues(AsrCues()).Count, result.Count);
     }
 
     private static List<SubtitleCue> NumberedWordCues(int cueCount, int tokensPerCue)

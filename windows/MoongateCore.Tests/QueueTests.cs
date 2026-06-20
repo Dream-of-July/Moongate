@@ -655,15 +655,16 @@ public class QueueManagerTests
         [
             "/d/v [a].mp4",
             "/d/v [a].en.srt",
+            "/d/v [a].en.vtt",
             "/d/v [a].zh.srt",
         ];
         // preferredLang 命中含 .zh.srt（自带中文字幕当源）
         Assert.Equal("/d/v [a].zh.srt", QueueManager.PickSourceSubtitle(files, "zh"));
-        Assert.Equal("/d/v [a].en.srt", QueueManager.PickSourceSubtitle(files, "en"));
+        Assert.Equal("/d/v [a].en.vtt", QueueManager.PickSourceSubtitle(files, "en"));
         // 前缀匹配：zh-Hans 请求命中 zh 文件
         Assert.Equal("/d/v [a].zh.srt", QueueManager.PickSourceSubtitle(files, "zh-Hans"));
-        // 无 preferredLang → 第一个非译文 srt
-        Assert.Equal("/d/v [a].en.srt", QueueManager.PickSourceSubtitle(files, null));
+        // 无 preferredLang → 第一个非译文字幕，VTT 优先保留 word timing
+        Assert.Equal("/d/v [a].en.vtt", QueueManager.PickSourceSubtitle(files, null));
         // 只有译文时兜底返回它
         Assert.Equal("/d/v [a].zh.srt", QueueManager.PickSourceSubtitle(["/d/v [a].zh.srt"], null));
         Assert.Null(QueueManager.PickSourceSubtitle(["/d/v.mp4"], "en"));

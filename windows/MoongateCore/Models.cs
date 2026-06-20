@@ -249,6 +249,23 @@ public enum SubtitleStyle
     ChineseOnly,
 }
 
+/// <summary>
+/// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
+/// </summary>
+public sealed class SubtitleCueSourceFragment
+{
+    public double StartSeconds { get; }
+    public double EndSeconds { get; }
+    public string Text { get; }
+
+    public SubtitleCueSourceFragment(double startSeconds, double endSeconds, string text)
+    {
+        StartSeconds = startSeconds;
+        EndSeconds = endSeconds;
+        Text = text;
+    }
+}
+
 /// <summary>一条 SRT 字幕。</summary>
 public sealed class SubtitleCue
 {
@@ -257,13 +274,20 @@ public sealed class SubtitleCue
     public string Start { get; }
     public string End { get; }
     public string Text { get; set; }
+    public IReadOnlyList<SubtitleCueSourceFragment> SourceFragments { get; }
 
-    public SubtitleCue(int index, string start, string end, string text)
+    public SubtitleCue(
+        int index,
+        string start,
+        string end,
+        string text,
+        IReadOnlyList<SubtitleCueSourceFragment>? sourceFragments = null)
     {
         Index = index;
         Start = start;
         End = end;
         Text = text;
+        SourceFragments = sourceFragments ?? [];
     }
 }
 

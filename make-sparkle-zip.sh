@@ -4,8 +4,8 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
-VERSION="${MOONGATE_VERSION:-0.7.3}"
-BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-703}"
+VERSION="${MOONGATE_VERSION:-0.7.6}"
+BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-706}"
 OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.zip}"
 STAGING="$(mktemp -d /tmp/moongate-sparkle-zip-XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT

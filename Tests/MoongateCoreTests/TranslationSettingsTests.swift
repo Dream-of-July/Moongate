@@ -1043,12 +1043,323 @@ final class TranslationSettingsTests: XCTestCase {
         )
     }
 
+    func testParseVTTKeepsInlineWordTimingFragments() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.000 --> 00:00:02.000 align:start position:0%
+        Hello<00:00:00.500><c> world</c><00:00:01.200><c> again</c>
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 1)
+        XCTAssertEqual(cues[0].text, "Hello world again")
+        XCTAssertEqual(cues[0].sourceFragments.map(\.text), ["Hello", "world", "again"])
+        XCTAssertEqual(cues[0].sourceFragments[0].startSeconds, 0.0, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[0].endSeconds, 0.5, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[1].startSeconds, 0.5, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[1].endSeconds, 1.2, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[2].startSeconds, 1.2, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 2.0, accuracy: 0.001)
+    }
+
+    func testParseVTTCapsTrailingInlineDisplayHold() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.000 --> 00:00:10.000 align:start position:0%
+        avoir<00:00:01.000><c> deux</c><00:00:02.000><c> euros</c>
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 1)
+        XCTAssertEqual(cues[0].sourceFragments.map(\.text), ["avoir", "deux", "euros"])
+        XCTAssertEqual(cues[0].sourceFragments[2].startSeconds, 2.0, accuracy: 0.001)
+        XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 3.3, accuracy: 0.001)
+    }
+
+    func testParseVTTCapsNoInlineRollingDisplayHold() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.000 --> 00:00:03.000 align:start position:0%
+        avoir<00:00:01.000><c> deux</c>
+
+        00:00:03.000 --> 00:00:08.000 align:start position:0%
+        avoir deux
+        euros
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues[1].sourceFragments.map(\.text), ["euros"])
+        XCTAssertEqual(cues[1].sourceFragments[0].startSeconds, 3.0, accuracy: 0.001)
+        XCTAssertEqual(cues[1].sourceFragments[0].endSeconds, 4.3, accuracy: 0.001)
+    }
+
+    func testParseVTTKeepsShortNoInlineRollingCueWindow() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.000 --> 00:00:03.000 align:start position:0%
+        au<00:00:01.000><c> prix</c>
+
+        00:00:03.000 --> 00:00:05.000 align:start position:0%
+        au prix
+        kilo.
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues[1].sourceFragments.map(\.text), ["kilo."])
+        XCTAssertEqual(cues[1].sourceFragments[0].startSeconds, 3.0, accuracy: 0.001)
+        XCTAssertEqual(cues[1].sourceFragments[0].endSeconds, 5.0, accuracy: 0.001)
+    }
+
+    func testCleanCuesUsesVTTWordFragmentsForRollingCaptions() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.000 --> 00:00:02.000 align:start position:0%
+        Hello<00:00:00.500><c> world</c>
+
+        00:00:02.000 --> 00:00:02.010 align:start position:0%
+        Hello world
+
+        00:00:02.010 --> 00:00:04.000 align:start position:0%
+        Hello world
+        again<00:00:02.400><c> today.</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+
+        XCTAssertEqual(cleaned.map(\.text), ["Hello world again today."])
+        XCTAssertEqual(cleaned[0].start, "00:00:00,000")
+        XCTAssertEqual(cleaned[0].end, "00:00:04,000")
+    }
+
+    func testCleanCuesTrimsVTTDisplayHoldAfterRollingPunctuationIsland() {
+        let raw = """
+        WEBVTT
+
+        00:04:35.120 --> 00:04:40.629 align:start position:0%
+        Ceux-là<00:04:35.960><c> viennent</c><00:04:36.800><c> du</c><00:04:37.320><c> Pérou</c><00:04:38.759><c> et</c><00:04:39.639><c> on</c><00:04:40.000><c> peut</c><00:04:40.320><c> en</c>
+
+        00:04:40.639 --> 00:04:46.590 align:start position:0%
+        Ceux-là viennent du Pérou et on peut en
+        avoir<00:04:41.320><c> deux</c><00:04:41.960><c> pour</c><00:04:42.840><c> 3</c><00:04:43.199><c> €</c><00:04:44.680><c> 4,99</c>
+
+        00:04:46.600 --> 00:04:50.350 align:start position:0%
+        avoir deux pour 3 € 4,99
+        €.
+
+        00:04:50.360 --> 00:04:52.000 align:start position:0%
+        Le<00:04:50.500><c> primeur</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let priceCue = try! XCTUnwrap(cleaned.first { $0.text.contains("4,99") })
+
+        XCTAssertLessThanOrEqual(srtTimeToSeconds(priceCue.end) ?? 0, 288.0)
+    }
+
+    func testParseVTTNoInlineCueKeepsSourceFragment() {
+        let raw = """
+        WEBVTT
+
+        00:00:50.430 --> 00:00:55.610
+        大家如果有來過台北的話，就知道台北的摩托車還蠻多的
+        """
+
+        let cues = parseVTT(raw)
+
+        let cue = try! XCTUnwrap(cues.first)
+        XCTAssertEqual(cue.sourceFragments.count, 1)
+        XCTAssertEqual(cue.sourceFragments[0].text, "大家如果有來過台北的話，就知道台北的摩托車還蠻多的")
+        XCTAssertEqual(cue.sourceFragments[0].startSeconds, 50.430, accuracy: 0.001)
+        XCTAssertEqual(cue.sourceFragments[0].endSeconds, 55.610, accuracy: 0.001)
+    }
+
+    func testCleanCuesTrimsNoInlineVTTCJKIdleTailWithoutSplitting() {
+        let raw = """
+        WEBVTT
+
+        00:02:05.100 --> 00:02:11.380
+        大家應該有發現吧！如果你跟臺灣人一起出去玩，車上都有飲料
+
+        00:02:11.660 --> 00:02:20.720
+        剛剛我跟我姐去買飲料喝，這樣子開車的時候也比較有樂趣、比較好玩
+
+        00:02:20.940 --> 00:02:32.470
+        因為大概20分鐘的車程，所以喝一杯飲料剛剛好也不錯，現在在等紅綠燈
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let middle = try! XCTUnwrap(cleaned.first { $0.text.hasPrefix("剛剛我跟我姐") })
+
+        XCTAssertEqual(cleaned.count, 3)
+        XCTAssertEqual(middle.text, "剛剛我跟我姐去買飲料喝，這樣子開車的時候也比較有樂趣、比較好玩")
+        XCTAssertGreaterThanOrEqual(srtTimeToSeconds(middle.start)!, 132.0)
+        XCTAssertLessThanOrEqual(srtTimeToSeconds(middle.end)!, 140.5)
+    }
+
+    func testCleanCuesDoesNotClampVTTWordAnchorsBeforeRollingTransition() {
+        let raw = """
+        WEBVTT
+
+        00:00:00.160 --> 00:00:01.350 align:start position:0%
+        안녕하세요
+
+        00:00:01.350 --> 00:00:01.360 align:start position:0%
+        안녕하세요
+
+        00:00:01.360 --> 00:00:06.150 align:start position:0%
+        안녕하세요
+        보세요<00:00:02.679><c> 드릴게</c><00:00:03.679><c> 진짜요</c><00:00:04.080><c> 와</c><00:00:04.359><c> 엄합니다</c>
+
+        00:00:06.150 --> 00:00:06.160 align:start position:0%
+        보세요 드릴게 진짜요 와 엄합니다
+
+        00:00:06.160 --> 00:00:12.950 align:start position:0%
+        보세요 드릴게 진짜요 와 엄합니다
+        5점<00:00:07.160><c> 1점</c><00:00:08.400><c> 진짜</c><00:00:09.400><c> 점</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+
+        guard let cue = cleaned.first(where: { $0.text.contains("엄합니다") }) else {
+            return XCTFail("Expected cue containing 엄합니다, got: \(cleaned.map(\.text))")
+        }
+        let cleanedDescription = cleaned
+            .map { "\($0.start) --> \($0.end) | \($0.text)" }
+            .joined(separator: " / ")
+        let end = srtTimeToSeconds(cue.end)!
+        XCTAssertGreaterThanOrEqual(
+            end,
+            4.35,
+            "VTT word-anchored rolling captions must not be clamped to a transition cue before the spoken word ends: \(cleanedDescription)"
+        )
+    }
+
+    func testCleanCuesDoesNotClampManualShortVlogCueBeforeSourceEnd() {
+        let raw = """
+        1
+        00:00:01,200 --> 00:00:03,360
+        All right, so here we are, in front of the
+        elephants
+
+        2
+        00:00:05,318 --> 00:00:07,974
+        the cool thing about these guys is that they
+        have really...
+
+        3
+        00:00:07,974 --> 00:00:12,616
+        really really long trunks
+
+        4
+        00:00:12,616 --> 00:00:14,367
+        and that's cool
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        guard let cue = cleaned.first(where: { $0.text == "really really long trunks" }) else {
+            return XCTFail("Expected short vlog cue, got: \(cleaned.map(\.text))")
+        }
+        let cleanedDescription = cleaned
+            .map { "\($0.start) --> \($0.end) | \($0.text)" }
+            .joined(separator: " / ")
+        XCTAssertGreaterThanOrEqual(
+            srtTimeToSeconds(cue.end)!,
+            12.5,
+            "Manual short vlog cue should not be clamped to a 1.9s display window before the source cue ends: \(cleanedDescription)"
+        )
+    }
+
+    func testCleanCuesKeepsKoreanVTTWordAnchorsAcrossRollingCarry() {
+        let raw = """
+        WEBVTT
+
+        00:00:04.270 --> 00:00:09.720 align:start position:0%
+        [박수]
+        아니야<00:00:04.840><c> 화면들이</c><00:00:05.290><c> 한번</c><00:00:05.590><c> 갈까요</c><00:00:05.920><c> 이제</c><00:00:06.550><c> 아</c><00:00:06.580><c> 여기서</c><00:00:07.359><c> 내용이다</c><00:00:07.750><c> 아예</c><00:00:08.400><c> 아무</c><00:00:09.400><c> 이상이</c>
+
+        00:00:09.720 --> 00:00:09.730 align:start position:0%
+        아니야 화면들이 한번 갈까요 이제 아 여기서 내용이다 아예 아무 이상이
+
+        00:00:09.730 --> 00:00:12.600 align:start position:0%
+        아니야 화면들이 한번 갈까요 이제 아 여기서 내용이다 아예 아무 이상이
+        좋아요<00:00:10.420><c> 4면을</c><00:00:11.200><c> 있어</c><00:00:11.410><c> 좋다</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+
+        guard let cue = cleaned.first(where: { $0.text.contains("좋다") }) else {
+            return XCTFail("Expected cue containing 좋다, got: \(cleaned.map(\.text))")
+        }
+        let cleanedDescription = cleaned
+            .map { "\($0.start) --> \($0.end) | \($0.text)" }
+            .joined(separator: " / ")
+        XCTAssertGreaterThanOrEqual(
+            srtTimeToSeconds(cue.end)!,
+            12.5,
+            "Korean VTT rolling carry must keep the later word anchor instead of compressing the cue: \(cleanedDescription)"
+        )
+    }
+
+    func testCleanCuesKeepsFirstWordFragmentAtReadableSplitBoundary() {
+        let firstWords = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        let secondWords = ["eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty."]
+
+        func fragments(words: [String], start: Double) -> [SubtitleCueSourceFragment] {
+            words.enumerated().map { index, word in
+                SubtitleCueSourceFragment(
+                    startSeconds: start + Double(index) * 0.5,
+                    endSeconds: start + Double(index + 1) * 0.5,
+                    text: word
+                )
+            }
+        }
+
+        let cues = [
+            SubtitleCue(
+                index: 1,
+                start: "00:00:00,000",
+                end: "00:00:05,000",
+                text: firstWords.joined(separator: " "),
+                sourceFragments: fragments(words: firstWords, start: 0)
+            ),
+            SubtitleCue(
+                index: 2,
+                start: "00:00:05,000",
+                end: "00:00:10,000",
+                text: firstWords.joined(separator: " ") + "\n" + secondWords.joined(separator: " "),
+                sourceFragments: fragments(words: secondWords, start: 5)
+            )
+        ]
+
+        let cleaned = cleanCues(cues)
+
+        guard let second = cleaned.first(where: { $0.text.contains("eleven") }) else {
+            return XCTFail("Expected readable split containing eleven, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertEqual(second.start, "00:00:05,000")
+        XCTAssertTrue(second.text.hasPrefix("eleven"))
+    }
+
     func testCleanCuesDropsMultilingualNonSpeechMarkersBeforeTranslation() {
         let input = [
             SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "[Music]"),
             SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "[音乐][笑]"),
             SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "Welcome [Music] back."),
-            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "(Applause)")
+            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "(Applause)"),
+            SubtitleCue(index: 5, start: "00:00:04,000", end: "00:00:05,000", text: "(Acclamations)"),
+            SubtitleCue(index: 6, start: "00:00:05,000", end: "00:00:06,000", text: "(Applaudissements)")
         ]
 
         let cleaned = cleanCues(input)
@@ -1301,6 +1612,76 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(cleaned.contains { $0.text == "." || $0.text == "。" || $0.text == "-" || $0.text == "—" })
     }
 
+    func testCleanCuesStarshipVTTKeepsFinalSourceWordsVisible() throws {
+        let raw = """
+        WEBVTT
+
+        00:04:13.599 --> 00:04:15.670 align:start position:0%
+        [music]
+        &gt;&gt; And<00:04:13.760><c> so</c><00:04:14.000><c> those</c><00:04:14.239><c> pieces,</c><00:04:14.720><c> which</c><00:04:15.120><c> at</c><00:04:15.360><c> the</c><00:04:15.519><c> time</c>
+
+        00:04:15.670 --> 00:04:15.680 align:start position:0%
+        &gt;&gt; And so those pieces, which at the time
+
+
+        00:04:15.680 --> 00:04:18.150 align:start position:0%
+        &gt;&gt; And so those pieces, which at the time
+        did<00:04:15.920><c> not</c><00:04:16.079><c> seem</c><00:04:16.400><c> small</c><00:04:16.639><c> at</c><00:04:16.880><c> all,</c><00:04:17.440><c> were</c><00:04:17.759><c> Falcon</c>
+
+        00:04:18.150 --> 00:04:18.160 align:start position:0%
+        did not seem small at all, were Falcon
+
+
+        00:04:18.160 --> 00:04:20.949 align:start position:0%
+        did not seem small at all, were Falcon
+        1,
+
+        00:04:31.199 --> 00:04:33.110 align:start position:0%
+        Falcon Heavy.
+        &gt;&gt; Falcon<00:04:31.600><c> Heavy</c><00:04:31.919><c> is</c><00:04:32.080><c> supersonic.</c>
+
+        00:04:33.110 --> 00:04:33.120 align:start position:0%
+        &gt;&gt; Falcon Heavy is supersonic.
+
+
+        00:04:33.120 --> 00:04:34.950 align:start position:0%
+        &gt;&gt; Falcon Heavy is supersonic.
+        &gt;&gt; These<00:04:33.360><c> were</c><00:04:33.520><c> the</c><00:04:33.759><c> building</c><00:04:34.080><c> blocks</c><00:04:34.479><c> that</c><00:04:34.800><c> let</c>
+
+        00:04:34.950 --> 00:04:34.960 align:start position:0%
+        &gt;&gt; These were the building blocks that let
+
+
+        00:04:34.960 --> 00:04:37.350 align:start position:0%
+        &gt;&gt; These were the building blocks that let
+        us<00:04:35.199><c> cut</c><00:04:35.360><c> our</c><00:04:35.600><c> teeth</c><00:04:36.160><c> on</c><00:04:36.479><c> learning</c><00:04:36.800><c> how</c><00:04:36.960><c> to</c><00:04:37.120><c> do</c>
+
+        00:04:37.350 --> 00:04:37.360 align:start position:0%
+        us cut our teeth on learning how to do
+
+
+        00:04:37.360 --> 00:04:39.909 align:start position:0%
+        us cut our teeth on learning how to do
+        rockets.
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let falconOne = try XCTUnwrap(cleaned.first { $0.text.contains("were Falcon 1,") })
+        let rockets = try XCTUnwrap(cleaned.first { $0.text.contains("learning how to do rockets.") })
+
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(falconOne.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:04:20,949"))
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(rockets.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:04:39,909"))
+        )
+        XCTAssertFalse(cleaned.contains { $0.text.contains("[music]") || $0.text.contains(">>") })
+        assertReadableSemanticWindows(cleaned)
+        assertNoBadSemanticBoundaries(cleaned)
+    }
+
     func testCleanCuesShortLongCueIsCappedWithoutCharacterSplitting() {
         let raw = """
         1
@@ -1320,6 +1701,335 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cleaned.first?.end, "00:14:23,040")
         XCTAssertEqual(cleaned.last?.start, "00:15:06,800")
         XCTAssertEqual(cleaned.last?.end, "00:15:08,800")
+    }
+
+    func testCleanCuesShortCJKFeedbackIsCappedWithoutSingleCharacterSplitting() {
+        let raw = """
+        1
+        00:00:10,000 --> 00:00:30,000
+        没问题
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.map(\.text), ["没问题"])
+        XCTAssertEqual(cleaned.first?.start, "00:00:10,000")
+        XCTAssertEqual(cleaned.first?.end, "00:00:11,500")
+    }
+
+    func testCleanCuesLongCJKCueDoesNotSplitIntoSingletonCharacters() {
+        let raw = """
+        1
+        00:00:00,000 --> 00:00:24,000
+        今天我们先看一下这个问题然后再继续往下讲
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(),
+            "今天我们先看一下这个问题然后再继续往下讲"
+        )
+        XCTAssertFalse(cleaned.contains { $0.text.filter { !$0.isWhitespace }.count == 1 })
+        assertReadableSemanticWindows(cleaned)
+    }
+
+    func testCleanCuesKoreanPreservesWordSpaces() {
+        let raw = """
+        1
+        00:03:00,077 --> 00:03:04,181
+        내가 서 있는 곳에
+        정확히 멈추는 버스의 제동 소리.
+
+        2
+        00:03:05,015 --> 00:03:08,885
+        터벅터벅 집을 향해 걸어가는
+        나의 발걸음과
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        let joined = cleaned.map(\.text).joined(separator: " ")
+        XCTAssertTrue(joined.contains("내가 서 있는 곳에"))
+        XCTAssertTrue(joined.contains("정확히 멈추는 버스의 제동 소리."))
+        XCTAssertTrue(joined.contains("터벅터벅 집을 향해 걸어가는"))
+        XCTAssertFalse(joined.contains("내가서있는곳에"))
+        XCTAssertFalse(joined.contains("멈추는버스의제동소리"))
+    }
+
+    func testCleanCuesKoreanSplitsOnWordBoundaries() {
+        let raw = """
+        1
+        00:03:09,019 --> 00:03:22,490
+        현관을 들어서면 나를 반겨주는 반려 동물의 울음 소리와 조용히 움직이는 가족의 목소리.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(separator: " "),
+            "현관을 들어서면 나를 반겨주는 반려 동물의 울음 소리와 조용히 움직이는 가족의 목소리."
+        )
+        XCTAssertFalse(cleaned.contains { $0.text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("반겨주") })
+        XCTAssertFalse(cleaned.contains { $0.text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("는 ") })
+    }
+
+    func testCleanCuesManualMultilineKoreanCueIsNotSplit() {
+        let raw = """
+        1
+        00:03:35,378 --> 00:03:40,817
+        그런데 ‘소리가 없다‘,
+        ‘소리가 전혀 들리지 않는다’라는,
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:03:35,378")
+        XCTAssertEqual(cleaned.first?.end, "00:03:40,817")
+        XCTAssertEqual(cleaned.first?.text, "그런데 ‘소리가 없다‘,\n‘소리가 전혀 들리지 않는다’라는,")
+    }
+
+    func testCleanCuesManualSingleLineKoreanCueKeepsEndTiming() {
+        let raw = """
+        1
+        00:03:27,537 --> 00:03:30,640
+        끊임없이 소리를 듣고,
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:03:27,537")
+        XCTAssertEqual(cleaned.first?.end, "00:03:30,640")
+        XCTAssertEqual(cleaned.first?.text, "끊임없이 소리를 듣고,")
+    }
+
+    func testCleanCuesManualMultilineCJKCueIsNotSplit() {
+        let raw = """
+        1
+        00:02:01,044 --> 00:02:05,724
+        參與了很多心靈成長課程、
+        工作坊，飛到國外找大師，
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:02:01,044")
+        XCTAssertEqual(cleaned.first?.end, "00:02:05,724")
+        XCTAssertEqual(cleaned.first?.text, "參與了很多心靈成長課程、\n工作坊，飛到國外找大師，")
+    }
+
+    func testCleanCuesRollingCJKUsesReadableSourceAnchoredPieces() {
+        let raw = """
+        1
+        00:01:09,080 --> 00:01:12,000
+        あったわけで働きたいです
+
+        2
+        00:01:12,000 --> 00:01:12,010
+        あったわけで働きたいです
+
+        3
+        00:01:12,010 --> 00:01:15,890
+        あったわけで働きたいです
+        東京がわかるんですよそう東京で
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertEqual(
+            cleaned.map(\.text).joined(),
+            "あったわけで働きたいです東京がわかるんですよそう東京で"
+        )
+        XCTAssertFalse(cleaned.contains { $0.text.filter { !$0.isWhitespace }.count == 1 })
+        assertReadableSemanticWindows(cleaned)
+    }
+
+    func testCleanCuesJapaneseVTTUsesReadableSourceBoundaries() {
+        let raw = """
+        WEBVTT
+
+        00:00:19.140 --> 00:00:20.510 align:start position:0%
+        えーと今
+        昨日<00:00:19.320><c>あの</c><00:00:19.740><c>弟</c><00:00:19.740><c>の</c>
+
+        00:00:20.510 --> 00:00:20.520 align:start position:0%
+        昨日あの弟の
+
+        00:00:20.520 --> 00:00:24.890 align:start position:0%
+        昨日あの弟の
+        家に<00:00:20.820><c>泊まっ</c><00:00:20.939><c>て</c><00:00:21.380><c>そう</c><00:00:22.380><c>です</c><00:00:22.500><c>ね</c><00:00:22.640><c>ちょっと</c><00:00:23.640><c>今日</c><00:00:24.539><c>の</c>
+
+        00:00:24.890 --> 00:00:24.900 align:start position:0%
+        家に泊まってそうですねちょっと今日の
+
+        00:00:24.900 --> 00:00:25.790 align:start position:0%
+        家に泊まってそうですねちょっと今日の
+        キャンプ<00:00:25.080><c>の</c>
+
+        00:00:25.790 --> 00:00:25.800 align:start position:0%
+        キャンプの
+
+        00:00:25.800 --> 00:00:28.310 align:start position:0%
+        キャンプの
+        準備<00:00:25.920><c>を</c><00:00:26.039><c>し</c><00:00:26.160><c>て</c><00:00:26.160><c>い</c><00:00:26.279><c>ます</c>
+
+        00:00:28.320 --> 00:00:32.450 align:start position:0%
+        任天<00:00:28.500><c>堂</c><00:00:28.680><c>スイッチ</c><00:00:28.820><c>も</c><00:00:30.000><c>持っ</c><00:00:30.000><c>て</c><00:00:30.060><c>いき</c><00:00:30.180><c>ます</c><00:00:30.180><c>よ</c><00:00:30.500><c>一応</c><00:00:31.500><c>ね</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let combined = cleaned.map(\.text).joined()
+
+        XCTAssertEqual(
+            combined,
+            "えーと今昨日あの弟の家に泊まってそうですねちょっと今日のキャンプの準備をしています任天堂スイッチも持っていきますよ一応ね"
+        )
+        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertFalse(cleaned.contains { $0.text.hasSuffix("泊") || $0.text.hasPrefix("まって") })
+        XCTAssertFalse(cleaned.contains { $0.text.hasSuffix("ちょ") || $0.text.hasPrefix("っと") })
+        XCTAssertFalse(cleaned.contains { $0.text.hasSuffix("スイ") || $0.text.hasPrefix("ッチ") })
+        XCTAssertFalse(cleaned.contains { $0.text.filter { !$0.isWhitespace }.count <= 3 && cleaned.count > 1 })
+        assertReadableSemanticWindows(cleaned)
+    }
+
+    func testCleanCuesJapaneseVTTTrimsTerminalDisplayHold() throws {
+        let raw = """
+        WEBVTT
+
+        00:00:28.320 --> 00:00:32.450 align:start position:0%
+        任天<00:00:28.500><c>堂</c><00:00:28.680><c>スイッチ</c><00:00:28.820><c>も</c><00:00:30.000><c>持っ</c><00:00:30.000><c>て</c><00:00:30.060><c>いき</c><00:00:30.180><c>ます</c><00:00:30.180><c>よ</c><00:00:30.500><c>一応</c><00:00:31.500><c>ね</c>
+
+        00:00:32.450 --> 00:00:32.460 align:start position:0%
+        任天堂スイッチも持っていきますよ一応ね
+
+        00:00:32.460 --> 00:00:36.110 align:start position:0%
+        任天堂スイッチも持っていきますよ一応ね
+        はい<00:00:32.759><c>たくさん</c><00:00:33.899><c>荷物</c><00:00:34.020><c>が</c><00:00:34.200><c>あり</c><00:00:34.260><c>ます</c><00:00:34.260><c>ね</c>
+
+        00:00:36.110 --> 00:00:36.120 align:start position:0%
+        はいたくさん荷物がありますね
+
+        00:00:36.120 --> 00:00:39.290 align:start position:0%
+        はいたくさん荷物がありますね
+        楽しみ<00:00:36.300><c>です</c><00:00:36.360><c>か</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let parsedCue = try XCTUnwrap(parseVTT(raw).first { $0.text.contains("楽しみですか") })
+        XCTAssertEqual(parsedCue.sourceFragments.map(\.text), ["楽しみ", "です", "か"])
+        XCTAssertLessThanOrEqual(parsedCue.sourceFragments.last?.endSeconds ?? 0, 37.9)
+        let cue = try XCTUnwrap(cleaned.first { $0.text.contains("楽しみですか") })
+
+        XCTAssertLessThanOrEqual(try XCTUnwrap(srtTimeToSeconds(cue.end)), 37.9)
+    }
+
+    func testCleanCuesJapaneseVTTMergesShortKanaFragments() throws {
+        let raw = """
+        WEBVTT
+
+        00:02:58.040 --> 00:03:01.070 align:start position:0%
+        マジで
+        おなら<00:02:59.360><c>つまら</c><00:03:00.360><c>ない</c><00:03:00.420><c>おなら</c><00:03:00.840><c>」</c><00:03:00.900><c>って</c><00:03:00.959><c>書い</c><00:03:01.019><c>て</c><00:03:01.080><c>ある</c>
+
+        00:03:01.070 --> 00:03:01.080 align:start position:0%
+        おならつまらないおなら」って書いてある
+
+        00:03:01.080 --> 00:03:08.030 align:start position:0%
+        おならつまらないおなら」って書いてある
+        や<00:03:01.200><c>ん</c>
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+        let joined = cleaned.map(\.text).joined()
+
+        XCTAssertTrue(joined.contains("やん"))
+        XCTAssertFalse(cleaned.contains { $0.text == "や" || $0.text == "ん" })
+        XCTAssertFalse(cleaned.contains {
+            guard let start = srtTimeToSeconds($0.start), let end = srtTimeToSeconds($0.end) else { return false }
+            return end - start <= 0.08 && $0.text.contains("おなら")
+        })
+        let cue = try XCTUnwrap(cleaned.first { $0.text == "やん" })
+        XCTAssertLessThanOrEqual(try XCTUnwrap(srtTimeToSeconds(cue.end)), 182.5)
+    }
+
+    func testCleanCuesDenseShortCJKCueDoesNotSplitIntoBlinkPieces() {
+        let raw = """
+        1
+        00:01:25,510 --> 00:01:27,510
+        美味しい食べ物がはいっぱいありますああそうですか便利じゃないですか
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:01:25,510")
+        XCTAssertEqual(cleaned.first?.end, "00:01:27,510")
+    }
+
+    func testCleanCuesReadableCJKCueWithoutSourceAnchorsIsNotBlindlySplit() {
+        let raw = """
+        1
+        00:00:50,430 --> 00:00:55,610
+        大家如果有來過台北的話，就知道台北的摩托車還蠻多的
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:00:50,430")
+        XCTAssertEqual(cleaned.first?.end, "00:00:55,610")
+        XCTAssertEqual(cleaned.first?.text, "大家如果有來過台北的話，就知道台北的摩托車還蠻多的")
+    }
+
+    func testCleanCuesSlightlyLongCJKCueWithoutSourceAnchorsKeepsSourceWindow() {
+        let raw = """
+        1
+        00:00:55,670 --> 00:01:04,770
+        今天路上感覺車還好，然後天氣沒有下雨，但是不是晴天，沒有太陽
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:00:55,670")
+        XCTAssertEqual(cleaned.first?.end, "00:01:04,770")
+        XCTAssertEqual(cleaned.first?.text, "今天路上感覺車還好，然後天氣沒有下雨，但是不是晴天，沒有太陽")
+    }
+
+    func testCleanCuesNoAnchorCJKCueUnderHardWindowKeepsSourceWindow() {
+        let raw = """
+        1
+        00:01:16,360 --> 00:01:29,220
+        那我們現在可以來學一些車上的字，後照鏡可以看到後面的車
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:01:16,360")
+        XCTAssertEqual(cleaned.first?.end, "00:01:29,220")
+        XCTAssertEqual(cleaned.first?.text, "那我們現在可以來學一些車上的字，後照鏡可以看到後面的車")
+    }
+
+    func testCleanCuesCJKCueWithDigitsIsNotCappedAsShortFeedback() {
+        let raw = """
+        1
+        00:02:20,940 --> 00:02:32,470
+        因為大概20分鐘的車程，所以喝一杯飲料剛剛好 也不錯，現在在等紅綠燈
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertEqual(cleaned.count, 1)
+        XCTAssertEqual(cleaned.first?.start, "00:02:20,940")
+        XCTAssertEqual(cleaned.first?.end, "00:02:32,470")
+        XCTAssertEqual(cleaned.first?.text, "因為大概20分鐘的車程，所以喝一杯飲料剛剛好也不錯，現在在等紅綠燈")
     }
 
     func testCleanCuesRollingTailUsesSpeechAlignedWindowInsteadOfSourceDrag() {
@@ -1414,6 +2124,15 @@ final class TranslationSettingsTests: XCTestCase {
             try XCTUnwrap(srtTimeToSeconds("00:00:51,000")),
             "The question should stay visible until its source window has mostly completed."
         )
+        if let mainCue = cleanedQuestion.first(where: { $0.text == "Our main objective today is a 10 engine static fire." }) {
+            XCTAssertGreaterThanOrEqual(
+                try XCTUnwrap(srtTimeToSeconds(mainCue.start)),
+                try XCTUnwrap(srtTimeToSeconds("00:00:45,430")),
+                "A new sentence should not appear immediately at the previous source boundary."
+            )
+        } else {
+            XCTFail("Expected main objective cue, got: \(cleanedQuestion.map(\.text))")
+        }
         if let firstV3Cue = cleanedQuestion.first(where: { $0.text.hasPrefix("This is the first V3") }) {
             XCTAssertGreaterThanOrEqual(
                 try XCTUnwrap(srtTimeToSeconds(firstV3Cue.start)),
@@ -1472,6 +2191,383 @@ final class TranslationSettingsTests: XCTestCase {
         )
         XCTAssertFalse(cleanedMoon.contains { $0.text == "It'll be the one that puts" })
         XCTAssertFalse(cleanedMoon.contains { $0.text == "humans back on the moon." })
+    }
+
+    func testCleanCuesRollingRomanceFragmentBorrowDoesNotDelayMidSentenceStart() throws {
+        let raw = """
+        1
+        00:01:15,479 --> 00:01:18,649
+        el tiempo descubrí que no
+        no tengo el poder de leer Mentes pero
+
+        2
+        00:01:18,649 --> 00:01:18,659
+        no tengo el poder de leer Mentes pero
+
+        3
+        00:01:18,659 --> 00:01:20,210
+        no tengo el poder de leer Mentes pero
+        poco a poco fui desarrollando la
+
+        4
+        00:01:20,210 --> 00:01:20,220
+        poco a poco fui desarrollando la
+
+        5
+        00:01:20,220 --> 00:01:22,670
+        poco a poco fui desarrollando la
+        habilidad de conectar y sobre todo
+
+        6
+        00:01:22,670 --> 00:01:22,680
+        habilidad de conectar y sobre todo
+
+        7
+        00:01:22,680 --> 00:01:26,149
+        habilidad de conectar y sobre todo
+        entender los corazones de ahí surgió mi
+
+        8
+        00:01:26,149 --> 00:01:26,159
+        entender los corazones de ahí surgió mi
+
+        9
+        00:01:26,159 --> 00:01:27,830
+        entender los corazones de ahí surgió mi
+        verdadera Pasión por todo el mundo del
+
+        10
+        00:01:27,830 --> 00:01:27,840
+        verdadera Pasión por todo el mundo del
+
+        11
+        00:01:27,840 --> 00:01:29,690
+        verdadera Pasión por todo el mundo del
+        lenguaje no verbal todo lo que me
+
+        12
+        00:01:29,690 --> 00:01:29,700
+        lenguaje no verbal todo lo que me
+
+        13
+        00:01:29,700 --> 00:01:31,609
+        lenguaje no verbal todo lo que me
+        pudiera empezar a platicar la historia
+
+        14
+        00:01:31,609 --> 00:01:31,619
+        pudiera empezar a platicar la historia
+
+        15
+        00:01:31,619 --> 00:01:33,710
+        pudiera empezar a platicar la historia
+        de las personas que tenía enfrente su
+
+        16
+        00:01:33,710 --> 00:01:33,720
+        de las personas que tenía enfrente su
+
+        17
+        00:01:33,720 --> 00:01:36,109
+        de las personas que tenía enfrente su
+        lenguaje corporal su lenguaje facial la
+
+        18
+        00:01:36,109 --> 00:01:36,119
+        lenguaje corporal su lenguaje facial la
+
+        19
+        00:01:36,119 --> 00:01:39,469
+        lenguaje corporal su lenguaje facial la
+        ropa los movimientos el tono de voz todo
+
+        20
+        00:01:39,469 --> 00:01:39,479
+        ropa los movimientos el tono de voz todo
+
+        21
+        00:01:39,479 --> 00:01:41,510
+        ropa los movimientos el tono de voz todo
+        lo que me dijera Quién era la persona
+
+        22
+        00:01:41,510 --> 00:01:41,520
+        lo que me dijera Quién era la persona
+
+        23
+        00:01:41,520 --> 00:01:44,510
+        lo que me dijera Quién era la persona
+        que estaba enfrente de mí eso con el
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        guard let cue = cleaned.first(where: { $0.text.contains("a platicar la historia") }) else {
+            return XCTFail("Expected Spanish mid-sentence cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(cue.start)),
+            try XCTUnwrap(srtTimeToSeconds("00:01:30,950")),
+            "Mid-sentence fragments should borrow the earlier source token timing instead of waiting for the next rolling window."
+        )
+    }
+
+    func testCleanCuesMergesShortRomancePrefixWithContinuationAdverb() throws {
+        let raw = """
+        1
+        00:01:28,000 --> 00:01:31,109
+        des oranges maltaises mais elles
+        viennent de Tunisie et elles sont
+
+        2
+        00:01:31,109 --> 00:01:31,119
+        viennent de Tunisie et elles sont
+
+
+        3
+        00:01:31,119 --> 00:01:35,830
+        viennent de Tunisie et elles sont
+        également à 3,99 € le kilo. On trouve
+
+        4
+        00:01:35,830 --> 00:01:35,840
+        également à 3,99 € le kilo. On trouve
+
+
+        5
+        00:01:35,840 --> 00:01:39,389
+        également à 3,99 € le kilo. On trouve
+        aussi en toute saison des pommes.
+
+        6
+        00:01:39,389 --> 00:01:39,399
+        aussi en toute saison des pommes.
+
+
+        7
+        00:01:39,399 --> 00:01:42,830
+        aussi en toute saison des pommes.
+        Ici nous avons des pommes Golden
+
+        8
+        00:01:42,830 --> 00:01:42,840
+        Ici nous avons des pommes Golden
+
+
+        9
+        00:01:42,840 --> 00:01:47,230
+        Ici nous avons des pommes Golden
+        qui coûtent 3,99 € le kilo.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        XCTAssertFalse(
+            cleaned.contains { $0.text == "On trouve" },
+            "A two-word Romance prefix should not blink as its own cue when the next cue starts with a continuation adverb."
+        )
+        guard let cue = cleaned.first(where: { $0.text == "On trouve aussi en toute saison des pommes." }) else {
+            return XCTFail("Expected merged French continuation cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(cue.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:01:39,000"))
+        )
+    }
+
+    func testCleanCuesDelaysTightSentenceHandoffToAvoidEarlyCutoff() throws {
+        let raw = """
+        1
+        00:01:39,399 --> 00:01:42,830
+        aussi en toute saison des pommes.
+        Ici nous avons des pommes Golden
+
+        2
+        00:01:42,830 --> 00:01:42,840
+        Ici nous avons des pommes Golden
+
+
+        3
+        00:01:42,840 --> 00:01:47,230
+        Ici nous avons des pommes Golden
+        qui coûtent 3,99 € le kilo.
+
+        4
+        00:01:47,240 --> 00:01:50,389
+        qui coûtent 3,99 € le kilo.
+        On trouve aussi d'autres pommes
+
+        5
+        00:01:50,389 --> 00:01:50,399
+        On trouve aussi d'autres pommes
+
+
+        6
+        00:01:50,399 --> 00:01:53,069
+        On trouve aussi d'autres pommes
+        qui sont des pommes Royal Gala au même
+
+        7
+        00:01:53,069 --> 00:01:53,079
+        qui sont des pommes Royal Gala au même
+
+
+        8
+        00:01:53,079 --> 00:01:56,310
+        qui sont des pommes Royal Gala au même
+        prix. Ici, il y a trois sortes de
+
+        9
+        00:01:56,310 --> 00:01:56,320
+        prix. Ici, il y a trois sortes de
+
+
+        10
+        00:01:56,320 --> 00:01:59,190
+        prix. Ici, il y a trois sortes de
+        poivrons. Des poivrons jaunes, des
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        guard let priceCue = cleaned.first(where: { $0.text == "On trouve aussi d'autres pommes qui sont des pommes Royal Gala au même prix." }) else {
+            return XCTFail("Expected price sentence cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(priceCue.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:01:54,050")),
+            "A complete sentence should not disappear immediately before a tightly attached new sentence starts."
+        )
+    }
+
+    func testCleanCuesLowRepeatRatioLyricsAreNotMergedAsRomanceContinuation() {
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "la la la"),
+            SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:04,000", text: "la la la"),
+            SubtitleCue(index: 3, start: "00:00:05,000", end: "00:00:06,000", text: "different"),
+            SubtitleCue(index: 4, start: "00:00:07,000", end: "00:00:08,000", text: "lines"),
+            SubtitleCue(index: 5, start: "00:00:09,000", end: "00:00:10,000", text: "ending")
+        ]
+
+        let cleaned = cleanCues(input)
+
+        XCTAssertEqual(cleaned.count, 5)
+        XCTAssertEqual(cleaned[1].text, "la la la")
+    }
+
+    func testCleanCuesTedxColonHandoffAndShortAsideAvoidLateHolds() throws {
+        let raw = """
+        1
+        00:01:36,718 --> 00:01:40,247
+        when the sleep deprivation
+        really kicked in,
+
+        2
+        00:01:40,247 --> 00:01:42,299
+        like around week eight,
+
+        3
+        00:01:42,299 --> 00:01:45,732
+        I had this thought,
+        and it was the same thought
+
+        4
+        00:01:45,732 --> 00:01:49,773
+        that parents across the ages,
+        internationally,
+
+        5
+        00:01:49,773 --> 00:01:52,467
+        everybody has had this thought,
+        which is:
+
+        6
+        00:01:52,467 --> 00:01:58,054
+        I am never going to have
+        free time ever again.
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+
+        guard let shortAside = cleaned.first(where: { $0.text == "like around week eight," }) else {
+            return XCTFail("Expected short aside cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(shortAside.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:01:42,180")),
+            "A short non-sentence aside should not linger almost a second after speech has ended."
+        )
+
+        guard let punchline = cleaned.first(where: { $0.text == "I am never going to have\nfree time ever again." }) else {
+            return XCTFail("Expected punchline cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(punchline.start)),
+            try XCTUnwrap(srtTimeToSeconds("00:01:52,350")),
+            "A colon handoff should let the following sentence appear slightly before the delayed source cue boundary without cutting the previous cue too early."
+        )
+        assertReadableSemanticWindows(cleaned)
+    }
+
+    func testCleanCuesKeepsEmphaticShortSentenceVisibleAfterHandoff() throws {
+        let raw = """
+        1
+        00:03:03,040 --> 00:03:05,117
+        You know what I found?
+
+        2
+        00:03:05,117 --> 00:03:09,438
+        10,000 hours!
+
+        3
+        00:03:09,438 --> 00:03:11,200
+        Anybody ever heard this?
+        """
+
+        let cleaned = cleanCues(parseSRT(raw))
+        let emphatic = try XCTUnwrap(cleaned.first(where: { $0.text == "10,000 hours!" }))
+
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(emphatic.start)),
+            try XCTUnwrap(srtTimeToSeconds("00:03:05,367"))
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(emphatic.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:03:07,567")),
+            "A short emphatic sentence should not disappear immediately after a sentence handoff shifts its start later."
+        )
+    }
+
+    func testCleanCuesDoesNotBorrowColonHandoffBeforePreviousSpeechEnds() throws {
+        let raw = """
+        WEBVTT
+
+        00:04:49.608 --> 00:04:52.095
+        We had the place crammed
+        full of agents in T-shirts:
+
+        00:04:52.119 --> 00:04:53.533
+        "James Robinson IS Joseph!"
+        """
+
+        let cleaned = cleanCues(parseVTT(raw))
+
+        guard let setup = cleaned.first(where: { $0.text.contains("agents in T-shirts:") }) else {
+            return XCTFail("Expected colon setup cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(setup.end)),
+            try XCTUnwrap(srtTimeToSeconds("00:04:51,945")),
+            "Colon handoff should not cut the setup cue more than 150ms before its source speech window ends."
+        )
+        guard let punchline = cleaned.first(where: { $0.text.contains("James Robinson") }) else {
+            return XCTFail("Expected punchline cue, got: \(cleaned.map(\.text))")
+        }
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(srtTimeToSeconds(punchline.start)),
+            try XCTUnwrap(srtTimeToSeconds("00:04:51,960")),
+            "Colon handoff should still let the response appear slightly before the source cue boundary."
+        )
     }
 
     func testCloudTranslationRetriesMissingLinesBySplittingLongChunk() async throws {

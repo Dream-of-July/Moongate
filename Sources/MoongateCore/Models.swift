@@ -286,6 +286,19 @@ public enum SubtitleStyle: String, Codable, Sendable {
     case chineseOnly
 }
 
+/// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
+public struct SubtitleCueSourceFragment: Sendable {
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let text: String
+
+    public init(startSeconds: Double, endSeconds: Double, text: String) {
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.text = text
+    }
+}
+
 /// 一条 SRT 字幕
 public struct SubtitleCue: Sendable {
     public let index: Int
@@ -293,12 +306,20 @@ public struct SubtitleCue: Sendable {
     public let start: String
     public let end: String
     public var text: String
+    public var sourceFragments: [SubtitleCueSourceFragment]
 
-    public init(index: Int, start: String, end: String, text: String) {
+    public init(
+        index: Int,
+        start: String,
+        end: String,
+        text: String,
+        sourceFragments: [SubtitleCueSourceFragment] = []
+    ) {
         self.index = index
         self.start = start
         self.end = end
         self.text = text
+        self.sourceFragments = sourceFragments
     }
 }
 

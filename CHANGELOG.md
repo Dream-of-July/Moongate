@@ -2,6 +2,24 @@
 
 本项目版本遵循语义化版本（major.minor.patch）。
 
+## 0.7.6
+
+0.7.6 是一次跨平台字幕分段与时间轴改进版本，重点优化英文与日文字幕在 YouTube 自动字幕、手动字幕和翻译前清洗流程中的断句、显示时长和句间衔接。macOS 与 Windows 核心逻辑保持同构发布。
+
+### 修复 / 改进
+
+- **英文分段更像真实字幕**：新增弱语义边界识别，避免把 `the / and / which / to` 等连接词切到难读的位置；短反馈句、冒号/分号后的句间交接和长停顿显示时长更稳定。
+- **日文无空格字幕更稳**：对日文/CJK 字符级 timing 做单独处理，减少自动字幕滚动 carry、短密字幕和人工多行字幕被拆成 blink cue 或拖尾过长的问题。
+- **保留 VTT 词级时间戳**：下载自动字幕时优先保留 VTT inline word timestamps，清洗阶段使用源片段时间而不是只依赖整条 cue 窗口。
+- **跨平台同构分段器**：新增 Swift / C# 双端 `SubtitleTimingPlanner`，集中管理可读时长、弱边界、短句和 source-anchored timing 规则。
+- **评估工具落地**：新增 `tools/subtitle_timing_eval/`，用于用公开样本、ASR/VTT 参考和离线 metrics 检查分段时间轴；生成产物默认写入 ignored artifacts。
+- **任务进度更清晰**：队列层同步任务级进度与 ETA，处理 VTT→SRT 规范化后再烧录或输出。
+
+### 测试
+
+- 新增 Swift / Windows 分段器、VTT 解析、字幕清洗和 queue 行为回归测试。
+- 新增 Python 离线评估工具单测，覆盖 VTT word timing、弱边界、manifest/status/runbook 和翻译字幕 overlap gate。
+
 ## 0.7.5
 
 0.7.5 是一次 Windows-only 热修版本，重点修复 Windows 版设置窗口在打开时因 WPF 只读绑定触发 `RangeBase.Value`/`Run.Text` 初始化异常的问题，并补齐 Windows on ARM 虚拟机中的基础构建、安装器和启动烟测验证。macOS 最新发布面仍停留在 0.7.3。
