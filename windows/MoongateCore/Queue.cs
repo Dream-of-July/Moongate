@@ -499,6 +499,8 @@ public sealed class QueueManager
     private static TaskWorkPlan WorkPlanFor(DownloadRequest request, ChineseSubtitleMode mode)
     {
         var needsLocalAsr = request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+        // Weights approximate real wall-clock so the bar tracks time (download/transcription/
+        // translation/burn are all multi-minute). Mirrors the Swift QueueManager.workPlan.
         return new TaskWorkPlan(
             shouldExtractAudio: needsLocalAsr,
             shouldRunASR: needsLocalAsr,
@@ -506,7 +508,13 @@ public sealed class QueueManager
             shouldTranscode: Transcoder.NeedsProcessing(request.OutputFormat),
             shouldTranslate: mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn,
             shouldBurn: mode is ChineseSubtitleMode.BurnIn or ChineseSubtitleMode.BurnOriginal,
-            speechRecognitionUnits: needsLocalAsr ? 12 : 1);
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: needsLocalAsr ? 6 : 1,
+            subtitleSegmentUnits: 1,
+            transcodeUnits: 2,
+            translateUnits: 6,
+            burnUnits: 4);
     }
 
     // MARK: - 入队

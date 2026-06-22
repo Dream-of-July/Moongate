@@ -386,7 +386,7 @@ public class QueueManagerTests
         });
         var atEndOfFirstStream = queue.Item(id)!;
         Assert.Equal(1.0, atEndOfFirstStream.Progress);
-        Assert.Equal(0.25, atEndOfFirstStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal(2.0 / 14.0, atEndOfFirstStream.OverallProgress!.Value, precision: 4);
         Assert.Equal("1.2MiB/s", atEndOfFirstStream.SpeedText);
         Assert.Equal(20, atEndOfFirstStream.RemainingSeconds);
         Assert.False(atEndOfFirstStream.RemainingIsApproximate);
@@ -400,7 +400,7 @@ public class QueueManagerTests
         });
         var restartedStream = queue.Item(id)!;
         Assert.Equal(1.0, restartedStream.Progress);
-        Assert.Equal(0.25, restartedStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal(2.0 / 14.0, restartedStream.OverallProgress!.Value, precision: 4);
         Assert.Equal("800KiB/s", restartedStream.SpeedText);
         Assert.Equal(10, restartedStream.RemainingSeconds);
     }

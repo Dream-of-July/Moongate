@@ -98,6 +98,23 @@ python3 -m subtitle_timing_eval.cli asr \
   --language en
 ```
 
+Or use the same local whisper.cpp runtime/model path that Moongate uses in the app:
+
+```bash
+PYTHONPATH=tools/subtitle_timing_eval \
+python3 -m subtitle_timing_eval.cli asr \
+  --engine whisper-cpp \
+  --audio artifacts/subtitle_timing_eval/starship_test_like_you_fly_en/<downloaded-media-file> \
+  --out artifacts/subtitle_timing_eval/starship_test_like_you_fly_en/asr_words.json \
+  --whisper-cli /opt/homebrew/bin/whisper-cli \
+  --model-path "$HOME/Library/Application Support/月之门/asr/models/ggml-large-v3-turbo-q5_0.bin" \
+  --ffmpeg /opt/homebrew/bin/ffmpeg \
+  --language en \
+  --no-gpu
+```
+
+Use `--no-gpu` when Metal allocation is unstable or the machine is short on GPU memory. The command still produces the same `asr_words.json` shape consumed by `local-asr-srt` and the timing metrics.
+
 When a downloaded YouTube VTT contains inline word timestamps, use it as the preferred reference for that sample:
 
 ```bash

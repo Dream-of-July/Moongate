@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import quote
 
-from .asr import transcribe_words
+from .asr import transcribe_words, transcribe_words_whisper_cpp
 from .comparison import compare_reports, summarize_suite
 from .metrics import cjk_singleton, evaluate_cues, is_short_feedback, load_words_json, offset_words, summarize_report, weak_boundary
 from .srt import Cue, parse_srt, serialize_srt
@@ -55,8 +55,8 @@ def validate_manifest(data: Dict[str, Any]) -> None:
             errors.append("%s.spoken_languages must be a non-empty list" % prefix)
         section = sample.get("section") or {}
         duration = float(section.get("duration_seconds", 0))
-        if duration < 120 or duration > 360:
-            errors.append("%s.section.duration_seconds must be between 120 and 360" % prefix)
+        if duration < 60 or duration > 360:
+            errors.append("%s.section.duration_seconds must be between 60 and 360" % prefix)
         if sample.get("category") == "auto_translate" and sample.get("alignment_mode") != "overlap":
             errors.append("%s auto_translate samples must use alignment_mode=overlap" % prefix)
 
@@ -168,11 +168,17 @@ def build_sample_runbook(
     artifacts_root: str,
     model: str = "small",
     duration_override_seconds: Optional[float] = None,
+    asr_engine: str = "faster-whisper",
+    whisper_cli: str = "whisper-cli",
+    model_path: Optional[str] = None,
+    ffmpeg: str = "ffmpeg",
+    whisper_cpp_no_gpu: bool = False,
 ) -> Dict[str, Any]:
     start, end, _ = sample_section(sample, duration_override_seconds)
     sample_id = sample["id"]
     workdir = "%s/%s" % (artifacts_root.rstrip("/"), sample_id)
     words_path = "%s/asr_words.json" % workdir
+    local_asr_source_srt = "%s/local-asr.%s.srt" % (workdir, sample_asr_language(sample))
     baseline_report = "%s/baseline.report.json" % workdir
     optimized_report = "%s/optimized.report.json" % workdir
     comparison_path = "%s/comparison.json" % workdir
@@ -202,6 +208,31 @@ def build_sample_runbook(
     if duration_override_seconds is not None:
         prepare += ["--duration-seconds", str(duration_override_seconds)]
 
+    asr_command = base_command + [
+        "asr",
+        "--audio",
+        "%s/<downloaded-audio-or-section-wav>" % workdir,
+        "--out",
+        words_path,
+        "--model",
+        model,
+        "--language",
+        sample_asr_language(sample),
+    ]
+    if asr_engine == "whisper-cpp":
+        asr_command += [
+            "--engine",
+            "whisper-cpp",
+            "--whisper-cli",
+            whisper_cli,
+            "--model-path",
+            model_path or "<ggml-model-path>",
+            "--ffmpeg",
+            ffmpeg,
+        ]
+        if whisper_cpp_no_gpu:
+            asr_command.append("--no-gpu")
+
     return {
         "sample_id": sample_id,
         "language_group": sample.get("language_group", "unknown"),
@@ -209,22 +240,25 @@ def build_sample_runbook(
         "workdir": workdir,
         "artifacts": {
             "asr_words": words_path,
+            "local_asr_source_srt": local_asr_source_srt,
             "baseline_report": baseline_report,
             "optimized_report": optimized_report,
             "comparison": comparison_path,
         },
         "commands": {
             "prepare": prepare,
-            "asr": base_command + [
-                "asr",
-                "--audio",
-                "%s/<downloaded-audio-or-section-wav>" % workdir,
-                "--out",
+            "asr": asr_command,
+            "local_asr_srt": [
+                "swift",
+                "run",
+                "moongate-cli",
+                "local-asr-srt",
+                "--asr-words",
                 words_path,
-                "--model",
-                model,
                 "--language",
                 sample_asr_language(sample),
+                "--out",
+                local_asr_source_srt,
             ],
             "clean_srt": [
                 "swift",
@@ -247,7 +281,7 @@ def build_sample_runbook(
                 "--sample-id",
                 sample_id,
                 "--candidate",
-                "%s/<optimized-or-cleaned-subtitle.srt>" % workdir,
+                local_asr_source_srt,
                 "--out",
                 optimized_report,
             ] + metrics_common,
@@ -272,6 +306,11 @@ def build_suite_runbook(
     model: str = "small",
     duration_override_seconds: Optional[float] = None,
     manifest_path: str = "tools/subtitle_timing_eval/samples.json",
+    asr_engine: str = "faster-whisper",
+    whisper_cli: str = "whisper-cli",
+    model_path: Optional[str] = None,
+    ffmpeg: str = "ffmpeg",
+    whisper_cpp_no_gpu: bool = False,
 ) -> Dict[str, Any]:
     validate_manifest(manifest)
     samples = [
@@ -280,6 +319,11 @@ def build_suite_runbook(
             artifacts_root=artifacts_root,
             model=model,
             duration_override_seconds=duration_override_seconds,
+            asr_engine=asr_engine,
+            whisper_cli=whisper_cli,
+            model_path=model_path,
+            ffmpeg=ffmpeg,
+            whisper_cpp_no_gpu=whisper_cpp_no_gpu,
         )
         for sample in manifest["samples"]
     ]
@@ -1794,7 +1838,29 @@ def summarize_suite_files(
     return summary
 
 
-def transcribe_file(audio_path: str, output_path: str, model_size: str, language: Optional[str]) -> Dict[str, object]:
+def transcribe_file(
+    audio_path: str,
+    output_path: str,
+    model_size: str,
+    language: Optional[str],
+    engine: str = "faster-whisper",
+    whisper_cli: str = "whisper-cli",
+    model_path: Optional[str] = None,
+    ffmpeg: str = "ffmpeg",
+    prompt: Optional[str] = None,
+    whisper_cpp_no_gpu: bool = False,
+) -> Dict[str, object]:
+    if engine == "whisper-cpp":
+        return transcribe_words_whisper_cpp(
+            audio_path=audio_path,
+            output_path=output_path,
+            model_path=model_path or "",
+            language=language,
+            whisper_cli=whisper_cli,
+            ffmpeg=ffmpeg,
+            prompt=prompt,
+            no_gpu=whisper_cpp_no_gpu,
+        )
     return transcribe_words(audio_path=audio_path, output_path=output_path, model_size=model_size, language=language)
 
 

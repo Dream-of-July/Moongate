@@ -180,6 +180,7 @@ extension LocalizationTables {
         L.Queue.retryWithLocalASR: "用本地识别重跑",
         L.Queue.retryWithLocalASRHint: "复用已下载视频，重新识别音频并重新执行字幕处理",
         L.Queue.retryWithLocalASRConfigureHint: "先配置本地 Whisper；配置完成后会复用已下载视频重跑。",
+        L.Queue.localASRQualitySuggestion: "字幕时间可能不准确（多为平台滚动字幕所致），建议用本地 Whisper 重新生成。",
         L.Queue.localASRGeneratedSubtitleReady: "已生成本地识别字幕",
         L.Queue.revealInFinder: "在访达中显示",
         L.Queue.revealInFinderHint: "打开包含结果文件的位置",

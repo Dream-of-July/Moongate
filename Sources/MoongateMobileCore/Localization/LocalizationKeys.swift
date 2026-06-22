@@ -199,6 +199,7 @@ public enum L {
         public static let retryWithLocalASR = "L.Queue.RetryWithLocalASR"
         public static let retryWithLocalASRHint = "L.Queue.RetryWithLocalASRHint"
         public static let retryWithLocalASRConfigureHint = "L.Queue.RetryWithLocalASRConfigureHint"
+        public static let localASRQualitySuggestion = "L.Queue.LocalASRQualitySuggestion"
         public static let localASRGeneratedSubtitleReady = "L.Queue.LocalASRGeneratedSubtitleReady"
         public static let revealInFinder = "L.Queue.RevealInFinder"
         public static let revealInFinderHint = "L.Queue.RevealInFinderHint"

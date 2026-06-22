@@ -75,7 +75,17 @@ public class AsrContractsTests
         var manifest = AsrModelManifest.RecommendedWhisperCpp;
 
         Assert.Equal(
-            ["whisper.cpp:tiny-q5_1", "whisper.cpp:base-q5_1", "whisper.cpp:small-q5_1"],
+            [
+                "whisper.cpp:tiny-q5_1",
+                "whisper.cpp:tiny-q8_0",
+                "whisper.cpp:base-q5_1",
+                "whisper.cpp:base-q8_0",
+                "whisper.cpp:small-q5_1",
+                "whisper.cpp:small-q8_0",
+                "whisper.cpp:small.en-q5_1",
+                "whisper.cpp:medium-q5_0",
+                "whisper.cpp:large-v3-turbo-q5_0",
+            ],
             manifest.Models.Select(model => model.Id));
         Assert.All(manifest.Models, model => Assert.Equal("MIT", model.License));
         Assert.All(manifest.Models, model => Assert.Contains("ggerganov/whisper.cpp", model.SourceDescription));
@@ -100,6 +110,13 @@ public class AsrContractsTests
         Assert.Equal("ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb", small.Sha256);
         Assert.Equal("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin", small.DownloadUrl);
         Assert.True(small.MemoryRequiredMb >= 1_024);
+
+        var turbo = Assert.Single(manifest.Models, model => model.Id == "whisper.cpp:large-v3-turbo-q5_0");
+        Assert.Equal("ggml-large-v3-turbo-q5_0.bin", turbo.FileName);
+        Assert.Equal(574_041_195, turbo.SizeBytes);
+        Assert.Equal("394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2", turbo.Sha256);
+        Assert.Equal("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin", turbo.DownloadUrl);
+        Assert.True(turbo.MemoryRequiredMb >= 3_072);
     }
 
     [Fact]
@@ -708,10 +725,12 @@ public class AsrContractsTests
             "-ojf",
             "-of", Path.Combine(Path.GetTempPath(), "moongate", "transcript"),
             "-pp",
+            "-dtw", "small", "-nfa",
             "-l", "ja",
             "--prompt", "title channel glossary",
         ], plan.Arguments);
 
+        // No token JSON requested -> DTW is pointless and must be omitted.
         var segmentJsonPlan = WhisperCppCommandPlan.Create(
             runtime,
             model,
@@ -719,6 +738,16 @@ public class AsrContractsTests
             Path.Combine(Path.GetTempPath(), "moongate", "segments"));
         Assert.Contains("-oj", segmentJsonPlan.Arguments);
         Assert.DoesNotContain("-ojf", segmentJsonPlan.Arguments);
+        Assert.DoesNotContain("-dtw", segmentJsonPlan.Arguments);
+        Assert.DoesNotContain("-nfa", segmentJsonPlan.Arguments);
+
+        // Unknown preset -> omit -dtw (fail-safe), never crash.
+        var unknownModelPlan = WhisperCppCommandPlan.Create(
+            runtime,
+            model,
+            new AsrRequest { AudioPath = audio, ModelId = "whisper.cpp:test" },
+            Path.Combine(Path.GetTempPath(), "moongate", "unknown"));
+        Assert.DoesNotContain("-dtw", unknownModelPlan.Arguments);
     }
 
     [Fact]
@@ -915,14 +944,250 @@ public class AsrContractsTests
 
             Assert.Equal("video.local-asr.ja.srt", Path.GetFileName(output));
             var parsed = SrtTools.ParseSrt(File.ReadAllText(output));
-            Assert.Equal(["梅雨 が 明ける。"], parsed.Select(cue => cue.Text).ToArray());
-            Assert.Equal("00:00:00,000", parsed[0].Start);
+            Assert.Equal(["梅雨が明ける。"], parsed.Select(cue => cue.Text).ToArray());
+            Assert.Equal("00:00:00,200", parsed[0].Start);
             Assert.Equal("00:00:01,500", parsed[0].End);
         }
         finally
         {
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRemovesMarkersAndRejectsFlashCues()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "koupen",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "[_BEG_]", StartSeconds = 0.0, EndSeconds = 0.0 },
+                new AsrWord { Text = "コーペンちゃん", StartSeconds = 0.1, EndSeconds = 1.0 },
+                new AsrWord { Text = "[_TT_100]", StartSeconds = 1.0, EndSeconds = 1.0 },
+                new AsrWord { Text = "梅", StartSeconds = 1.1, EndSeconds = 1.4 },
+                new AsrWord { Text = "だー！", StartSeconds = 1.4, EndSeconds = 1.8 },
+                new AsrWord { Text = "?", StartSeconds = 101.990, EndSeconds = 102.000 },
+                new AsrWord { Text = "[_TT_500]", StartSeconds = 112.0, EndSeconds = 112.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+
+        Assert.Equal(["コーペンちゃん梅だー！"], cues.Select(cue => cue.Text).ToArray());
+        // leadIn=0 keeps the raw onset; the last cue holds HoldToNextSeconds past the last token (1.8s -> 2.5s).
+        Assert.Equal("00:00:00,300", cues[0].Start);
+        Assert.Equal("00:00:02,500", cues[0].End);
+        Assert.DoesNotContain(cues, cue => cue.Text.Contains("[_", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerSplitsLongCjkLyricsWithoutLongIdleHold()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "lyrics",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "きょうも", StartSeconds = 94.48, EndSeconds = 95.30 },
+                new AsrWord { Text = "はなまる", StartSeconds = 95.30, EndSeconds = 96.20 },
+                new AsrWord { Text = "ぽかぽかぽかぽか", StartSeconds = 96.20, EndSeconds = 98.50 },
+                new AsrWord { Text = "ぽかぽかぽかぽか", StartSeconds = 98.50, EndSeconds = 101.65 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+
+        Assert.True(cues.Count >= 2);
+        foreach (var cue in cues)
+        {
+            var start = SrtTools.SrtTimeToSeconds(cue.Start);
+            var end = SrtTools.SrtTimeToSeconds(cue.End);
+            Assert.True(end - start >= 0.3);
+            Assert.True(end - start <= 4.5);
+        }
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerAvoidsWeakLatinBoundaries()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "latin",
+            LanguageCode = "en",
+            Words =
+            [
+                new AsrWord { Text = "This", StartSeconds = 0.0, EndSeconds = 0.3 },
+                new AsrWord { Text = "is", StartSeconds = 0.3, EndSeconds = 0.5 },
+                new AsrWord { Text = "the", StartSeconds = 0.5, EndSeconds = 0.7 },
+                new AsrWord { Text = "ship", StartSeconds = 0.7, EndSeconds = 1.0 },
+                new AsrWord { Text = "we", StartSeconds = 1.0, EndSeconds = 1.2 },
+                new AsrWord { Text = "need.", StartSeconds = 1.2, EndSeconds = 1.6 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+
+        Assert.Equal(["This is the ship we need."], cues.Select(cue => cue.Text).ToArray());
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith(" the", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerKeepsTrailingParticleAttachedAndDropsNoSpeech()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "particle",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "おはよう", StartSeconds = 0.0, EndSeconds = 0.8 },
+                new AsrWord { Text = "コーペンちゃんだ", StartSeconds = 0.8, EndSeconds = 3.8 },
+                new AsrWord { Text = "よ", StartSeconds = 3.8, EndSeconds = 4.4 },
+                new AsrWord { Text = "?", StartSeconds = 9.0, EndSeconds = 12.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("よ", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.Contains('?'));
+        Assert.Contains(cues, cue => cue.Text.EndsWith("よ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WhisperDtwPresetMapsQuantizedModelIdsAndRejectsUnknown()
+    {
+        Assert.Equal("small", WhisperDtwPreset.Preset("whisper.cpp:small"));
+        Assert.Equal("small", WhisperDtwPreset.Preset("whisper.cpp:small-q5_1"));
+        Assert.Equal("base", WhisperDtwPreset.Preset("whisper.cpp:base-q8_0"));
+        Assert.Equal("tiny", WhisperDtwPreset.Preset("whisper.cpp:tiny-q5_1"));
+        Assert.Equal("small.en", WhisperDtwPreset.Preset("whisper.cpp:small.en-q5_1"));
+        Assert.Equal("medium", WhisperDtwPreset.Preset("whisper.cpp:medium-q5_0"));
+        Assert.Equal("large.v3.turbo", WhisperDtwPreset.Preset("whisper.cpp:large-v3-turbo-q5_0"));
+        Assert.Null(WhisperDtwPreset.Preset("whisper.cpp:test"));
+        Assert.Null(WhisperDtwPreset.Preset("whisper.cpp:gigantic-q5_0"));
+    }
+
+    [Fact]
+    public void WhisperCppJsonParserPrefersDtwTokenTimestampsWhenPresent()
+    {
+        const string json = """
+        {
+          "result": { "language": "en" },
+          "transcription": [
+            {
+              "text": " hello world",
+              "offsets": { "from": 0, "to": 2000 },
+              "tokens": [
+                { "text": " hello", "offsets": { "from": 0, "to": 600 }, "t_dtw": 30 },
+                { "text": " world", "offsets": { "from": 600, "to": 2000 }, "t_dtw": 90 }
+              ]
+            }
+          ]
+        }
+        """;
+        var transcript = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(json),
+            new AsrRequest { AudioPath = "/tmp/a.wav", ModelId = "whisper.cpp:large-v3-turbo-q5_0" },
+            "dtw");
+        Assert.Equal(["hello", "world"], transcript.Words.Select(w => w.Text).ToArray());
+        Assert.Equal(0.30, transcript.Words[0].StartSeconds, 4);
+        Assert.Equal(0.90, transcript.Words[0].EndSeconds, 4);
+        Assert.Equal(0.90, transcript.Words[1].StartSeconds, 4);
+        Assert.Equal(2.30, transcript.Words[1].EndSeconds, 4);
+    }
+
+    [Fact]
+    public void WhisperCppJsonParserUsesOffsetsWhenDtwAbsent()
+    {
+        const string json = """
+        {
+          "result": { "language": "en" },
+          "transcription": [
+            {
+              "text": " hi",
+              "offsets": { "from": 100, "to": 700 },
+              "tokens": [ { "text": " hi", "offsets": { "from": 100, "to": 700 }, "t_dtw": -1 } ]
+            }
+          ]
+        }
+        """;
+        var transcript = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(json),
+            new AsrRequest { AudioPath = "/tmp/a.wav", ModelId = "whisper.cpp:test" },
+            "nodtw");
+        Assert.Equal(0.1, transcript.Words[0].StartSeconds, 4);
+        Assert.Equal(0.7, transcript.Words[0].EndSeconds, 4);
+    }
+
+    private static SubtitleCue RetimerCue(double start, double end, string text, double? lastTokenEnd = null) =>
+        new(
+            0,
+            SrtTools.SecondsToSrtTime(start),
+            SrtTools.SecondsToSrtTime(end),
+            text,
+            [new SubtitleCueSourceFragment(start, lastTokenEnd ?? end, text)]);
+
+    [Fact]
+    public void WhisperCueRetimerDelaysOnsetAndHoldsTowardNextCue()
+    {
+        // Onset nudged later by onsetDelaySeconds (long cue, not bound-limited): 5.0 -> 5.2.
+        var single = WhisperCueRetimer.Retime([RetimerCue(5.0, 9.0, "hello there", 8.8)], null);
+        Assert.Equal(5.0 + WhisperCueRetimer.OnsetDelaySeconds, SrtTools.SrtTimeToSeconds(single[0].Start)!.Value, 3);
+
+        // Short cue: delay bounded so the cue keeps a positive readable duration.
+        var shortCue = WhisperCueRetimer.Retime([RetimerCue(5.0, 5.4, "hi", 5.4)], null);
+        var ss = SrtTools.SrtTimeToSeconds(shortCue[0].Start)!.Value;
+        var se = SrtTools.SrtTimeToSeconds(shortCue[0].End)!.Value;
+        Assert.True(se - ss > 0.0);
+        Assert.True(ss <= 5.4);
+
+        var pair = WhisperCueRetimer.Retime(
+            [RetimerCue(1.0, 1.3, "one", 1.2), RetimerCue(3.0, 3.6, "two", 3.5)], null);
+        var firstEnd = SrtTools.SrtTimeToSeconds(pair[0].End)!.Value;
+        var secondStart = SrtTools.SrtTimeToSeconds(pair[1].Start)!.Value;
+        Assert.True(firstEnd <= secondStart, "cue must not overlap the next onset");
+        Assert.True(firstEnd > 1.3, "cue should hold past its raw end toward the next onset");
+    }
+
+    [Fact]
+    public void WhisperCueRetimerNeverOverlapsAdjacentCues()
+    {
+        // Tightly spaced, short cues: the kind that previously overlapped (BUG-1).
+        var cues = WhisperCueRetimer.Retime(
+            [
+                RetimerCue(1.0, 1.3, "one", 1.05),
+                RetimerCue(1.1, 1.6, "two", 1.5),
+                RetimerCue(1.65, 5.0, "three", 4.9),
+            ],
+            null);
+        Assert.Equal(3, cues.Count);
+        var previousEnd = double.NegativeInfinity;
+        foreach (var cue in cues)
+        {
+            var start = SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+            var end = SrtTools.SrtTimeToSeconds(cue.End)!.Value;
+            Assert.True(start + 0.0011 >= previousEnd, "cue overlaps previous cue");
+            Assert.True(end > start, "cue must have positive duration");
+            previousEnd = end;
+        }
+    }
+
+    [Fact]
+    public void WhisperCueRetimerRespectsDurationCapAndTranscriptLength()
+    {
+        var longCjk = WhisperCueRetimer.Retime([RetimerCue(10.0, 30.0, "字幕字幕字幕字幕")], null);
+        var start = SrtTools.SrtTimeToSeconds(longCjk[0].Start)!.Value;
+        var end = SrtTools.SrtTimeToSeconds(longCjk[0].End)!.Value;
+        Assert.True(end - start <= LocalAsrSubtitleTimingPlanner.HardMaximumCjkCueSeconds + 0.0015);
+
+        var clamped = WhisperCueRetimer.Retime([RetimerCue(8.0, 20.0, "字幕")], 11.0);
+        Assert.True(SrtTools.SrtTimeToSeconds(clamped[0].End)!.Value <= 11.0 + 0.0015);
     }
 
     [Fact]
@@ -1151,7 +1416,7 @@ public class AsrContractsTests
 
             Assert.Equal("clip.local-asr.ja.srt", Path.GetFileName(output));
             var parsed = SrtTools.ParseSrt(File.ReadAllText(output));
-            Assert.Equal(["梅雨 が 明ける。"], parsed.Select(cue => cue.Text).ToArray());
+            Assert.Equal(["梅雨が明ける。"], parsed.Select(cue => cue.Text).ToArray());
             Assert.Equal([video], audioExtractor.Plans.Select(plan => plan.InputPath).ToArray());
             Assert.Equal(ffmpeg, audioExtractor.Plans[0].FfmpegPath);
             Assert.Equal(1, runner.CallCount);

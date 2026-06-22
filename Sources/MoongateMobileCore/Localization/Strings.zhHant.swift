@@ -181,6 +181,7 @@ extension LocalizationTables {
         L.Queue.retryWithLocalASR: "用本地識別重跑",
         L.Queue.retryWithLocalASRHint: "重用已下載影片，重新識別音訊並重新執行字幕處理",
         L.Queue.retryWithLocalASRConfigureHint: "先設定本機 Whisper；設定完成後會重用已下載影片重跑。",
+        L.Queue.localASRQualitySuggestion: "字幕時間可能不準確（多為平台滾動字幕所致），建議用本機 Whisper 重新生成。",
         L.Queue.localASRGeneratedSubtitleReady: "已生成本機識別字幕",
         L.Queue.revealInFinder: "在 Finder 中顯示",
         L.Queue.revealInFinderHint: "打開包含結果檔案的位置",

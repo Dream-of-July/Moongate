@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     runbook.add_argument("--manifest", default="tools/subtitle_timing_eval/samples.json")
     runbook.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
     runbook.add_argument("--model", default="small")
+    runbook.add_argument("--asr-engine", choices=["faster-whisper", "whisper-cpp"], default="faster-whisper")
+    runbook.add_argument("--model-path", help="Local ggml model path when --asr-engine whisper-cpp is used.")
+    runbook.add_argument("--whisper-cli", default="whisper-cli")
+    runbook.add_argument("--ffmpeg", default="ffmpeg")
+    runbook.add_argument("--no-gpu", action="store_true", help="Pass --no-gpu to whisper.cpp ASR commands.")
     runbook.add_argument("--duration-seconds", type=float, help="Override manifest duration for smoke run commands.")
     runbook.add_argument("--out")
 
@@ -79,11 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
     materialize.add_argument("--out")
 
-    asr = sub.add_parser("asr", help="Run faster-whisper and write word timestamps JSON.")
+    asr = sub.add_parser("asr", help="Run ASR and write word timestamps JSON.")
     asr.add_argument("--audio", required=True)
     asr.add_argument("--out", required=True)
     asr.add_argument("--model", default="small")
     asr.add_argument("--language")
+    asr.add_argument("--engine", choices=["faster-whisper", "whisper-cpp"], default="faster-whisper")
+    asr.add_argument("--model-path", help="Local ggml model path when --engine whisper-cpp is used.")
+    asr.add_argument("--whisper-cli", default="whisper-cli")
+    asr.add_argument("--ffmpeg", default="ffmpeg")
+    asr.add_argument("--prompt")
+    asr.add_argument("--no-gpu", action="store_true", help="Pass --no-gpu to whisper.cpp.")
 
     vad = sub.add_parser("vad", help="Extract speech activity segments from audio using local energy VAD.")
     vad.add_argument("--audio", required=True)
@@ -161,6 +172,11 @@ def main() -> None:
             model=args.model,
             duration_override_seconds=args.duration_seconds,
             manifest_path=args.manifest,
+            asr_engine=args.asr_engine,
+            model_path=args.model_path,
+            whisper_cli=args.whisper_cli,
+            ffmpeg=args.ffmpeg,
+            whisper_cpp_no_gpu=args.no_gpu,
         )
         raw = json.dumps(runbook_payload, ensure_ascii=False, indent=2)
         if args.out:
@@ -258,7 +274,18 @@ def main() -> None:
         return
 
     if args.command == "asr":
-        payload = transcribe_file(args.audio, args.out, args.model, args.language)
+        payload = transcribe_file(
+            args.audio,
+            args.out,
+            args.model,
+            args.language,
+            engine=args.engine,
+            model_path=args.model_path,
+            whisper_cli=args.whisper_cli,
+            ffmpeg=args.ffmpeg,
+            prompt=args.prompt,
+            whisper_cpp_no_gpu=args.no_gpu,
+        )
         print("words: %d" % len(payload["words"]))
         return
 

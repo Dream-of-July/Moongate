@@ -89,6 +89,17 @@
       "stressors": ["automatic_captions", "cjk_no_spaces", "rolling_captions", "long_pause_short_feedback", "vtt_word_timing"]
     },
     {
+      "id": "koupen_chan_umeboshi_ja",
+      "title": "TV anime Koupen-chan episode 62: Umeboshi",
+      "source": "https://www.youtube.com/watch?v=q4Fgq49ivbA",
+      "category": "japanese_animation",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": ["ja"],
+      "section": { "start_seconds": 0, "duration_seconds": 112 },
+      "stressors": ["local_asr_regression", "cjk_no_spaces", "short_feedback", "music", "lyrics", "marker_tokens", "flash_cues"]
+    },
+    {
       "id": "tedx_yonsei_visual_language_ko",
       "title": "TEDxYonseiUniversity: Korean talk with manual captions",
       "source": "https://www.youtube.com/watch?v=7euUE1s6GKo",

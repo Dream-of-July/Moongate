@@ -30,6 +30,12 @@ public sealed record AsrRequest
     public string? Prompt { get; init; }
     public bool VadEnabled { get; init; } = true;
     public bool WordTimestamps { get; init; } = true;
+    /// <summary>
+    /// When true (with word timestamps), whisper.cpp is asked for DTW-aligned token timestamps
+    /// (<c>-dtw &lt;preset&gt; -nfa</c>), which are markedly closer to human timing than the
+    /// default frame-quantized offsets. Disabled as a fail-safe if a model build rejects DTW.
+    /// </summary>
+    public bool DtwTokenTimestamps { get; init; } = true;
     public string? CacheKey { get; init; }
 }
 
@@ -222,6 +228,18 @@ public sealed record AsrModelManifest
             },
             new AsrModelInfo
             {
+                Id = "whisper.cpp:tiny-q8_0",
+                DisplayName = "Whisper tiny q8_0",
+                FileName = "ggml-tiny-q8_0.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin",
+                SizeBytes = 43_537_433,
+                Sha256 = "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca",
+                MemoryRequiredMb = 384,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
                 Id = "whisper.cpp:base-q5_1",
                 DisplayName = "Whisper base q5_1",
                 FileName = "ggml-base-q5_1.bin",
@@ -234,6 +252,18 @@ public sealed record AsrModelManifest
             },
             new AsrModelInfo
             {
+                Id = "whisper.cpp:base-q8_0",
+                DisplayName = "Whisper base q8_0",
+                FileName = "ggml-base-q8_0.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin",
+                SizeBytes = 81_768_585,
+                Sha256 = "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
+                MemoryRequiredMb = 768,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
                 Id = "whisper.cpp:small-q5_1",
                 DisplayName = "Whisper small q5_1",
                 FileName = "ggml-small-q5_1.bin",
@@ -241,6 +271,54 @@ public sealed record AsrModelManifest
                 SizeBytes = 190_085_487,
                 Sha256 = "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
                 MemoryRequiredMb = 1_024,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
+                Id = "whisper.cpp:small-q8_0",
+                DisplayName = "Whisper small q8_0",
+                FileName = "ggml-small-q8_0.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin",
+                SizeBytes = 264_464_607,
+                Sha256 = "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f",
+                MemoryRequiredMb = 1_280,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
+                Id = "whisper.cpp:small.en-q5_1",
+                DisplayName = "Whisper small.en q5_1",
+                FileName = "ggml-small.en-q5_1.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin",
+                SizeBytes = 190_098_681,
+                Sha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+                MemoryRequiredMb = 1_024,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
+                Id = "whisper.cpp:medium-q5_0",
+                DisplayName = "Whisper medium q5_0",
+                FileName = "ggml-medium-q5_0.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+                SizeBytes = 539_212_467,
+                Sha256 = "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+                MemoryRequiredMb = 2_048,
+                License = "MIT",
+                SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
+            },
+            new AsrModelInfo
+            {
+                Id = "whisper.cpp:large-v3-turbo-q5_0",
+                DisplayName = "Whisper large-v3-turbo q5_0",
+                FileName = "ggml-large-v3-turbo-q5_0.bin",
+                DownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+                SizeBytes = 574_041_195,
+                Sha256 = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+                MemoryRequiredMb = 3_072,
                 License = "MIT",
                 SourceDescription = "ggerganov/whisper.cpp on Hugging Face",
             },
@@ -413,7 +491,7 @@ public static class AsrTranscriptMapper
         transcript.Words
             .Select(word => new
             {
-                Text = word.Text.Trim(),
+                Text = LocalAsrSubtitleTimingPlanner.CleanedSpeechText(word.Text),
                 word.StartSeconds,
                 word.EndSeconds,
             })
@@ -427,49 +505,10 @@ public static class AsrTranscriptMapper
             .Select(word => new SubtitleCueSourceFragment(word.StartSeconds, word.EndSeconds, word.Text))
             .ToList();
 
-    public static IReadOnlyList<SubtitleCue> SourceCues(AsrTranscript transcript)
-    {
-        var fragments = SourceFragments(transcript);
-        var cues = new List<SubtitleCue>();
-        var current = new List<SubtitleCueSourceFragment>();
-
-        void FlushCurrent()
-        {
-            if (current.Count == 0) return;
-            var first = current[0];
-            var last = current[^1];
-            cues.Add(new SubtitleCue(
-                cues.Count + 1,
-                SrtTools.SecondsToSrtTime(first.StartSeconds),
-                SrtTools.SecondsToSrtTime(Math.Max(last.EndSeconds, first.StartSeconds)),
-                string.Join(" ", current.Select(fragment => fragment.Text)),
-                current.ToList()));
-            current.Clear();
-        }
-
-        foreach (var fragment in fragments)
-        {
-            if (current.Count > 0)
-            {
-                var duration = fragment.EndSeconds - current[0].StartSeconds;
-                var visibleCharacters = SubtitleTimingPlanner.VisibleCharacters(
-                    string.Join(" ", current.Select(item => item.Text).Append(fragment.Text)));
-                if (duration > SubtitleTimingPlanner.NormalReadableCueSeconds || visibleCharacters > 42)
-                {
-                    FlushCurrent();
-                }
-            }
-
-            current.Add(fragment);
-            if (EndsSourceCueSentence(fragment.Text))
-            {
-                FlushCurrent();
-            }
-        }
-
-        FlushCurrent();
-        return cues;
-    }
+    public static IReadOnlyList<SubtitleCue> SourceCues(AsrTranscript transcript) =>
+        WhisperCueRetimer.Retime(
+            LocalAsrSubtitleTimingPlanner.PlanCues(SourceFragments(transcript), transcript.DurationSeconds),
+            transcript.DurationSeconds);
 
     public static string LocalAsrSourceSrtPath(string videoFile, string languageCode)
     {
@@ -498,10 +537,357 @@ public static class AsrTranscriptMapper
         return trimmed.Length == 0 ? "und" : trimmed;
     }
 
-    private static bool EndsSourceCueSentence(string value)
+}
+
+public static partial class LocalAsrSubtitleTimingPlanner
+{
+    internal const double MinimumCueSeconds = 0.3;
+    private const double SentenceTailSeconds = 0.45;
+    private const double PhraseTailSeconds = 0.2;
+    internal const double MaximumCjkCueSeconds = 4.5;
+    internal const double HardMaximumCjkCueSeconds = 5.5;
+    internal const double MaximumLatinCueSeconds = SubtitleTimingPlanner.NormalReadableCueSeconds;
+    private const int MaximumCjkUnits = 18;
+    private const int HardMaximumCjkUnits = 28;
+    private const int MaximumLatinTokens = 14;
+    private const double LargeSpeechGapSeconds = 0.65;
+
+    // Japanese kana / punctuation that must not START a subtitle line (particles, small kana,
+    // long-vowel mark, closing punctuation). Mirrors the Swift cjkLeadingProhibited set.
+    private static readonly HashSet<char> CjkLeadingProhibited =
+    [
+        'を', 'が', 'は', 'に', 'へ', 'と', 'で', 'も', 'の', 'ね', 'よ', 'さ', 'わ', 'ぞ', 'ぜ', 'ん',
+        'っ', 'ゃ', 'ゅ', 'ょ', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'ゎ', 'ー', '〜',
+        '、', '。', '，', '．', '・', '！', '？', '」', '』', '）', '”', '’',
+    ];
+
+    // A cue with at most this many visible characters is too short to stand alone (lone 「顔」/「ね」)
+    // and is merged into the temporally-closest neighbour, within this same-utterance gap.
+    private const int LoneMergeMaxVisibleChars = 3;
+    private const double LoneMergeMaxGapSeconds = 1.0;
+
+    [GeneratedRegex(@"\[_[A-Z]+(?:_[0-9]+)?_?\]")]
+    private static partial Regex WhisperMarkerRegex();
+
+    public static string CleanedSpeechText(string value)
+    {
+        var text = WhisperMarkerRegex().Replace(value, " ").ReplaceLineEndings(" ");
+        return string.Join(
+            " ",
+            text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    public static IReadOnlyList<SubtitleCue> PlanCues(
+        IReadOnlyList<SubtitleCueSourceFragment> fragments,
+        double? transcriptDurationSeconds = null)
+    {
+        var ordered = fragments
+            .Where(ShouldKeep)
+            .OrderBy(fragment => fragment.StartSeconds)
+            .ThenBy(fragment => fragment.EndSeconds)
+            .ToList();
+        if (ordered.Count == 0) return [];
+
+        var groups = new List<List<SubtitleCueSourceFragment>>();
+        var current = new List<SubtitleCueSourceFragment>();
+
+        void FlushCurrent()
+        {
+            if (current.Count == 0) return;
+            groups.Add(current.ToList());
+            current.Clear();
+        }
+
+        foreach (var fragment in ordered)
+        {
+            if (current.Count > 0)
+            {
+                var previous = current[^1];
+                var candidate = current.Append(fragment).ToList();
+                var gap = fragment.StartSeconds - previous.EndSeconds;
+                if (ShouldBreak(fragment, current, candidate, gap))
+                {
+                    FlushCurrent();
+                }
+            }
+
+            current.Add(fragment);
+            if (EndsSentence(fragment.Text))
+            {
+                FlushCurrent();
+            }
+        }
+        FlushCurrent();
+        groups = MergeShortGroups(groups);
+
+        var cues = new List<SubtitleCue>();
+        for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
+        {
+            if (MakeCue(cues.Count + 1, groups[groupIndex], transcriptDurationSeconds) is { } cue)
+            {
+                cues.Add(cue);
+            }
+        }
+
+        return cues
+            .Select((cue, offset) => new SubtitleCue(
+                offset + 1,
+                cue.Start,
+                cue.End,
+                cue.Text,
+                cue.SourceFragments))
+            .ToList();
+    }
+
+    // Merge lone, too-short groups into the temporally-closest neighbour (avoids jarring 1-char
+    // cues like 「顔」 separated from 「洗って」). Mirrors the Swift MergeShortGroups.
+    private static List<List<SubtitleCueSourceFragment>> MergeShortGroups(
+        List<List<SubtitleCueSourceFragment>> groups)
+    {
+        if (groups.Count <= 1) return groups;
+        var result = new List<List<SubtitleCueSourceFragment>>();
+        var index = 0;
+        while (index < groups.Count)
+        {
+            var group = groups[index];
+            var text = JoinedText(group);
+            var isShort = SubtitleTimingPlanner.VisibleCharacters(text) <= LoneMergeMaxVisibleChars
+                && !EndsSentence(text);
+            if (isShort)
+            {
+                var gapPrev = result.Count > 0
+                    ? group[0].StartSeconds - result[^1][^1].EndSeconds
+                    : double.MaxValue;
+                var nextGroup = index + 1 < groups.Count ? groups[index + 1] : null;
+                var gapNext = nextGroup is not null
+                    ? nextGroup[0].StartSeconds - group[^1].EndSeconds
+                    : double.MaxValue;
+                if (gapPrev <= gapNext && gapPrev <= LoneMergeMaxGapSeconds
+                    && result.Count > 0 && FitsMergedCue([.. result[^1], .. group]))
+                {
+                    result[^1] = [.. result[^1], .. group];
+                    index += 1;
+                    continue;
+                }
+                if (gapNext < gapPrev && gapNext <= LoneMergeMaxGapSeconds
+                    && nextGroup is not null && FitsMergedCue([.. group, .. nextGroup]))
+                {
+                    result.Add([.. group, .. nextGroup]);
+                    index += 2; // consumed current + next
+                    continue;
+                }
+            }
+            result.Add(group);
+            index += 1;
+        }
+        return result;
+    }
+
+    private static bool FitsMergedCue(IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        if (fragments.Count == 0) return false;
+        var text = JoinedText(fragments);
+        var duration = fragments[^1].EndSeconds - fragments[0].StartSeconds;
+        if (SubtitleTimingPlanner.ContainsCjkText(text))
+        {
+            return duration <= HardMaximumCjkCueSeconds
+                && SubtitleTimingPlanner.TimingTokens(text).Count <= HardMaximumCjkUnits;
+        }
+        return duration <= MaximumLatinCueSeconds;
+    }
+
+    private static bool ShouldKeep(SubtitleCueSourceFragment fragment)
+    {
+        if (fragment.Text.Length == 0) return false;
+        if (fragment.EndSeconds < fragment.StartSeconds) return false;
+        // Drop no-speech fragments (a lone "?", "...", "♪" etc.) outright — they carry no readable
+        // content and otherwise become standalone cues that linger to the cue cap.
+        if (IsPurePunctuation(fragment.Text)) return false;
+        return true;
+    }
+
+    private static bool ShouldBreak(
+        SubtitleCueSourceFragment next,
+        IReadOnlyList<SubtitleCueSourceFragment> current,
+        IReadOnlyList<SubtitleCueSourceFragment> candidate,
+        double gap)
+    {
+        if (current.Count == 0) return false;
+        var first = current[0];
+        var last = current[^1];
+        if (gap > LargeSpeechGapSeconds) return true;
+
+        var candidateText = JoinedText(candidate);
+        var candidateDuration = next.EndSeconds - first.StartSeconds;
+        if (SubtitleTimingPlanner.ContainsCjkText(candidateText))
+        {
+            var units = SubtitleTimingPlanner.TimingTokens(candidateText).Count;
+            // Hard ceilings always break.
+            if (candidateDuration > HardMaximumCjkCueSeconds) return true;
+            if (units > HardMaximumCjkUnits) return true;
+            // Soft ceilings break only at a natural boundary: never split right before a leading
+            // particle / small kana / closing punctuation (extend to the hard ceiling instead).
+            // NOTE (parity): macOS additionally avoids mid-word splits via NaturalLanguage
+            // morphological boundaries (CJKWordBoundary). .NET has no built-in CJK tokenizer, so
+            // Windows uses the particle heuristic only — a documented gap pending a tokenizer.
+            if (candidateDuration > MaximumCjkCueSeconds || units > MaximumCjkUnits)
+            {
+                return !HasWeakBoundary(last.Text, next.Text);
+            }
+            return false;
+        }
+
+        if (candidateDuration > MaximumLatinCueSeconds) return true;
+        if (SubtitleTimingPlanner.SpeechTokens(candidateText).Count > MaximumLatinTokens
+            && !HasWeakBoundary(last.Text, next.Text))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static SubtitleCue? MakeCue(
+        int index,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments,
+        double? transcriptDurationSeconds)
+    {
+        if (fragments.Count == 0) return null;
+        var text = JoinedText(fragments);
+        if (text.Length == 0) return null;
+
+        var start = fragments[0].StartSeconds;
+        var end = fragments[^1].EndSeconds + (EndsSentence(text) ? SentenceTailSeconds : PhraseTailSeconds);
+        if (transcriptDurationSeconds is { } duration)
+        {
+            end = Math.Min(end, duration);
+        }
+        end = Math.Min(
+            end,
+            start + (SubtitleTimingPlanner.ContainsCjkText(text) ? HardMaximumCjkCueSeconds : MaximumLatinCueSeconds));
+        end = Math.Max(end, start + MinimumCueSeconds);
+        // Neighbor-aware timing (hold-to-next-onset, no-overlap) is applied by WhisperCueRetimer.
+        // MakeCue intentionally does NOT clamp to the next group's start here: doing so before the
+        // minimum-duration floor produced overlapping cues (BUG-1).
+        return new SubtitleCue(
+            index,
+            SrtTools.SecondsToSrtTime(start),
+            SrtTools.SecondsToSrtTime(end),
+            text,
+            fragments.ToList());
+    }
+
+    private static string JoinedText(IEnumerable<SubtitleCueSourceFragment> fragments)
+    {
+        var parts = fragments.Select(fragment => fragment.Text).ToList();
+        var separator = parts.Any(SubtitleTimingPlanner.ContainsCjkText) ? "" : " ";
+        return string.Join(separator, parts).Trim();
+    }
+
+    private static bool HasWeakBoundary(string left, string right)
+    {
+        // CJK: never break right before a leading particle / small kana / closing punctuation.
+        var trimmedRight = right.Trim();
+        if (trimmedRight.Length > 0 && CjkLeadingProhibited.Contains(trimmedRight[0]))
+        {
+            return true;
+        }
+        var leftTokens = SubtitleTimingPlanner.WordTokens(left);
+        var rightTokens = SubtitleTimingPlanner.WordTokens(right);
+        return leftTokens.Count > 0
+            && rightTokens.Count > 0
+            && SubtitleTimingPlanner.IsWeakBoundary(leftTokens[^1], rightTokens[0]);
+    }
+
+    private static bool EndsSentence(string value)
     {
         var trimmed = value.Trim();
         return trimmed.Length > 0 && ".!?。！？".Contains(trimmed[^1]);
+    }
+
+    private static bool IsPurePunctuation(string text)
+    {
+        var trimmed = text.Trim();
+        return trimmed.Length == 0 || trimmed.All(ch => char.IsPunctuation(ch) || char.IsSymbol(ch));
+    }
+}
+
+/// <summary>
+/// Whisper-specific subtitle re-timer. Mirrors the Swift WhisperCueRetimer. Keeps the raw
+/// whisper onset (leadIn 0 — earlier pulls regressed real samples against human references) and
+/// extends each cue's end toward the next real onset (capped at HoldToNextSeconds past the last
+/// token) to absorb whisper's habitually-early word ends, while guaranteeing no overlap.
+/// Separate from the platform (YouTube auto-caption) timing path, which keeps human source anchors.
+/// </summary>
+public static class WhisperCueRetimer
+{
+    public const double OnsetDelaySeconds = 0.2;
+    public const double InterCueGuardSeconds = 0.08;
+    public const double HoldToNextSeconds = 0.7;
+    private const double MinimumCueSeconds = LocalAsrSubtitleTimingPlanner.MinimumCueSeconds;
+    private const double Epsilon = 0.001;
+
+    public static IReadOnlyList<SubtitleCue> Retime(
+        IReadOnlyList<SubtitleCue> cues,
+        double? transcriptDurationSeconds)
+    {
+        if (cues.Count == 0) return cues;
+
+        var starts = new double[cues.Count];
+        var ends = new double[cues.Count];
+        var lastTokenEnds = new double[cues.Count];
+        var caps = new double[cues.Count];
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var start = SrtTools.SrtTimeToSeconds(cues[i].Start);
+            var end = SrtTools.SrtTimeToSeconds(cues[i].End);
+            if (start is null || end is null)
+            {
+                return cues; // unparseable input: leave untouched rather than corrupt timing
+            }
+            starts[i] = start.Value;
+            ends[i] = end.Value;
+            var fragments = cues[i].SourceFragments;
+            lastTokenEnds[i] = fragments.Count > 0 ? fragments[^1].EndSeconds : end.Value;
+            caps[i] = SubtitleTimingPlanner.ContainsCjkText(cues[i].Text)
+                ? LocalAsrSubtitleTimingPlanner.MaximumCjkCueSeconds
+                : LocalAsrSubtitleTimingPlanner.MaximumLatinCueSeconds;
+        }
+
+        var output = new List<SubtitleCue>(cues.Count);
+        var previousEnd = double.NegativeInfinity;
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var hasNext = i + 1 < cues.Count;
+            var nextStart = hasNext ? starts[i + 1] : double.PositiveInfinity;
+
+            // Appearance: nudge the onset slightly later (DTW has a small early bias; window ideal
+            // is slightly-late) so cues don't appear before speech. Bounded to keep a readable
+            // minimum duration, never before the previous cue's end, never negative.
+            var start = starts[i] + OnsetDelaySeconds;
+            start = Math.Min(start, Math.Max(starts[i], ends[i] - MinimumCueSeconds));
+            if (i > 0) start = Math.Max(start, previousEnd);
+            start = Math.Max(start, 0);
+
+            // Disappearance: extend toward the next real onset to absorb whisper's early word ends,
+            // capped at HoldToNextSeconds past the last token and at the next onset minus a guard.
+            var ceiling = hasNext ? nextStart - InterCueGuardSeconds : double.PositiveInfinity;
+            var end = Math.Max(ends[i], Math.Min(ceiling, lastTokenEnds[i] + HoldToNextSeconds));
+            if (transcriptDurationSeconds is { } duration) end = Math.Min(end, duration);
+            end = Math.Min(end, start + caps[i]);
+            end = Math.Max(end, start + MinimumCueSeconds); // minimum readable duration (before overlap clamp)
+            end = Math.Min(end, ceiling);                   // never overlap the next onset window
+            end = Math.Min(end, nextStart);                 // hard no-overlap authority
+            end = Math.Max(end, start + Epsilon);           // always positive duration
+
+            output.Add(new SubtitleCue(
+                output.Count + 1,
+                SrtTools.SecondsToSrtTime(start),
+                SrtTools.SecondsToSrtTime(end),
+                cues[i].Text,
+                cues[i].SourceFragments));
+            previousEnd = end;
+        }
+        return output;
     }
 }
 
@@ -836,6 +1222,15 @@ public sealed record WhisperCppCommandPlan
             "-pp",
         ];
 
+        // DTW token timestamps need full JSON token output, a known preset, and flash attention
+        // OFF (-nfa) — otherwise whisper.cpp silently disables DTW.
+        if (request.WordTimestamps
+            && request.DtwTokenTimestamps
+            && WhisperDtwPreset.Preset(request.ModelId) is { } preset)
+        {
+            arguments.AddRange(["-dtw", preset, "-nfa"]);
+        }
+
         var languageCode = request.LanguageCode?.Trim();
         if (!string.IsNullOrEmpty(languageCode)
             && !string.Equals(languageCode, "auto", StringComparison.OrdinalIgnoreCase))
@@ -864,6 +1259,34 @@ public sealed record WhisperCppCommandPlan
         var directory = Path.GetDirectoryName(path);
         var fileName = Path.GetFileNameWithoutExtension(path);
         return string.IsNullOrEmpty(directory) ? fileName : Path.Combine(directory, fileName);
+    }
+}
+
+/// <summary>
+/// Maps a Moongate whisper model id (e.g. <c>whisper.cpp:small-q5_1</c>) to the whisper.cpp
+/// <c>-dtw &lt;preset&gt;</c> alignment-heads preset name (dot form, e.g. <c>large.v3.turbo</c>).
+/// Returns null when no preset is known, in which case the caller must omit <c>-dtw</c>.
+/// </summary>
+public static class WhisperDtwPreset
+{
+    private static readonly HashSet<string> Known =
+    [
+        "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+        "medium", "medium.en", "large.v1", "large.v2", "large.v3", "large.v3.turbo",
+    ];
+
+    public static string? Preset(string modelId)
+    {
+        var name = modelId;
+        var colon = name.LastIndexOf(':');
+        if (colon >= 0) name = name[(colon + 1)..];
+        name = name.Trim().ToLowerInvariant();
+        // Strip quantization suffix like "-q5_1", ".q8_0", "_q5_0".
+        var match = System.Text.RegularExpressions.Regex.Match(name, "[-_.]q[0-9].*$");
+        if (match.Success) name = name[..match.Index];
+        // Catalog ids use dashes for large variants (large-v3-turbo); presets use dots.
+        if (name.StartsWith("large", StringComparison.Ordinal)) name = name.Replace('-', '.');
+        return Known.Contains(name) ? name : null;
     }
 }
 
@@ -1040,6 +1463,7 @@ public sealed class WhisperCppJsonTranscriptParser
         var languageCode = LanguageCode(root, request);
         var languageConfidence = LanguageConfidence(root);
         var words = new List<AsrWord>();
+        var dtwStarts = new List<double?>();
         double? maxEnd = null;
 
         if (TryGetArray(root, "transcription", out var segments)
@@ -1052,24 +1476,36 @@ public sealed class WhisperCppJsonTranscriptParser
                     maxEnd = Math.Max(maxEnd ?? segmentEnd, segmentEnd);
                 }
 
-                var tokenWords = ParseTokenWords(segment);
-                if (tokenWords.Count == 0)
+                var tokenEntries = ParseTokenEntries(segment);
+                if (tokenEntries.Count == 0)
                 {
                     if (ParseSegmentWord(segment) is { } fallback)
                     {
                         words.Add(fallback);
+                        dtwStarts.Add(null);
                         maxEnd = Math.Max(maxEnd ?? fallback.EndSeconds, fallback.EndSeconds);
                     }
                 }
                 else
                 {
-                    words.AddRange(tokenWords);
-                    foreach (var word in tokenWords)
+                    foreach (var (word, dtwStart) in tokenEntries)
                     {
-                        maxEnd = Math.Max(maxEnd ?? word.EndSeconds, word.EndSeconds);
+                        words.Add(word);
+                        dtwStarts.Add(dtwStart);
                     }
                 }
             }
+        }
+
+        // Prefer DTW token timestamps when present (whisper.cpp -dtw): markedly closer to human
+        // timing than the default frame-quantized offsets.
+        if (dtwStarts.Any(value => value is not null))
+        {
+            words = ApplyDtwTiming(words, dtwStarts);
+        }
+        foreach (var word in words)
+        {
+            maxEnd = Math.Max(maxEnd ?? word.EndSeconds, word.EndSeconds);
         }
 
         if (words.Count == 0)
@@ -1127,7 +1563,7 @@ public sealed class WhisperCppJsonTranscriptParser
         return Number(result, ["language_probability", "languageProbability", "language_confidence", "languageConfidence"]);
     }
 
-    private static IReadOnlyList<AsrWord> ParseTokenWords(JsonElement segment)
+    private static IReadOnlyList<(AsrWord Word, double? DtwStart)> ParseTokenEntries(JsonElement segment)
     {
         if (!TryGetArray(segment, "tokens", out var tokens)
             && !TryGetArray(segment, "words", out tokens))
@@ -1135,7 +1571,7 @@ public sealed class WhisperCppJsonTranscriptParser
             return [];
         }
 
-        var words = new List<AsrWord>();
+        var entries = new List<(AsrWord, double?)>();
         foreach (var token in tokens.EnumerateArray())
         {
             if (!TryCleanText(token, out var text)
@@ -1143,15 +1579,48 @@ public sealed class WhisperCppJsonTranscriptParser
             {
                 continue;
             }
-            words.Add(new AsrWord
+            var word = new AsrWord
             {
                 Text = text,
                 StartSeconds = start,
                 EndSeconds = end,
                 Probability = Number(token, ["p", "probability", "confidence"]),
-            });
+            };
+            // whisper.cpp t_dtw is in centiseconds; -1 means "not computed".
+            double? dtwStart = Number(token, ["t_dtw"]) is { } raw && raw >= 0 ? raw / 100.0 : null;
+            entries.Add((word, dtwStart));
         }
-        return words;
+        return entries;
+    }
+
+    /// <summary>
+    /// Rewrites word start/end using DTW token points: word i starts at its DTW point and ends at
+    /// the next DTW point — capped at the word's own acoustic (offsets) duration, so a word before a
+    /// pause does NOT absorb the silent gap (which produced lone multi-second single-morpheme cues).
+    /// Tokens without a DTW point keep their offsets timing.
+    /// </summary>
+    private static List<AsrWord> ApplyDtwTiming(List<AsrWord> words, List<double?> dtwStarts)
+    {
+        const double minWordSeconds = 0.12;
+        var result = new List<AsrWord>(words);
+        for (var i = 0; i < words.Count; i++)
+        {
+            if (dtwStarts[i] is not { } start) continue;
+            var offsetsDuration = Math.Max(minWordSeconds, words[i].EndSeconds - words[i].StartSeconds);
+            var acousticEnd = start + offsetsDuration;
+            var end = acousticEnd;
+            for (var j = i + 1; j < words.Count; j++)
+            {
+                if (dtwStarts[j] is { } nextStart)
+                {
+                    if (nextStart > start) end = Math.Min(nextStart, acousticEnd);
+                    break;
+                }
+            }
+            if (end < start) end = start;
+            result[i] = words[i] with { StartSeconds = start, EndSeconds = end };
+        }
+        return result;
     }
 
     private static AsrWord? ParseSegmentWord(JsonElement segment)
@@ -1356,16 +1825,32 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
         Directory.CreateDirectory(_outputDirectoryPath);
         var transcriptId = request.CacheKey ?? Guid.NewGuid().ToString("N");
         var outputBasePath = Path.Combine(_outputDirectoryPath, StableFileStem(transcriptId));
-        var plan = WhisperCppCommandPlan.Create(_runtime, _modelPath, request, outputBasePath);
-        var result = await _commandRunner.RunWhisperAsync(plan, control, line =>
-        {
-            if (WhisperCppProgressParser.Parse(line) is { } parsed)
-            {
-                progress(parsed);
-            }
-        }, ct).ConfigureAwait(false);
 
-        ct.ThrowIfCancellationRequested();
+        async Task<(WhisperCppCommandPlan Plan, AsrCommandResult Result)> RunAsync(AsrRequest planRequest)
+        {
+            var plan = WhisperCppCommandPlan.Create(_runtime, _modelPath, planRequest, outputBasePath);
+            var result = await _commandRunner.RunWhisperAsync(plan, control, line =>
+            {
+                if (WhisperCppProgressParser.Parse(line) is { } parsed)
+                {
+                    progress(parsed);
+                }
+            }, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return (plan, result);
+        }
+
+        var (plan, result) = await RunAsync(request).ConfigureAwait(false);
+        var usedDtw = request.WordTimestamps
+            && request.DtwTokenTimestamps
+            && WhisperDtwPreset.Preset(request.ModelId) is not null;
+        if (usedDtw && (result.Status != 0 || !File.Exists(plan.OutputJsonPath)))
+        {
+            // Fail-safe: if a model build rejects -dtw/-nfa, retry once without it so a DTW
+            // incompatibility degrades to plain offsets instead of failing the whole run.
+            (plan, result) = await RunAsync(request with { DtwTokenTimestamps = false }).ConfigureAwait(false);
+        }
+
         if (control?.IsCancelled == true) throw MoongateException.Cancelled();
         if (result.Status != 0)
         {

@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from subtitle_timing_eval import pipeline
+from subtitle_timing_eval.asr import parse_whisper_cpp_words, whisper_cpp_language
 from subtitle_timing_eval.cli import main as cli_main
 from subtitle_timing_eval.comparison import compare_reports, summarize_suite
 from subtitle_timing_eval.metrics import cue_tokens, evaluate_cues, offset_words, summarize_report, weak_boundary
@@ -32,6 +33,50 @@ from subtitle_timing_eval.pipeline import (
 from subtitle_timing_eval.srt import Cue, parse_srt
 from subtitle_timing_eval.vad import detect_speech_segments_from_samples
 from subtitle_timing_eval.vtt import parse_vtt_cues, parse_vtt_word_timestamps
+
+
+class AsrParsingTests(unittest.TestCase):
+    def test_parse_whisper_cpp_words_uses_token_offsets_and_filters_markers(self):
+        root = {
+            "result": {"language": "ja"},
+            "transcription": [
+                {
+                    "offsets": {"from": 0, "to": 1500},
+                    "text": "コーペンちゃん 梅",
+                    "tokens": [
+                        {"text": "[_BEG_]", "offsets": {"from": 0, "to": 0}, "p": 0.9},
+                        {"text": "コーペンちゃん", "offsets": {"from": 100, "to": 900}, "p": 0.8},
+                        {"text": "[_TT_100]", "offsets": {"from": 900, "to": 900}, "p": 0.2},
+                        {"text": "梅", "offsets": {"from": 950, "to": 1300}, "p": 0.7},
+                    ],
+                }
+            ],
+        }
+
+        words = parse_whisper_cpp_words(root)
+
+        self.assertEqual([word["text"] for word in words], ["コーペンちゃん", "梅"])
+        self.assertAlmostEqual(words[0]["start"], 0.1, places=3)
+        self.assertAlmostEqual(words[0]["end"], 0.9, places=3)
+        self.assertEqual(words[0]["probability"], 0.8)
+        self.assertEqual(whisper_cpp_language(root, "auto"), "ja")
+
+    def test_parse_whisper_cpp_words_falls_back_to_segment_text(self):
+        root = {
+            "params": {"language": "en"},
+            "transcription": [
+                {
+                    "timestamps": {"from": "00:00:02,500", "to": "00:00:03,750"},
+                    "text": "Hello there.",
+                    "tokens": [],
+                }
+            ],
+        }
+
+        words = parse_whisper_cpp_words(root)
+
+        self.assertEqual(words, [{"start": 2.5, "end": 3.75, "text": "Hello there."}])
+        self.assertEqual(whisper_cpp_language(root, None), "en")
 
 
 class SrtParsingTests(unittest.TestCase):
@@ -893,6 +938,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([sample["sample_id"] for sample in runbook["samples"]], ["english", "translated"])
         translated = runbook["samples"][1]
         self.assertEqual(translated["language_group"], "translated")
+        english = runbook["samples"][0]
+        self.assertIn("local_asr_source_srt", english["artifacts"])
+        self.assertIn("local_asr_srt", english["commands"])
+        self.assertIn("local-asr-srt", english["commands"]["local_asr_srt"])
+        self.assertIn("--asr-words", english["commands"]["local_asr_srt"])
+        self.assertIn("local-asr.en.srt", english["artifacts"]["local_asr_source_srt"])
+        self.assertIn("local-asr.en.srt", " ".join(english["commands"]["optimized_metrics"]))
         self.assertIn("--alignment-mode", translated["commands"]["baseline_metrics"])
         self.assertIn("overlap", translated["commands"]["baseline_metrics"])
         self.assertIn("--alignment-mode", translated["commands"]["optimized_metrics"])
@@ -903,6 +955,42 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("status", runbook["status_completion_command"])
         self.assertIn("custom/samples.json", runbook["status_completion_command"])
         self.assertIn("artifacts/subtitle_timing_eval/status.current.json", " ".join(runbook["status_completion_command"]))
+
+    def test_build_suite_runbook_can_use_local_whisper_cpp_asr(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["ja"]},
+            "samples": [
+                {
+                    "id": "koupen",
+                    "source": "https://www.youtube.com/watch?v=q4Fgq49ivbA",
+                    "category": "japanese_animation",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"start_seconds": 0, "duration_seconds": 112},
+                },
+            ],
+        }
+
+        runbook = build_suite_runbook(
+            manifest,
+            artifacts_root="artifacts/subtitle_timing_eval",
+            asr_engine="whisper-cpp",
+            whisper_cli="/opt/homebrew/bin/whisper-cli",
+            model_path="/Users/xianjingheng/Library/Application Support/月之门/asr/models/ggml-large-v3-turbo-q5_0.bin",
+            ffmpeg="/opt/homebrew/bin/ffmpeg",
+            whisper_cpp_no_gpu=True,
+        )
+
+        command = runbook["samples"][0]["commands"]["asr"]
+        self.assertIn("--engine", command)
+        self.assertIn("whisper-cpp", command)
+        self.assertIn("--whisper-cli", command)
+        self.assertIn("/opt/homebrew/bin/whisper-cli", command)
+        self.assertIn("--model-path", command)
+        self.assertIn("ggml-large-v3-turbo-q5_0.bin", " ".join(command))
+        self.assertIn("--ffmpeg", command)
+        self.assertIn("--no-gpu", command)
 
     def test_collect_eval_status_reports_missing_and_failing_language_groups(self):
         manifest = {
@@ -1812,6 +1900,7 @@ class ManifestTests(unittest.TestCase):
         self.assertGreaterEqual(len(samples), 10)
         self.assertIn("english_interview", categories)
         self.assertIn("japanese_talk", categories)
+        self.assertIn("japanese_animation", categories)
         self.assertIn("korean_talk", categories)
         self.assertIn("cantonese_chinese", categories)
         self.assertIn("mandarin_talk", categories)
@@ -1833,7 +1922,7 @@ class ManifestTests(unittest.TestCase):
             self.assertTrue(sample["id"])
             self.assertTrue(sample["source"])
             self.assertTrue(sample["language_group"])
-            self.assertGreaterEqual(sample["section"]["duration_seconds"], 120)
+            self.assertGreaterEqual(sample["section"]["duration_seconds"], 60)
             self.assertLessEqual(sample["section"]["duration_seconds"], 360)
         for sample in samples:
             if sample["category"] == "auto_translate":

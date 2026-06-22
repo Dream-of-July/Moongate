@@ -187,6 +187,8 @@ final class QueueManager: ObservableObject {
         var postDownloadProcessingKind: PostDownloadProcessingKind?
         /// 部分成功：视频已下载但字幕处理失败（done 态显示「重试字幕处理」按钮）。
         var partialFailure: Bool = false
+        /// 完成后检测到字幕时序可能不可靠（多为平台滚动字幕的 10ms 闪现），建议用本地 Whisper 重跑。
+        var timingWarning: Bool = false
         /// 本项流水线的控制令牌；retry 时换新的（旧的已 cancel）。
         var control: TaskControlToken
         /// 流水线代际：每次 enqueue/retry 递增；@MainActor 写回前校验，作废陈旧回调。
@@ -394,6 +396,11 @@ final class QueueManager: ObservableObject {
 
     private static func workPlan(for request: DownloadRequest, mode: ChineseSubtitleMode) -> TaskWorkPlan {
         let needsLocalASR = request.requestedSubtitleTracks.contains { $0.sourceKind == .localASR }
+        // Weights approximate real wall-clock so the bar tracks time: download, transcription,
+        // translation and burn are all multi-minute phases. (Previously speechRecognition=12 vs
+        // translate=1 made the bar hit ~87% during transcription, then crawl through the slow
+        // translation — looking like it had "reached the translating zone" before transcription
+        // finished.)
         return TaskWorkPlan(
             shouldExtractAudio: needsLocalASR,
             shouldRunASR: needsLocalASR,
@@ -401,7 +408,13 @@ final class QueueManager: ObservableObject {
             shouldTranscode: Transcoder.needsProcessing(request.outputFormat),
             shouldTranslate: mode.requiresTranslation,
             shouldBurn: mode.requiresBurner,
-            speechRecognitionUnits: needsLocalASR ? 12 : 1
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: needsLocalASR ? 6 : 1,
+            subtitleSegmentUnits: 1,
+            transcodeUnits: 2,
+            translateUnits: 6,
+            burnUnits: 4
         )
     }
 
@@ -647,6 +660,15 @@ final class QueueManager: ObservableObject {
                     : CoreL10n.t(L.Queue.noSubtitleFileSkippedTranslation)
             )
             return
+        }
+
+        // 平台字幕（非本地识别）若清洗后出现大量 ~10ms 闪现 cue（YouTube 滚动字幕常见），完成后
+        // 温和提示用户：可用本地 Whisper 重跑。不强制上来做选择，只在结果可能不准时给建议。
+        if primarySubtitleTrack?.sourceKind != .localASR {
+            let assessment = SubtitleTimingHealth.assess(subtitleFileURL: sourceSubtitle)
+            if assessment.looksUnreliable {
+                update(id, generation: generation) { $0.timingWarning = true }
+            }
         }
 
         // 直接烧录模式：跳过翻译，把所选源字幕原样压进视频（无论语言、无需配置翻译服务）。
@@ -1201,6 +1223,7 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
+            $0.timingWarning = false
             $0.statusText = nil
         }
         let task = Task { [weak self] in

@@ -180,6 +180,7 @@ extension LocalizationTables {
         L.Queue.retryWithLocalASR: "Rerun with local recognition",
         L.Queue.retryWithLocalASRHint: "Reuse the downloaded video, re-recognize audio, and rerun subtitle processing",
         L.Queue.retryWithLocalASRConfigureHint: "Configure local Whisper first. The downloaded video will be reused after setup.",
+        L.Queue.localASRQualitySuggestion: "Subtitle timing may be inaccurate (often from platform rolling captions). Consider regenerating with local Whisper.",
         L.Queue.localASRGeneratedSubtitleReady: "Local recognition subtitles generated",
         L.Queue.revealInFinder: "Show in Finder",
         L.Queue.revealInFinderHint: "Open the folder containing the result files",

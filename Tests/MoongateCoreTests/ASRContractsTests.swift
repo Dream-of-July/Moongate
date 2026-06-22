@@ -730,10 +730,12 @@ final class ASRContractsTests: XCTestCase {
             "-ojf",
             "-of", "/tmp/moongate/transcript",
             "-pp",
+            "-dtw", "small", "-nfa",
             "-l", "ja",
             "--prompt", "title channel glossary"
         ])
 
+        // No token JSON requested -> DTW is pointless and must be omitted.
         let segmentJSONPlan = WhisperCppCommandPlan(
             runtime: runtime,
             modelURL: model,
@@ -742,6 +744,17 @@ final class ASRContractsTests: XCTestCase {
         )
         XCTAssertTrue(segmentJSONPlan.arguments.contains("-oj"))
         XCTAssertFalse(segmentJSONPlan.arguments.contains("-ojf"))
+        XCTAssertFalse(segmentJSONPlan.arguments.contains("-dtw"))
+        XCTAssertFalse(segmentJSONPlan.arguments.contains("-nfa"))
+
+        // Unknown preset -> omit -dtw (fail-safe), never crash.
+        let unknownModelPlan = WhisperCppCommandPlan(
+            runtime: runtime,
+            modelURL: model,
+            request: ASRRequest(audioURL: audio, modelID: "whisper.cpp:test"),
+            outputBaseURL: URL(fileURLWithPath: "/tmp/moongate/unknown")
+        )
+        XCTAssertFalse(unknownModelPlan.arguments.contains("-dtw"))
     }
 
     func testWhisperCppCommandPlanOmitsLanguageFlagForAutoDetect() {
@@ -928,9 +941,270 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(outputURL.lastPathComponent, "video.local-asr.ja.srt")
         let raw = try String(contentsOf: outputURL, encoding: .utf8)
         let parsed = parseSRT(raw)
-        XCTAssertEqual(parsed.map(\.text), ["梅雨 が 明ける。"])
-        XCTAssertEqual(parsed.first?.start, "00:00:00,000")
+        XCTAssertEqual(parsed.map(\.text), ["梅雨が明ける。"])
+        XCTAssertEqual(parsed.first?.start, "00:00:00,200")
         XCTAssertEqual(parsed.first?.end, "00:00:01,500")
+    }
+
+    func testLocalASRTimingPlannerRemovesMarkersAndRejectsFlashCues() {
+        let transcript = ASRTranscript(
+            id: "koupen",
+            languageCode: "ja",
+            words: [
+                ASRWord(text: "[_BEG_]", startSeconds: 0.0, endSeconds: 0.0),
+                ASRWord(text: "コーペンちゃん", startSeconds: 0.1, endSeconds: 1.0),
+                ASRWord(text: "[_TT_100]", startSeconds: 1.0, endSeconds: 1.0),
+                ASRWord(text: "梅", startSeconds: 1.1, endSeconds: 1.4),
+                ASRWord(text: "だー！", startSeconds: 1.4, endSeconds: 1.8),
+                ASRWord(text: "?", startSeconds: 101.990, endSeconds: 102.000),
+                ASRWord(text: "[_TT_500]", startSeconds: 112.0, endSeconds: 112.0)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+
+        XCTAssertEqual(cues.map(\.text), ["コーペンちゃん梅だー！"])
+        // Onset nudged later by onsetDelaySeconds (raw 0.1s -> 0.3s); end holds to lastTokenEnd+hold.
+        XCTAssertEqual(cues.first?.start, "00:00:00,300")
+        XCTAssertEqual(cues.first?.end, "00:00:02,500")
+        XCTAssertFalse(cues.contains { $0.text.contains("[_") })
+    }
+
+    func testLocalASRTimingPlannerSplitsLongCJKLyricsWithoutLongIdleHold() throws {
+        let words = [
+            ASRWord(text: "きょうも", startSeconds: 94.48, endSeconds: 95.30),
+            ASRWord(text: "はなまる", startSeconds: 95.30, endSeconds: 96.20),
+            ASRWord(text: "ぽかぽかぽかぽか", startSeconds: 96.20, endSeconds: 98.50),
+            ASRWord(text: "ぽかぽかぽかぽか", startSeconds: 98.50, endSeconds: 101.65)
+        ]
+        let transcript = ASRTranscript(
+            id: "lyrics",
+            languageCode: "ja",
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+
+        XCTAssertGreaterThanOrEqual(cues.count, 2)
+        for cue in cues {
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            XCTAssertGreaterThanOrEqual(end - start, 0.3)
+            XCTAssertLessThanOrEqual(end - start, 4.5)
+        }
+    }
+
+    func testLocalASRTimingPlannerAvoidsWeakLatinBoundaries() {
+        let transcript = ASRTranscript(
+            id: "latin",
+            languageCode: "en",
+            words: [
+                ASRWord(text: "This", startSeconds: 0.0, endSeconds: 0.3),
+                ASRWord(text: "is", startSeconds: 0.3, endSeconds: 0.5),
+                ASRWord(text: "the", startSeconds: 0.5, endSeconds: 0.7),
+                ASRWord(text: "ship", startSeconds: 0.7, endSeconds: 1.0),
+                ASRWord(text: "we", startSeconds: 1.0, endSeconds: 1.2),
+                ASRWord(text: "need.", startSeconds: 1.2, endSeconds: 1.6)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+
+        XCTAssertEqual(cues.map(\.text), ["This is the ship we need."])
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix(" the") })
+    }
+
+    func testLocalASRTimingPlannerMergesLoneShortCue() {
+        // A long phrase pushes the soft cap so 「顔」 would break off as a lone 1-char cue; with a big
+        // gap to the next word it would otherwise stand alone. It must be merged into a neighbour.
+        let transcript = ASRTranscript(
+            id: "lone",
+            languageCode: "ja",
+            words: [
+                ASRWord(text: "これは", startSeconds: 0.0, endSeconds: 1.0),
+                ASRWord(text: "とても", startSeconds: 1.0, endSeconds: 2.5),
+                ASRWord(text: "長い文章", startSeconds: 2.5, endSeconds: 4.4),
+                ASRWord(text: "顔", startSeconds: 4.45, endSeconds: 4.9),
+                ASRWord(text: "洗って", startSeconds: 8.0, endSeconds: 9.0)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+        XCTAssertFalse(cues.contains { $0.text == "顔" }, "lone 1-char cue must be merged into a neighbour")
+        XCTAssertTrue(cues.contains { $0.text.contains("顔") })
+    }
+
+    func testCJKWordBoundaryDetectsMidWordVsBoundary() {
+        // スタンプ | カード : offset 5 is inside カード (mid-word), offset 4 is the word boundary.
+        XCTAssertTrue(CJKWordBoundary.straddles("スタンプカード", at: 5))
+        XCTAssertFalse(CJKWordBoundary.straddles("スタンプカード", at: 4))
+        // いこう is one word: cutting at い|こう (offset 1) is mid-word.
+        XCTAssertTrue(CJKWordBoundary.straddles("いこう", at: 1))
+        // Ends/zero never straddle.
+        XCTAssertFalse(CJKWordBoundary.straddles("いこう", at: 0))
+        XCTAssertFalse(CJKWordBoundary.straddles("いこう", at: 3))
+    }
+
+    func testLocalASRTimingPlannerKeepsTrailingParticleAttachedAndDropsNoSpeech() {
+        let transcript = ASRTranscript(
+            id: "particle",
+            languageCode: "ja",
+            words: [
+                ASRWord(text: "おはよう", startSeconds: 0.0, endSeconds: 0.8),
+                ASRWord(text: "コーペンちゃんだ", startSeconds: 0.8, endSeconds: 3.8),
+                ASRWord(text: "よ", startSeconds: 3.8, endSeconds: 4.4),   // would lead a line past the 4.5s soft cap
+                ASRWord(text: "?", startSeconds: 9.0, endSeconds: 12.0)    // no-speech: must be dropped
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+        // The sentence-final particle stays attached; no cue begins with it.
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("よ") })
+        // The lone "?" never becomes a cue.
+        XCTAssertFalse(cues.contains { $0.text.contains("?") })
+        XCTAssertTrue(cues.contains { $0.text.hasSuffix("よ") })
+    }
+
+    func testWhisperDTWPresetMapsQuantizedModelIDsAndRejectsUnknown() {
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:small"), "small")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:small-q5_1"), "small")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:base-q8_0"), "base")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:tiny-q5_1"), "tiny")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:small.en-q5_1"), "small.en")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:medium-q5_0"), "medium")
+        XCTAssertEqual(WhisperDTWPreset.preset(forModelID: "whisper.cpp:large-v3-turbo-q5_0"), "large.v3.turbo")
+        XCTAssertNil(WhisperDTWPreset.preset(forModelID: "whisper.cpp:test"))
+        XCTAssertNil(WhisperDTWPreset.preset(forModelID: "whisper.cpp:gigantic-q5_0"))
+    }
+
+    func testWhisperCppJSONParserPrefersDTWTokenTimestampsWhenPresent() throws {
+        // t_dtw is in centiseconds; offsets in ms. When t_dtw>=0 the parser must use it: word start
+        // = t_dtw/100, word end = next token's t_dtw/100 (offsets end for the last token).
+        let json = """
+        {
+          "result": { "language": "en" },
+          "transcription": [
+            {
+              "text": " hello world",
+              "offsets": { "from": 0, "to": 2000 },
+              "tokens": [
+                { "text": " hello", "offsets": { "from": 0, "to": 600 }, "t_dtw": 30 },
+                { "text": " world", "offsets": { "from": 600, "to": 2000 }, "t_dtw": 90 }
+              ]
+            }
+          ]
+        }
+        """
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: Data(json.utf8),
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "dtw"
+        )
+        XCTAssertEqual(transcript.words.map(\.text), ["hello", "world"])
+        // hello: start 30/100=0.30, end = next t_dtw 90/100=0.90 (contiguous, within acoustic span).
+        XCTAssertEqual(transcript.words[0].startSeconds, 0.30, accuracy: 0.0001)
+        XCTAssertEqual(transcript.words[0].endSeconds, 0.90, accuracy: 0.0001)
+        // world: start 0.90, end = DTW start + acoustic (offsets) duration 1.4 = 2.30 (last token).
+        XCTAssertEqual(transcript.words[1].startSeconds, 0.90, accuracy: 0.0001)
+        XCTAssertEqual(transcript.words[1].endSeconds, 2.30, accuracy: 0.0001)
+    }
+
+    func testWhisperCppJSONParserUsesOffsetsWhenDTWAbsent() throws {
+        // t_dtw == -1 (not computed) -> fall back to offsets.
+        let json = """
+        {
+          "result": { "language": "en" },
+          "transcription": [
+            {
+              "text": " hi",
+              "offsets": { "from": 100, "to": 700 },
+              "tokens": [ { "text": " hi", "offsets": { "from": 100, "to": 700 }, "t_dtw": -1 } ]
+            }
+          ]
+        }
+        """
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: Data(json.utf8),
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), modelID: "whisper.cpp:test"),
+            transcriptID: "nodtw"
+        )
+        XCTAssertEqual(transcript.words[0].startSeconds, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(transcript.words[0].endSeconds, 0.7, accuracy: 0.0001)
+    }
+
+    private func retimerCue(_ start: Double, _ end: Double, _ text: String, lastTokenEnd: Double? = nil) -> SubtitleCue {
+        SubtitleCue(
+            index: 0,
+            start: secondsToSRTTime(start),
+            end: secondsToSRTTime(end),
+            text: text,
+            sourceFragments: [SubtitleCueSourceFragment(startSeconds: start, endSeconds: lastTokenEnd ?? end, text: text)]
+        )
+    }
+
+    func testWhisperCueRetimerDelaysOnsetAndHoldsTowardNextCue() throws {
+        // Onset is nudged later by onsetDelaySeconds (long cue, not bound-limited): 5.0 -> 5.2.
+        let single = WhisperCueRetimer.retime(
+            [retimerCue(5.0, 9.0, "hello there", lastTokenEnd: 8.8)],
+            transcriptDurationSeconds: nil
+        )
+        let start0 = try XCTUnwrap(srtTimeToSeconds(single[0].start))
+        XCTAssertEqual(start0, 5.0 + WhisperCueRetimer.onsetDelaySeconds, accuracy: 0.0015)
+
+        // Short cue: the delay is bounded so the cue keeps at least the minimum readable duration.
+        let shortCue = WhisperCueRetimer.retime(
+            [retimerCue(5.0, 5.4, "hi", lastTokenEnd: 5.4)],
+            transcriptDurationSeconds: nil
+        )
+        let shortStart = try XCTUnwrap(srtTimeToSeconds(shortCue[0].start))
+        let shortEnd = try XCTUnwrap(srtTimeToSeconds(shortCue[0].end))
+        XCTAssertGreaterThan(shortEnd - shortStart, 0.0)
+        XCTAssertLessThanOrEqual(shortStart, 5.4)
+
+        // With a near next cue, the hold extends toward — but never reaches — the next onset.
+        let pair = WhisperCueRetimer.retime(
+            [retimerCue(1.0, 1.3, "one", lastTokenEnd: 1.2), retimerCue(3.0, 3.6, "two", lastTokenEnd: 3.5)],
+            transcriptDurationSeconds: nil
+        )
+        let firstEnd = try XCTUnwrap(srtTimeToSeconds(pair[0].end))
+        let secondStart = try XCTUnwrap(srtTimeToSeconds(pair[1].start))
+        XCTAssertLessThanOrEqual(firstEnd, secondStart, "cue must not overlap the next onset")
+        XCTAssertGreaterThan(firstEnd, 1.3, "cue should hold past its raw end toward the next onset")
+    }
+
+    func testWhisperCueRetimerNeverOverlapsAdjacentCues() throws {
+        // Tightly spaced, short cues: the kind that previously overlapped (BUG-1).
+        let cues = [
+            retimerCue(1.0, 1.3, "one", lastTokenEnd: 1.05),
+            retimerCue(1.1, 1.6, "two", lastTokenEnd: 1.5),
+            retimerCue(1.65, 5.0, "three", lastTokenEnd: 4.9)
+        ]
+        let retimed = WhisperCueRetimer.retime(cues, transcriptDurationSeconds: nil)
+        XCTAssertEqual(retimed.count, 3)
+        var previousEnd = -Double.greatestFiniteMagnitude
+        for cue in retimed {
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            XCTAssertGreaterThanOrEqual(start + 0.0011, previousEnd, "cue overlaps previous cue")
+            XCTAssertGreaterThan(end, start, "cue must have positive duration")
+            previousEnd = end
+        }
+    }
+
+    func testWhisperCueRetimerRespectsDurationCapAndTranscriptLength() throws {
+        // A long CJK cue must stay within the hard CJK cap even after grouping holds particles.
+        let longCJK = WhisperCueRetimer.retime([retimerCue(10.0, 30.0, "字幕字幕字幕字幕")], transcriptDurationSeconds: nil)
+        let start = try XCTUnwrap(srtTimeToSeconds(longCJK[0].start))
+        let end = try XCTUnwrap(srtTimeToSeconds(longCJK[0].end))
+        XCTAssertLessThanOrEqual(end - start, LocalASRSubtitleTimingPlanner.hardMaximumCJKCueSeconds + 0.0015)
+
+        // Transcript duration is a hard end ceiling.
+        let clamped = WhisperCueRetimer.retime([retimerCue(8.0, 20.0, "字幕")], transcriptDurationSeconds: 11.0)
+        let clampedEnd = try XCTUnwrap(srtTimeToSeconds(clamped[0].end))
+        XCTAssertLessThanOrEqual(clampedEnd, 11.0 + 0.0015)
     }
 
     func testWhisperCppJSONParserBuildsTranscriptFromTokenOffsets() throws {
@@ -1156,7 +1430,7 @@ final class ASRContractsTests: XCTestCase {
 
         XCTAssertEqual(outputURL.lastPathComponent, "clip.local-asr.ja.srt")
         let parsed = parseSRT(try String(contentsOf: outputURL, encoding: .utf8))
-        XCTAssertEqual(parsed.map(\.text), ["梅雨 が 明ける。"])
+        XCTAssertEqual(parsed.map(\.text), ["梅雨が明ける。"])
         XCTAssertEqual(audioExtractor.plans.map(\.inputURL), [video])
         XCTAssertEqual(audioExtractor.plans.first?.ffmpegURL, ffmpeg)
         XCTAssertEqual(runner.callCount, 1)

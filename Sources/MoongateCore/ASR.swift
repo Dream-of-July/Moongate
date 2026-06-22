@@ -1,5 +1,30 @@
 import Foundation
 import CryptoKit
+import NaturalLanguage
+
+/// CJK word-boundary lookup backed by Apple's NaturalLanguage tokenizer (zero new dependency on
+/// macOS). Used to keep whisper's sub-word token stream from being split mid-word (e.g. 「いこう」,
+/// 「カード」, 「たくさん」). On non-Apple platforms the planner falls back to the particle heuristic.
+enum CJKWordBoundary {
+    /// True when `charOffset` falls strictly inside a tokenized word in `text` (i.e. breaking the
+    /// cue at that position would cut a word in half). False at real word boundaries / gaps.
+    static func straddles(_ text: String, at charOffset: Int) -> Bool {
+        guard charOffset > 0, charOffset < text.count else { return false }
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        let target = text.index(text.startIndex, offsetBy: charOffset)
+        var straddlesWord = false
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            if range.lowerBound >= target { return false } // tokens are ordered; past the cut point
+            if range.lowerBound < target, target < range.upperBound {
+                straddlesWord = true
+                return false
+            }
+            return true
+        }
+        return straddlesWord
+    }
+}
 
 public enum ASRJSON {
     public static func makeEncoder() -> JSONEncoder {
@@ -22,6 +47,10 @@ public struct ASRRequest: Codable, Equatable, Sendable {
     public let prompt: String?
     public let vadEnabled: Bool
     public let wordTimestamps: Bool
+    /// When true (with word timestamps), whisper.cpp is asked for DTW-aligned token timestamps
+    /// (`-dtw <preset> -nfa`). These are markedly closer to human timing than the default
+    /// frame-quantized offsets. Disabled as a fail-safe if a model build rejects DTW.
+    public let dtwTokenTimestamps: Bool
     public let cacheKey: String?
 
     public init(
@@ -31,6 +60,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         prompt: String? = nil,
         vadEnabled: Bool = true,
         wordTimestamps: Bool = true,
+        dtwTokenTimestamps: Bool = true,
         cacheKey: String? = nil
     ) {
         self.audioURL = audioURL
@@ -39,6 +69,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.prompt = prompt
         self.vadEnabled = vadEnabled
         self.wordTimestamps = wordTimestamps
+        self.dtwTokenTimestamps = dtwTokenTimestamps
         self.cacheKey = cacheKey
     }
 
@@ -50,6 +81,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         case prompt
         case vadEnabled
         case wordTimestamps
+        case dtwTokenTimestamps
         case cacheKey
     }
 
@@ -63,6 +95,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
         self.vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
         self.wordTimestamps = try container.decodeIfPresent(Bool.self, forKey: .wordTimestamps) ?? true
+        self.dtwTokenTimestamps = try container.decodeIfPresent(Bool.self, forKey: .dtwTokenTimestamps) ?? true
         self.cacheKey = try container.decodeIfPresent(String.self, forKey: .cacheKey)
     }
 
@@ -74,7 +107,22 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(prompt, forKey: .prompt)
         try container.encode(vadEnabled, forKey: .vadEnabled)
         try container.encode(wordTimestamps, forKey: .wordTimestamps)
+        try container.encode(dtwTokenTimestamps, forKey: .dtwTokenTimestamps)
         try container.encodeIfPresent(cacheKey, forKey: .cacheKey)
+    }
+
+    /// Returns a copy with DTW token timestamps disabled (fail-safe retry path).
+    public func disablingDTW() -> ASRRequest {
+        ASRRequest(
+            audioURL: audioURL,
+            languageCode: languageCode,
+            modelID: modelID,
+            prompt: prompt,
+            vadEnabled: vadEnabled,
+            wordTimestamps: wordTimestamps,
+            dtwTokenTimestamps: false,
+            cacheKey: cacheKey
+        )
     }
 
     private static func fileURL(from value: String) -> URL {
@@ -631,7 +679,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
 public enum ASRTranscriptMapper {
     public static func sourceFragments(from transcript: ASRTranscript) -> [SubtitleCueSourceFragment] {
         transcript.words.compactMap { word in
-            let text = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = LocalASRSubtitleTimingPlanner.cleanedSpeechText(word.text)
             guard !text.isEmpty,
                   word.startSeconds.isFinite,
                   word.endSeconds.isFinite,
@@ -648,45 +696,14 @@ public enum ASRTranscriptMapper {
     }
 
     public static func sourceCues(from transcript: ASRTranscript) -> [SubtitleCue] {
-        let fragments = sourceFragments(from: transcript)
-        var cues: [SubtitleCue] = []
-        var current: [SubtitleCueSourceFragment] = []
-
-        func joinedText(_ fragments: [SubtitleCueSourceFragment]) -> String {
-            fragments.map(\.text).joined(separator: " ")
-        }
-
-        func flushCurrent() {
-            guard let first = current.first, let last = current.last else { return }
-            cues.append(SubtitleCue(
-                index: cues.count + 1,
-                start: secondsToSRTTime(first.startSeconds),
-                end: secondsToSRTTime(max(last.endSeconds, first.startSeconds)),
-                text: joinedText(current),
-                sourceFragments: current
-            ))
-            current.removeAll(keepingCapacity: true)
-        }
-
-        for fragment in fragments {
-            if !current.isEmpty {
-                let candidate = current + [fragment]
-                let duration = (candidate.last?.endSeconds ?? fragment.endSeconds)
-                    - (candidate.first?.startSeconds ?? fragment.startSeconds)
-                let visibleCharacters = SubtitleTimingPlanner.visibleCharacters(joinedText(candidate))
-                if duration > SubtitleTimingPlanner.normalReadableCueSeconds || visibleCharacters > 42 {
-                    flushCurrent()
-                }
-            }
-
-            current.append(fragment)
-            if endsSourceCueSentence(fragment.text) {
-                flushCurrent()
-            }
-        }
-
-        flushCurrent()
-        return cues
+        let planned = LocalASRSubtitleTimingPlanner.planCues(
+            from: sourceFragments(from: transcript),
+            transcriptDurationSeconds: transcript.durationSeconds
+        )
+        // Whisper-specific re-timing pass: pulls late onsets earlier, holds cues to just
+        // before the next real onset, and guarantees no overlap. Separate from the platform
+        // (YouTube auto-caption) timing path, which keeps human-aligned source anchors.
+        return WhisperCueRetimer.retime(planned, transcriptDurationSeconds: transcript.durationSeconds)
     }
 
     public static func localASRSourceSRTURL(videoURL: URL, languageCode: String) -> URL {
@@ -713,11 +730,391 @@ public enum ASRTranscriptMapper {
         return trimmed.isEmpty ? "und" : trimmed
     }
 
-    private static func endsSourceCueSentence(_ value: String) -> Bool {
+}
+
+enum LocalASRSubtitleTimingPlanner {
+    static let minimumCueSeconds = 0.3
+    private static let sentenceTailSeconds = 0.45
+    private static let phraseTailSeconds = 0.2
+    static let maximumCJKCueSeconds = 4.5
+    static let hardMaximumCJKCueSeconds = 5.5
+    static let maximumLatinCueSeconds = SubtitleTimingPlanner.normalReadableCueSeconds
+    private static let maximumCJKUnits = 18
+    private static let hardMaximumCJKUnits = 28
+    private static let maximumLatinTokens = 14
+    private static let largeSpeechGapSeconds = 0.65
+
+    /// Japanese kana / punctuation that must not START a subtitle line (particles, small kana,
+    /// long-vowel mark, closing punctuation). Breaking right before one of these produces the
+    /// unnatural "leading-が / lone-ね" splits whisper's token stream otherwise yields.
+    private static let cjkLeadingProhibited: Set<Character> = [
+        "を", "が", "は", "に", "へ", "と", "で", "も", "の", "ね", "よ", "さ", "わ", "ぞ", "ぜ", "ん",
+        "っ", "ゃ", "ゅ", "ょ", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゎ", "ー", "〜",
+        "、", "。", "，", "．", "・", "！", "？", "」", "』", "）", "”", "’"
+    ]
+
+    /// A cue with at most this many visible characters is too short to stand alone (e.g. 「顔」,
+    /// 「ね」, a lone 「えらい」) and is merged into the temporally-closest neighbour.
+    private static let loneMergeMaxVisibleChars = 3
+    /// Only merge a lone short cue into a neighbour within this gap (same utterance), so merging
+    /// never drags a word across a long pause (which would make it appear early).
+    private static let loneMergeMaxGapSeconds = 1.0
+
+    /// Merge lone, too-short groups into the neighbour they are closest to in time. whisper splits
+    /// off single morphemes (especially before/after its own timing gaps); without this they become
+    /// jarring 1-character cues like 「顔」 separated from 「洗って」.
+    private static func mergeShortGroups(
+        _ groups: [[SubtitleCueSourceFragment]]
+    ) -> [[SubtitleCueSourceFragment]] {
+        guard groups.count > 1 else { return groups }
+        var result: [[SubtitleCueSourceFragment]] = []
+        var index = 0
+        while index < groups.count {
+            let group = groups[index]
+            let text = joinedText(group)
+            let isShort = SubtitleTimingPlanner.visibleCharacters(text) <= loneMergeMaxVisibleChars && !endsSentence(text)
+            if isShort {
+                let gapPrev = result.last.map { group.first!.startSeconds - $0.last!.endSeconds }
+                    ?? Double.greatestFiniteMagnitude
+                let nextGroup = index + 1 < groups.count ? groups[index + 1] : nil
+                let gapNext = nextGroup.map { $0.first!.startSeconds - group.last!.endSeconds }
+                    ?? Double.greatestFiniteMagnitude
+                // Prefer the smaller-gap side; only merge within the same-utterance gap and cue cap.
+                if gapPrev <= gapNext, gapPrev <= loneMergeMaxGapSeconds,
+                   let previous = result.last, fitsMergedCue(previous + group) {
+                    result[result.count - 1] = previous + group
+                    index += 1
+                    continue
+                }
+                if gapNext < gapPrev, gapNext <= loneMergeMaxGapSeconds,
+                   let nextGroup, fitsMergedCue(group + nextGroup) {
+                    result.append(group + nextGroup)
+                    index += 2 // consumed current + next
+                    continue
+                }
+            }
+            result.append(group)
+            index += 1
+        }
+        return result
+    }
+
+    private static func fitsMergedCue(_ fragments: [SubtitleCueSourceFragment]) -> Bool {
+        guard let first = fragments.first, let last = fragments.last else { return false }
+        let text = joinedText(fragments)
+        let duration = last.endSeconds - first.startSeconds
+        if containsCJK(text) {
+            return duration <= hardMaximumCJKCueSeconds
+                && SubtitleTimingPlanner.timingTokens(text).count <= hardMaximumCJKUnits
+        }
+        return duration <= maximumLatinCueSeconds
+    }
+
+    static func cleanedSpeechText(_ value: String) -> String {
+        let markerPattern = #"\[_[A-Z]+(?:_[0-9]+)?_?\]"#
+        let text = value.replacingOccurrences(
+            of: markerPattern,
+            with: " ",
+            options: .regularExpression
+        )
+        return text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    static func planCues(
+        from fragments: [SubtitleCueSourceFragment],
+        transcriptDurationSeconds: Double?
+    ) -> [SubtitleCue] {
+        let ordered = fragments
+            .filter { shouldKeep($0) }
+            .sorted { $0.startSeconds == $1.startSeconds ? $0.endSeconds < $1.endSeconds : $0.startSeconds < $1.startSeconds }
+        guard !ordered.isEmpty else { return [] }
+
+        var groups: [[SubtitleCueSourceFragment]] = []
+        var current: [SubtitleCueSourceFragment] = []
+
+        func flushCurrent() {
+            guard !current.isEmpty else { return }
+            groups.append(current)
+            current.removeAll(keepingCapacity: true)
+        }
+
+        for fragment in ordered {
+            if let previous = current.last {
+                let candidate = current + [fragment]
+                let gap = fragment.startSeconds - previous.endSeconds
+                if shouldBreak(before: fragment, current: current, candidate: candidate, gap: gap) {
+                    flushCurrent()
+                }
+            }
+            current.append(fragment)
+            if endsSentence(fragment.text) {
+                flushCurrent()
+            }
+        }
+        flushCurrent()
+        groups = mergeShortGroups(groups)
+
+        var cues: [SubtitleCue] = []
+        for group in groups {
+            guard let cue = makeCue(
+                index: cues.count + 1,
+                fragments: group,
+                transcriptDurationSeconds: transcriptDurationSeconds
+            ) else { continue }
+            cues.append(cue)
+        }
+        return cues.enumerated().map { offset, cue in
+            SubtitleCue(
+                index: offset + 1,
+                start: cue.start,
+                end: cue.end,
+                text: cue.text,
+                sourceFragments: cue.sourceFragments
+            )
+        }
+    }
+
+    private static func shouldKeep(_ fragment: SubtitleCueSourceFragment) -> Bool {
+        guard !fragment.text.isEmpty else { return false }
+        guard fragment.endSeconds >= fragment.startSeconds else { return false }
+        // Drop no-speech fragments (a lone "?", "...", "♪" etc.) outright — they carry no readable
+        // content and otherwise become standalone cues that linger to the cue cap.
+        if isPurePunctuation(fragment.text) { return false }
+        return true
+    }
+
+    private static func shouldBreak(
+        before next: SubtitleCueSourceFragment,
+        current: [SubtitleCueSourceFragment],
+        candidate: [SubtitleCueSourceFragment],
+        gap: Double
+    ) -> Bool {
+        guard let first = current.first, let last = current.last else { return false }
+        if gap > largeSpeechGapSeconds { return true }
+
+        let candidateText = joinedText(candidate)
+        let candidateDuration = next.endSeconds - first.startSeconds
+        if containsCJK(candidateText) {
+            let units = SubtitleTimingPlanner.timingTokens(candidateText).count
+            // Hard ceilings always break.
+            if candidateDuration > hardMaximumCJKCueSeconds { return true }
+            if units > hardMaximumCJKUnits { return true }
+            // Soft ceilings break only at a natural boundary: never split mid-word (morphological
+            // word boundary via NaturalLanguage), and never right before a leading particle / small
+            // kana / closing punctuation. Otherwise extend to the hard ceiling, so words like
+            // 「いこう」「カード」「たくさん」 stay whole and 「だ|よ」/ lone 「ね」 tails stay attached.
+            if candidateDuration > maximumCJKCueSeconds || units > maximumCJKUnits {
+                let junction = joinedText(current).count
+                let midWord = CJKWordBoundary.straddles(candidateText, at: junction)
+                return !(midWord || hasWeakBoundary(left: last.text, right: next.text))
+            }
+            return false
+        }
+
+        if candidateDuration > maximumLatinCueSeconds { return true }
+        if SubtitleTimingPlanner.speechTokens(candidateText).count > maximumLatinTokens,
+           !hasWeakBoundary(left: last.text, right: next.text) {
+            return true
+        }
+        return false
+    }
+
+    private static func makeCue(
+        index: Int,
+        fragments: [SubtitleCueSourceFragment],
+        transcriptDurationSeconds: Double?
+    ) -> SubtitleCue? {
+        guard let first = fragments.first, let last = fragments.last else { return nil }
+        let text = joinedText(fragments)
+        guard !text.isEmpty else { return nil }
+
+        let start = first.startSeconds
+        var end = last.endSeconds + (endsSentence(text) ? sentenceTailSeconds : phraseTailSeconds)
+        if let transcriptDurationSeconds {
+            end = min(end, transcriptDurationSeconds)
+        }
+        end = min(end, start + (containsCJK(text) ? hardMaximumCJKCueSeconds : maximumLatinCueSeconds))
+        end = max(end, start + minimumCueSeconds)
+        // Neighbor-aware timing (lead-in, hold-to-next-onset, no-overlap) is applied later by
+        // WhisperCueRetimer. makeCue intentionally does NOT clamp to the next group's start here:
+        // doing so before the minimum-duration floor produced overlapping cues (BUG-1).
+        return SubtitleCue(
+            index: index,
+            start: secondsToSRTTime(start),
+            end: secondsToSRTTime(end),
+            text: text,
+            sourceFragments: fragments
+        )
+    }
+
+    private static func joinedText(_ fragments: [SubtitleCueSourceFragment]) -> String {
+        let parts = fragments.map(\.text)
+        let separator = parts.contains(where: containsCJK) ? "" : " "
+        return parts.joined(separator: separator)
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func containsCJK(_ text: String) -> Bool {
+        SubtitleTimingPlanner.containsCJKText(text)
+    }
+
+    private static func hasWeakBoundary(left: String, right: String) -> Bool {
+        // CJK: never break right before a leading particle / small kana / closing punctuation.
+        if let firstChar = right.trimmingCharacters(in: .whitespacesAndNewlines).first,
+           cjkLeadingProhibited.contains(firstChar) {
+            return true
+        }
+        let leftTokens = SubtitleTimingPlanner.wordTokens(left)
+        let rightTokens = SubtitleTimingPlanner.wordTokens(right)
+        guard let last = leftTokens.last, let first = rightTokens.first else { return false }
+        return SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first)
+    }
+
+    private static func endsSentence(_ value: String) -> Bool {
         guard let last = value.trimmingCharacters(in: .whitespacesAndNewlines).last else {
             return false
         }
         return ".!?。！？".contains(last)
+    }
+
+    private static func isPurePunctuation(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        return trimmed.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.punctuationCharacters.contains(scalar)
+                || CharacterSet.symbols.contains(scalar)
+        }
+    }
+}
+
+/// Maps a Moongate whisper model id (e.g. `whisper.cpp:small-q5_1`) to the whisper.cpp
+/// `-dtw <preset>` alignment-heads preset name (dot form, e.g. `large.v3.turbo`). Returns nil
+/// when no preset is known, in which case the caller must omit `-dtw` (fail-safe).
+public enum WhisperDTWPreset {
+    private static let known: Set<String> = [
+        "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+        "medium", "medium.en", "large.v1", "large.v2", "large.v3", "large.v3.turbo"
+    ]
+
+    public static func preset(forModelID modelID: String) -> String? {
+        var name = modelID
+        if let colon = name.lastIndex(of: ":") {
+            name = String(name[name.index(after: colon)...])
+        }
+        name = name.lowercased().trimmingCharacters(in: .whitespaces)
+        // Strip quantization suffix like "-q5_1", ".q8_0", "_q5_0".
+        if let range = name.range(of: #"[-_.]q[0-9].*$"#, options: .regularExpression) {
+            name.removeSubrange(range)
+        }
+        // Catalog ids use dashes for large variants (large-v3-turbo); presets use dots.
+        if name.hasPrefix("large") {
+            name = name.replacingOccurrences(of: "-", with: ".")
+        }
+        return known.contains(name) ? name : nil
+    }
+}
+
+/// Whisper-specific subtitle re-timer. Operates on the grouped cues produced by
+/// `LocalASRSubtitleTimingPlanner` and adjusts disappearance to better match human timing,
+/// exploiting the asymmetric acceptance window used by the timing eval (start error
+/// -250..+450ms, end error -150..+900ms):
+/// - Appearance: nudge the onset slightly later than the raw whisper/DTW onset (onsetDelaySeconds)
+///   so subtitles don't appear before speech; bounded so short cues keep a readable duration.
+/// - Disappearance: extend the cue toward the next real onset (capped at `holdToNextSeconds`)
+///   to absorb whisper's habitually-early word ends, never overlapping the next cue. This also
+///   fixes the old `min(end, nextStart)` clamp that caused both abrupt cut-offs and overlaps
+///   (BUG-1).
+/// This is deliberately separate from the platform (YouTube auto-caption) timing path, which
+/// keeps human-aligned source anchors that whisper does not have.
+public enum WhisperCueRetimer {
+    /// Onset delay: nudge appearance slightly later than the raw whisper/DTW onset. DTW gives a
+    /// realistic onset but with a small residual early bias, and the eval acceptance window is
+    /// centred around +100..+200ms (slightly late reads better than early). A small delay keeps
+    /// subtitles from appearing before speech. Bounded so short cues keep a readable duration.
+    public static let onsetDelaySeconds = 0.2
+    /// Gap kept before the next cue's onset so adjacent cues never overlap.
+    public static let interCueGuardSeconds = 0.08
+    /// Maximum extra hold past the last spoken token. whisper ends words noticeably earlier
+    /// than human captions, so holding toward the next onset cuts the dominant early-cutoff
+    /// failures; capped so a long pause never produces a long idle hold.
+    public static let holdToNextSeconds = 0.7
+    private static let minimumCueSeconds = LocalASRSubtitleTimingPlanner.minimumCueSeconds
+    private static let epsilon = 0.001
+
+    private struct RawCue {
+        let start: Double
+        let end: Double
+        let lastTokenEnd: Double
+        let text: String
+        let fragments: [SubtitleCueSourceFragment]
+        let cap: Double
+    }
+
+    public static func retime(_ cues: [SubtitleCue], transcriptDurationSeconds: Double?) -> [SubtitleCue] {
+        guard !cues.isEmpty else { return [] }
+        var raws: [RawCue] = []
+        raws.reserveCapacity(cues.count)
+        for cue in cues {
+            guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
+                return cues // unparseable input: leave untouched rather than corrupt timing
+            }
+            let cap = SubtitleTimingPlanner.containsCJKText(cue.text)
+                ? LocalASRSubtitleTimingPlanner.hardMaximumCJKCueSeconds
+                : LocalASRSubtitleTimingPlanner.maximumLatinCueSeconds
+            raws.append(RawCue(
+                start: start,
+                end: end,
+                lastTokenEnd: cue.sourceFragments.last?.endSeconds ?? end,
+                text: cue.text,
+                fragments: cue.sourceFragments,
+                cap: cap
+            ))
+        }
+
+        var output: [SubtitleCue] = []
+        output.reserveCapacity(raws.count)
+        var previousEnd = -Double.greatestFiniteMagnitude
+        for index in raws.indices {
+            let raw = raws[index]
+            let hasNext = index + 1 < raws.count
+            let nextStart = hasNext ? raws[index + 1].start : Double.greatestFiniteMagnitude
+
+            // Appearance: nudge the onset slightly later (DTW has a small early bias; the window's
+            // ideal is slightly-late) so cues don't appear before speech. Bounded so the cue keeps
+            // a readable minimum duration, never before the previous cue's end, never negative.
+            var start = raw.start + onsetDelaySeconds
+            start = min(start, max(raw.start, raw.end - minimumCueSeconds))
+            if index > 0 { start = max(start, previousEnd) }
+            start = max(start, 0)
+
+            // Disappearance: extend the cue toward the next real onset to absorb whisper's early
+            // word ends, capped at holdToNextSeconds past the last token (so a long pause cannot
+            // produce a long idle hold) and at the next onset minus a guard (so cues never overlap).
+            let ceiling = hasNext ? nextStart - interCueGuardSeconds : Double.greatestFiniteMagnitude
+            var end = max(raw.end, min(ceiling, raw.lastTokenEnd + holdToNextSeconds))
+            if let duration = transcriptDurationSeconds { end = min(end, duration) }
+            end = min(end, start + raw.cap)
+            end = max(end, start + minimumCueSeconds) // minimum readable duration (before overlap clamp)
+            end = min(end, ceiling)                   // never overlap the next onset window
+            end = min(end, nextStart)                 // hard no-overlap authority
+            end = max(end, start + epsilon)           // always positive duration
+
+            output.append(SubtitleCue(
+                index: output.count + 1,
+                start: secondsToSRTTime(start),
+                end: secondsToSRTTime(end),
+                text: raw.text,
+                sourceFragments: raw.fragments
+            ))
+            previousEnd = end
+        }
+        return output
     }
 }
 
@@ -1094,6 +1491,13 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
             "-of", self.outputBaseURL.path,
             "-pp"
         ]
+        // DTW token timestamps need full JSON token output, a known preset, and flash attention
+        // OFF (`-nfa`) — otherwise whisper.cpp silently disables DTW.
+        if request.wordTimestamps,
+           request.dtwTokenTimestamps,
+           let preset = WhisperDTWPreset.preset(forModelID: request.modelID) {
+            arguments.append(contentsOf: ["-dtw", preset, "-nfa"])
+        }
         if let languageCode = request.languageCode?.trimmingCharacters(in: .whitespacesAndNewlines),
            !languageCode.isEmpty,
            languageCode.lowercased() != "auto" {
@@ -1275,24 +1679,36 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
             ?? (root["segments"] as? [[String: Any]])
             ?? []
         var words: [ASRWord] = []
+        var dtwStarts: [Double?] = []
         var maxEnd: Double?
 
         for segment in segments {
             if let interval = interval(in: segment, offsetValuesAreMilliseconds: true) {
                 maxEnd = max(maxEnd ?? interval.end, interval.end)
             }
-            let tokenWords = parseTokenWords(in: segment)
-            if tokenWords.isEmpty {
+            let tokenEntries = parseTokenEntries(in: segment)
+            if tokenEntries.isEmpty {
                 if let fallback = parseSegmentWord(segment) {
                     words.append(fallback)
+                    dtwStarts.append(nil)
                     maxEnd = max(maxEnd ?? fallback.endSeconds, fallback.endSeconds)
                 }
             } else {
-                words.append(contentsOf: tokenWords)
-                for word in tokenWords {
-                    maxEnd = max(maxEnd ?? word.endSeconds, word.endSeconds)
+                for entry in tokenEntries {
+                    words.append(entry.word)
+                    dtwStarts.append(entry.dtwStart)
                 }
             }
+        }
+
+        // When whisper.cpp emitted DTW token timestamps (`-dtw`, requires `-nfa`), prefer them:
+        // they are markedly closer to human timing than the default frame-quantized offsets.
+        // Each token's DTW point becomes its start; the next DTW token's point becomes its end.
+        if dtwStarts.contains(where: { $0 != nil }) {
+            words = applyDTWTiming(words: words, dtwStarts: dtwStarts)
+        }
+        for word in words {
+            maxEnd = max(maxEnd ?? word.endSeconds, word.endSeconds)
         }
 
         guard !words.isEmpty else { throw WhisperCppRecognizerError.emptyTranscript }
@@ -1325,7 +1741,7 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         return number(in: result, keys: ["language_probability", "languageProbability", "language_confidence", "languageConfidence"])
     }
 
-    private func parseTokenWords(in segment: [String: Any]) -> [ASRWord] {
+    private func parseTokenEntries(in segment: [String: Any]) -> [(word: ASRWord, dtwStart: Double?)] {
         let tokens = (segment["tokens"] as? [[String: Any]])
             ?? (segment["words"] as? [[String: Any]])
             ?? []
@@ -1334,13 +1750,55 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
                   let interval = interval(in: token, offsetValuesAreMilliseconds: true) else {
                 return nil
             }
-            return ASRWord(
+            let word = ASRWord(
                 text: text,
                 startSeconds: interval.start,
                 endSeconds: interval.end,
                 probability: number(in: token, keys: ["p", "probability", "confidence"])
             )
+            // whisper.cpp t_dtw is in centiseconds; -1 means "not computed".
+            let dtwStart: Double?
+            if let raw = number(in: token, keys: ["t_dtw"]), raw >= 0 {
+                dtwStart = raw / 100.0
+            } else {
+                dtwStart = nil
+            }
+            return (word, dtwStart)
         }
+    }
+
+    /// Rewrites word start/end using DTW token points: word i starts at its DTW point and ends at
+    /// the next DTW point — but capped at the word's own acoustic (offsets) duration, so a word
+    /// preceding a pause does NOT absorb the whole silent gap (which previously produced lone,
+    /// multi-second single-morpheme cues like 「顔」 and forced unnatural splits). Tokens without a
+    /// DTW point keep their offsets timing.
+    private func applyDTWTiming(words: [ASRWord], dtwStarts: [Double?]) -> [ASRWord] {
+        let minWordSeconds = 0.12
+        var result = words
+        for index in words.indices {
+            guard let start = dtwStarts[index] else { continue }
+            let offsetsDuration = max(minWordSeconds, words[index].endSeconds - words[index].startSeconds)
+            let acousticEnd = start + offsetsDuration
+            var end = acousticEnd
+            var lookahead = index + 1
+            while lookahead < words.count {
+                if let nextStart = dtwStarts[lookahead] {
+                    // Contiguous speech: end at the next onset. Across a real pause: stop at the
+                    // word's acoustic end so the silence stays a gap (not folded into this word).
+                    if nextStart > start { end = min(nextStart, acousticEnd) }
+                    break
+                }
+                lookahead += 1
+            }
+            if end < start { end = start }
+            result[index] = ASRWord(
+                text: words[index].text,
+                startSeconds: start,
+                endSeconds: end,
+                probability: words[index].probability
+            )
+        }
+        return result
     }
 
     private func parseSegmentWord(_ segment: [String: Any]) -> ASRWord? {
@@ -1492,18 +1950,33 @@ public struct WhisperCppSpeechRecognizer: SpeechRecognizer {
         try fm.createDirectory(at: outputDirectoryURL, withIntermediateDirectories: true)
         let transcriptID = request.cacheKey ?? UUID().uuidString
         let outputBaseURL = outputDirectoryURL.appendingPathComponent(Self.stableFileStem(transcriptID), isDirectory: false)
-        let plan = WhisperCppCommandPlan(
-            runtime: runtime,
-            modelURL: modelURL,
-            request: request,
-            outputBaseURL: outputBaseURL
-        )
-        let result = try await commandRunner.runWhisper(plan: plan, control: control) { line in
-            if let parsed = ASRProgressLineParser.whisperCppProgress(from: line) {
-                progress(parsed)
+
+        func run(_ planRequest: ASRRequest) async throws -> (plan: WhisperCppCommandPlan, result: ASRCommandResult) {
+            let plan = WhisperCppCommandPlan(
+                runtime: runtime,
+                modelURL: modelURL,
+                request: planRequest,
+                outputBaseURL: outputBaseURL
+            )
+            let result = try await commandRunner.runWhisper(plan: plan, control: control) { line in
+                if let parsed = ASRProgressLineParser.whisperCppProgress(from: line) {
+                    progress(parsed)
+                }
             }
+            try Task.checkCancellation()
+            return (plan, result)
         }
-        try Task.checkCancellation()
+
+        var (plan, result) = try await run(request)
+        let usedDTW = request.wordTimestamps
+            && request.dtwTokenTimestamps
+            && WhisperDTWPreset.preset(forModelID: request.modelID) != nil
+        if usedDTW, result.status != 0 || !fm.fileExists(atPath: plan.outputJSONURL.path) {
+            // Fail-safe: if a model build rejects `-dtw`/`-nfa`, retry once without it so a DTW
+            // incompatibility degrades to plain offsets instead of failing the whole run.
+            (plan, result) = try await run(request.disablingDTW())
+        }
+
         guard result.status == 0 else {
             throw WhisperCppRecognizerError.processFailed(status: result.status, stderrTail: result.stderrTail)
         }

@@ -27,6 +27,13 @@ struct QueueItemView: View {
                     .truncationMode(.middle)
                     .help(item.title)
                 statusLine
+                if showsTimingSuggestion {
+                    Text(localizer.t(L.Queue.localASRQualitySuggestion))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if showsProgressBar {
                     progressBar
                 }
@@ -179,6 +186,12 @@ struct QueueItemView: View {
         case .done, .failed, .cancelled:
             return false
         }
+    }
+
+    /// Done item whose produced subtitle timing looks unreliable (e.g. platform rolling captions)
+    /// and which can be re-run with local Whisper — surface the gentle suggestion.
+    private var showsTimingSuggestion: Bool {
+        item.timingWarning && canRetryWithLocalASR
     }
 
     private var progressBar: some View {
