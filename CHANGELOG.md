@@ -1,210 +1,212 @@
-# 更新日志
+# Changelog
 
-本项目版本遵循语义化版本（major.minor.patch）。
+[English](CHANGELOG.md) · [简体中文](CHANGELOG.zh-Hans.md) · [繁體中文](CHANGELOG.zh-Hant.md)
+
+This project follows semantic versioning (major.minor.patch).
 
 ## 0.7.6
 
-0.7.6 是一次跨平台字幕分段与时间轴改进版本，重点优化英文与日文字幕在 YouTube 自动字幕、手动字幕和翻译前清洗流程中的断句、显示时长和句间衔接。macOS 与 Windows 核心逻辑保持同构发布。
+0.7.6 is a cross-platform subtitle segmentation and timing release, focused on line breaks, display duration, and inter-cue continuity for English and Japanese subtitles across YouTube auto-captions, manual subtitles, and the pre-translation cleanup. macOS and Windows keep their core logic in lockstep.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **英文分段更像真实字幕**：新增弱语义边界识别，避免把 `the / and / which / to` 等连接词切到难读的位置；短反馈句、冒号/分号后的句间交接和长停顿显示时长更稳定。
-- **日文无空格字幕更稳**：对日文/CJK 字符级 timing 做单独处理，减少自动字幕滚动 carry、短密字幕和人工多行字幕被拆成 blink cue 或拖尾过长的问题。
-- **保留 VTT 词级时间戳**：下载自动字幕时优先保留 VTT inline word timestamps，清洗阶段使用源片段时间而不是只依赖整条 cue 窗口。
-- **跨平台同构分段器**：新增 Swift / C# 双端 `SubtitleTimingPlanner`，集中管理可读时长、弱边界、短句和 source-anchored timing 规则。
-- **评估工具落地**：新增 `tools/subtitle_timing_eval/`，用于用公开样本、ASR/VTT 参考和离线 metrics 检查分段时间轴；生成产物默认写入 ignored artifacts。
-- **任务进度更清晰**：队列层同步任务级进度与 ETA，处理 VTT→SRT 规范化后再烧录或输出。
+- **English segmentation reads more like real subtitles**: new weak-boundary detection avoids breaking connectives like `the / and / which / to` at hard-to-read spots; short feedback lines, post-colon/semicolon handoffs, and long-pause display durations are steadier.
+- **Steadier Japanese (space-less) subtitles**: character-level timing for Japanese/CJK is handled on its own, reducing auto-caption scroll carry, dense short cues, and multi-line manual subtitles getting split into blink cues or over-long trailing.
+- **Preserve VTT word-level timestamps**: auto-caption downloads keep inline VTT word timestamps, and cleanup uses source-segment times instead of relying only on the whole-cue window.
+- **Cross-platform shared segmenter**: a new Swift/C# `SubtitleTimingPlanner` on both sides centralizes readable-duration, weak-boundary, short-sentence, and source-anchored timing rules.
+- **Evaluation tooling**: new `tools/subtitle_timing_eval/` checks segmentation timing against public samples, ASR/VTT references, and offline metrics; output goes to ignored artifacts by default.
+- **Clearer task progress**: the queue surfaces per-task progress and ETA, normalizing VTT→SRT before burn-in or output.
 
-### 测试
+### Tests
 
-- 新增 Swift / Windows 分段器、VTT 解析、字幕清洗和 queue 行为回归测试。
-- 新增 Python 离线评估工具单测，覆盖 VTT word timing、弱边界、manifest/status/runbook 和翻译字幕 overlap gate。
+- Added Swift/Windows segmenter, VTT parsing, subtitle cleanup, and queue-behavior regression tests.
+- Added Python offline-eval unit tests covering VTT word timing, weak boundaries, manifest/status/runbook, and the translated-subtitle overlap gate.
 
 ## 0.7.5
 
-0.7.5 是一次 Windows-only 热修版本，重点修复 Windows 版设置窗口在打开时因 WPF 只读绑定触发 `RangeBase.Value`/`Run.Text` 初始化异常的问题，并补齐 Windows on ARM 虚拟机中的基础构建、安装器和启动烟测验证。macOS 最新发布面仍停留在 0.7.3。
+0.7.5 is a Windows-only hotfix, mainly fixing a `RangeBase.Value` / `Run.Text` initialization exception thrown when the Windows settings window opened due to WPF read-only bindings, plus basic build / installer / launch-smoke validation on a Windows-on-ARM VM. The latest macOS release surface stays at 0.7.3.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **Windows 设置窗口不再因更新区绑定崩溃**：设置页更新区所有 `Updater.*` 绑定显式使用单向绑定，避免 WPF 尝试写回只读状态属性。
-- **更新区文本不再触发 `Run.Text` 异常**：设置页更新区域移除 inline `Run` 文本绑定，改为普通 `TextBlock` 组合显示；点击「设置」不应再弹出 `Set property 'System.Windows.Documents.Run.Text' threw an exception`。
-- **进度值防护**：下载、解析和队列 UI 进度统一过滤 `NaN`、无穷大和越界值，避免 WPF `RangeBase` 控件收到非法值。
-- **证书错误提示更准确**：当 yt-dlp/系统网络栈因代理根证书或系统根证书不受信任而失败时，错误文案会提示检查 Windows 系统时间、根证书和代理/VPN 证书，而不是泛化成普通网络波动。
-- **Windows 发布链路验证**：在 Windows on ARM 虚拟机上验证 `win-x64` 自包含发布产物、NSIS 安装器构建、临时目录安装和启动烟测；当前仍通过 x64 模拟运行，不声明原生 ARM64。
+- **Windows settings window no longer crashes on the update bindings**: all `Updater.*` bindings in the update area now bind one-way explicitly, so WPF won't try to write back read-only state properties.
+- **Update text no longer triggers a `Run.Text` exception**: the update area drops inline `Run` text bindings for plain `TextBlock` composition; clicking "Settings" should no longer raise `Set property 'System.Windows.Documents.Run.Text' threw an exception`.
+- **Progress-value guards**: download, resolve, and queue UI progress now filter out `NaN`, infinity, and out-of-range values so WPF `RangeBase` controls never receive illegal values.
+- **More accurate certificate-error hints**: when yt-dlp / the system network stack fails because a proxy or system root certificate isn't trusted, the message tells you to check Windows system time, root certificates, and proxy/VPN certificates instead of blaming a generic network blip.
+- **Windows release-pipeline validation**: verified the `win-x64` self-contained publish, NSIS installer build, temp-directory install, and launch smoke test on a Windows-on-ARM VM; still running via x64 emulation, so no native ARM64 claim.
 
-### 测试
+### Tests
 
-- Windows `dotnet test windows/Moongate.Win.sln` 覆盖 414 个核心测试与 1 个 WPF 设置窗口初始化烟测。
+- Windows `dotnet test windows/Moongate.Win.sln` covers 414 core tests plus 1 WPF settings-window init smoke test.
 
 ## 0.7.3
 
-0.7.3 是一次面向**发布加固**的版本：按外部代码审查，系统性收紧了更新、依赖、登录凭证、Cookie 隔离与设置可靠性等发布前风险点，并修复了下载进度条卡在 100% 的体验问题。
+0.7.3 is a **release-hardening** version: following an external code review, it systematically tightened pre-release risk points around updates, dependencies, login credentials, cookie isolation, and settings reliability, and fixed a download progress bar stuck at 100%.
 
-> 说明：本版改动均已通过单元测试与编译验证，但**尚未在真实 Windows/macOS 机器上端到端验证**（安装、覆盖更新、卸载、WebView2、登录、高 DPI 等）；标稳定版发布前仍需真机验证。详见 `docs/audit-progress.md`。
+> Note: every change here passed unit tests and compilation, but has **not yet been end-to-end verified on real Windows/macOS machines** (install, in-place update, uninstall, WebView2, login, high-DPI, …); a stable release still needs on-hardware verification. See `docs/audit-progress.md`.
 
-### 安全
+### Security
 
-- **API Token 不再明文落盘**：macOS 用 Keychain、Windows 用 DPAPI 加密存储；旧版 settings.json 里的明文 Token 首次启动事务化迁移（先写安全存储、成功才抹明文，失败不丢）。
-- **Cookie 按站点隔离**：登录 Cookie 改为按站点（YouTube / Bilibili）分文件导出与过滤，下载按 URL host 选用对应 jar，互不串味；旧全局 cookies.txt 自动迁移。
-- **依赖完整性校验**：Windows 受管依赖改为随 App 固定版本下载，并在安装前校验 SHA-256，不再直接追随上游 `latest`。
-- **登录清除更诚实**：Windows「清除全部登录」在 WebView2 数据删不掉时如实提示「部分清除」并下次启动补删。
+- **API tokens no longer hit disk in plaintext**: stored encrypted via Keychain on macOS and DPAPI on Windows; plaintext tokens in legacy settings.json migrate transactionally on first launch (write to secure storage first, erase plaintext only on success, lose nothing on failure).
+- **Per-site cookie isolation**: login cookies are now exported and filtered per site (YouTube / Bilibili), and downloads pick the matching jar by URL host so they don't cross-contaminate; the old global cookies.txt migrates automatically.
+- **Dependency integrity checks**: Windows managed dependencies now download at versions pinned to the app and verify SHA-256 before install, instead of tracking upstream `latest`.
+- **More honest login clearing**: when WebView2 data can't be fully removed, Windows "clear all logins" honestly reports "partially cleared" and finishes on next launch.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **下载进度不再卡 100%**：修复 DASH 视频/音频分流下载时，视频流到 100% 后进度条被永久冻结（音频下载+合并期间看似「没在下载」）的问题。
-- **Windows 更新安装竞态**：更新前检查队列、给 NSIS 传 PID 等旧进程退出再覆盖、专用退出态、临时目录清理；SemVer 正确处理预发布。
-- **依赖窗可取消**：首次依赖下载可取消、可关窗、显示真实字节/速度进度；「重新下载依赖」改为先下后换（失败不破坏现有可用环境）。
-- **设置可靠性**：设置文件损坏改为备份+提示而非静默回默认；登录/依赖跳转保存失败时保持设置窗打开不丢草稿。
-- **macOS 不再代管全局 Homebrew**：移除 App 内「卸载 Homebrew 依赖」，避免误卸用户为别的项目装的包；二进制定位支持自定义 HOMEBREW_PREFIX。
-- **Windows 路径/解析**：文件夹名规避保留设备名（CON/NUL/COM1…）；多链接提取统一为按 http(s) 锚点切分；记住上次下载选项。
-- **安装器多语言**：NSIS 安装器支持简中/英文/繁中，桌面快捷方式改为可选；卸载可选删除用户数据（设置/凭证/Cookie + 依赖缓存）。
+- **Download progress no longer stuck at 100%**: fixed DASH split video/audio downloads freezing the bar permanently after the video stream hit 100% (the audio download + merge looked like "nothing is downloading").
+- **Windows update-install race**: check the queue before updating, pass the PID to NSIS so old processes exit before overwrite, dedicated exit state, temp-dir cleanup; SemVer handles pre-releases correctly.
+- **Cancelable dependency window**: the first dependency download is cancelable, the window is closable, and it shows real byte/speed progress; "re-download dependencies" now downloads-then-swaps (a failure won't break the working environment).
+- **Settings reliability**: a corrupt settings file is backed up with a prompt rather than silently reset to defaults; settings stays open without losing a draft if a login/dependency jump fails to save.
+- **macOS no longer manages global Homebrew**: removed the in-app "uninstall Homebrew dependencies" to avoid removing packages you installed for other projects; binary lookup supports a custom HOMEBREW_PREFIX.
+- **Windows paths / parsing**: folder names avoid reserved device names (CON/NUL/COM1…); multi-link extraction is unified around http(s) anchors; remembers your last download options.
+- **Multilingual installer**: the NSIS installer supports Simplified/English/Traditional Chinese, the desktop shortcut is now optional, and uninstall can optionally delete user data (settings/credentials/cookies + dependency cache).
 
-### 测试
+### Tests
 
-- macOS `swift test`、Windows `dotnet test windows/Moongate.Win.sln` 全绿；新增覆盖凭证迁移、Cookie 隔离、依赖体检/校验、SemVer、进度合并、路径净化等的单元测试。
+- macOS `swift test` and Windows `dotnet test windows/Moongate.Win.sln` both green; added unit tests covering credential migration, cookie isolation, dependency health/verification, SemVer, progress merging, path sanitization, and more.
 
 ## 0.7.2
 
-0.7.2 是一次面向字幕翻译质量与发布面一致性的修正版本，重点处理自动生成字幕在时间轴、断句和噪声文本上的问题，让下载后的字幕翻译更少出现跨句误译、重复标签和难以追踪的回退行为。
+0.7.2 is a correctness release for subtitle-translation quality and release-surface consistency, focused on auto-generated subtitles' timing, segmentation, and noisy text, so post-download subtitle translation has fewer cross-sentence mistranslations, duplicate tags, and hard-to-trace fallback behavior.
 
-### 新增
+### Added
 
-- **ASR 字幕重分段**：对自动生成字幕增加可配置的重分段预处理，把过短、过碎或明显断错的 cue 合并成更适合翻译的语义片段，减少逐词字幕导致的上下文丢失。
-- **更稳的翻译回退记录**：当 ASR 重分段或增强模式不可用时，macOS 与 Windows 核心会保留更清楚的 fallback 日志，方便判断是设置、输入字幕还是模型响应导致效果变化。
+- **ASR subtitle re-segmentation**: a configurable re-segmentation pre-pass for auto-generated subtitles merges over-short, over-fragmented, or clearly mis-broken cues into more translation-friendly semantic segments, reducing context loss from word-by-word subtitles.
+- **Steadier translation-fallback logging**: when ASR re-segmentation or Enhanced mode is unavailable, the macOS and Windows cores keep clearer fallback logs, making it easier to tell whether settings, the input subtitles, or the model response changed the result.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **字幕清洗更严格**：修复 SRT 清洗中的转义与标签处理问题，降低 HTML/ASS 标签、重复噪声和异常 cue 进入翻译提示词的概率。
-- **ASR 判断更保守**：强化自动字幕启发式判断，避免把正常人工字幕误当作 ASR 字幕进行过度重分段。
-- **文案降噪**：把「智能翻译提示词」统一改名为「增强模式」，更贴近用户实际开关含义，也避免界面解释模型内部实现。
-- **发布面收口到 0.7.2**：macOS/Windows 默认构建版本、安装包命名、GitHub Actions 默认参数、README、Windows 文档与发布面测试统一更新到 0.7.2。
+- **Stricter subtitle cleanup**: fixed escaping and tag handling in SRT cleanup, lowering the chance of HTML/ASS tags, repeated noise, and malformed cues reaching the translation prompt.
+- **More conservative ASR detection**: hardened the auto-caption heuristic to avoid mistaking normal manual subtitles for ASR ones and over-segmenting them.
+- **Copy de-noising**: renamed "smart translation prompts" to "Enhanced mode," closer to what the toggle actually does, and avoiding UI that explains the model's internals.
+- **Release surface pinned to 0.7.2**: macOS/Windows default build version, installer naming, GitHub Actions defaults, README, Windows docs, and release-surface tests all updated to 0.7.2.
 
-### 测试
+### Tests
 
-- 新增和更新 macOS / Windows 字幕清洗、ASR 重分段、翻译设置迁移、回退路径和本地化文案测试。
-- 更新发布面测试，覆盖 macOS 构建脚本、Sparkle ZIP/appcast 脚本、Windows 安装器、GitHub Actions 默认版本与文档产物名。
+- Added/updated macOS and Windows tests for subtitle cleanup, ASR re-segmentation, translation-settings migration, fallback paths, and localized copy.
+- Updated release-surface tests covering the macOS build script, Sparkle ZIP/appcast scripts, the Windows installer, GitHub Actions default version, and doc artifact names.
 
 ## 0.7.0
 
-本版本完成桌面端 0.7 多语言与首启体验迭代：macOS / Windows 面向英语、简体中文、繁体中文用户可用，翻译目标语言可独立选择，并补齐更清晰的无 API 使用路径。
+This version completes the desktop 0.7 multilingual and first-run iteration: macOS / Windows are usable for English, Simplified Chinese, and Traditional Chinese users, the translation target language can be chosen independently, and the no-API path is clearer.
 
-### 新增
+### Added
 
-- **三语 UI 与设置**：macOS 与 Windows 支持 English / 简体中文 / 繁體中文界面语言，设置中可即时切换；翻译目标语言独立于界面语言，可选择简体中文、繁體中文或 English。
-- **更好的 Onboarding**：首次启动可选择 App 语言与字幕翻译目标；允许跳过 API 配置，把月之门当普通视频下载器使用。macOS 额外提供本地 Apple Translation 路径引导，Windows 默认不把云端 API 作为启动阻塞项。
-- **智能翻译提示词开关**：新增独立开关。开启后字幕翻译前会先做内容分析，根据普通内容或歌曲 / 歌词等类型选择更合适的翻译提示词；歌曲场景会更重视意象、节奏和可唱性。
-- **更多站点识别**：TikTok、抖音、小红书及常见短链域名会优先走 yt-dlp 原生提取路径，失败时保留登录、风控、地区或平台限制的诚实提示，不伪装成通用网页嗅探。
+- **Trilingual UI and settings**: macOS and Windows support English / Simplified Chinese / Traditional Chinese UI languages, switchable instantly in settings; the translation target language is independent of the UI language and can be Simplified Chinese, Traditional Chinese, or English.
+- **Better onboarding**: first launch lets you choose the app language and subtitle target; you can skip API setup and use Moongate as a plain video downloader. macOS additionally guides the local Apple Translation path; Windows doesn't make a cloud API a launch blocker by default.
+- **Smart translation-prompt toggle**: a new independent toggle. When on, subtitle translation first analyzes the content and picks a more suitable prompt for plain content vs. songs/lyrics; the song case weights imagery, rhythm, and singability more.
+- **More site recognition**: TikTok, Douyin, Xiaohongshu, and common short-link domains prefer yt-dlp's native extraction path, keeping honest hints about login, throttling, region, or platform limits on failure rather than masquerading as generic page sniffing.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- macOS 主窗口、设置、队列、登录、总结、依赖、更新与关闭确认等高频界面文案接入运行时本地化。
-- Windows WPF 界面、核心下载 / 解析 / 队列 / 转码 / 烧录 / 依赖 / 更新错误文案补齐繁体中文与英文路径。
-- **macOS 自更新迁移到 Sparkle**：App 内更新不再下载 DMG 或 PKG 后自行处理安装；现在使用 Sparkle 2 原生更新窗口，从 GitHub Pages appcast 发现更新，下载 GitHub Release 里的 `Moongate-macOS-v0.7.0.zip`，通过 Sparkle EdDSA 签名校验后替换 App。
-- **免 Developer ID 的低成本链路**：新增 Sparkle ZIP 与 appcast 发布脚本，私钥保存到本机 Keychain，仓库只保存公开公钥。该路线解决 App 内更新与防篡改，但不伪装成 Gatekeeper 级正式发行体验。
-- **未完成队列保护**：队列里还有未完成任务时，设置页会先阻止手动检查更新，提示先完成或取消任务，避免更新重启与下载 / 压制流程互相打架。
-- **发布资产边界调整**：App 内自动更新资产改为 `Moongate-macOS-v0.7.0.zip` + `docs/appcast.xml`；DMG 仅保留为手动拖拽安装兜底，PKG 保留为未来 Developer ID Installer 链路备用。
-- 发布脚本、Windows 安装器、GitHub Actions 默认版本和文档示例更新到 0.7.0。
+- macOS main window, settings, queue, login, summary, dependency, update, and close-confirmation copy now use runtime localization.
+- Windows WPF UI and core download / resolve / queue / transcode / burn-in / dependency / update error copy fill in the Traditional Chinese and English paths.
+- **macOS self-update moved to Sparkle**: in-app updates no longer download a DMG/PKG and handle install themselves; they now use the native Sparkle 2 update window, discover updates from a GitHub Pages appcast, download `Moongate-macOS-v0.7.0.zip` from a GitHub Release, and replace the app after Sparkle EdDSA signature verification.
+- **Developer-ID-free, low-cost path**: added Sparkle ZIP and appcast release scripts; the private key lives in the local Keychain and the repo holds only the public key. This solves in-app update and tamper protection without pretending to be a Gatekeeper-grade official release.
+- **Unfinished-queue protection**: with unfinished tasks in the queue, the settings page blocks a manual update check first, prompting you to finish or cancel tasks, so the update restart doesn't fight the download/burn flow.
+- **Release-asset boundary adjustment**: in-app auto-update assets become `Moongate-macOS-v0.7.0.zip` + `docs/appcast.xml`; the DMG stays only as a manual drag-install fallback, and the PKG is reserved for a future Developer ID Installer path.
+- Release scripts, the Windows installer, GitHub Actions defaults, and doc examples updated to 0.7.0.
 
-### 测试
+### Tests
 
-- 新增 macOS `Localizer`、设置、Onboarding、翻译目标、智能提示词、站点识别与发布边界测试。
-- 更新 macOS 更新边界测试：确认 Sparkle 依赖、Info.plist 配置、ZIP/appcast 脚本和公钥文件存在，并拒绝回退到自研 PKG/DMG 安装器。
-- 更新设置页边界测试：更新区改为 Sparkle 原生检查入口，并在队列未完成时阻止检查更新。
-- Windows 核心库测试数更新为 271，覆盖三语核心文案、设置迁移、Onboarding、翻译目标、智能提示词与发布面。
+- Added macOS `Localizer`, settings, onboarding, translation-target, smart-prompt, site-recognition, and release-boundary tests.
+- Updated macOS update-boundary tests: confirm the Sparkle dependency, Info.plist config, ZIP/appcast scripts, and public-key file exist, and reject falling back to a homegrown PKG/DMG installer.
+- Updated settings-page boundary tests: the update area is now the native Sparkle check entry, and blocks update checks while the queue is unfinished.
+- Windows core-library test count updated to 271, covering trilingual core copy, settings migration, onboarding, translation target, smart prompts, and the release surface.
 
 ## 0.6.1
 
-修复 macOS 自动更新「能下载却装不上」的问题。
+Fixes the macOS auto-update "downloads but won't install" problem.
 
-### 新增
+### Added
 
-- **记住上次下载选项**：下载视频时选择的「字幕处理方式 / 字幕语言 / 输出格式 / 是否 HDR」会被记住，下一次下载自动沿用上次的选择（例如「英语字幕 - 翻译并压制」）。字幕按语言代码记忆，会在下个视频实际可用的字幕里自动匹配勾选。
+- **Remember last download options**: your "subtitle handling / subtitle language / output format / HDR" choices are remembered, and the next download reuses them (e.g. "English subtitles – translate and burn in"). Subtitles are remembered by language code and auto-matched against what's actually available on the next video.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **修复 macOS 自更新静默失败**：下载新版 DMG 后，旧版本在退出时会过早卸载安装镜像，导致替换脚本从镜像复制新 App 时源已消失（`ditto: Cannot get the real path for source`），`/Applications/月之门.app` 始终没被替换、重启仍是旧版。现在镜像的卸载改由替换脚本在复制完成后负责，更新可稳定完成。
-  - 注意：该缺陷位于旧版本自身的更新器中，已安装的 0.5.0 / 0.6.0 仍需手动下载本版本一次；自 0.6.1 起，后续版本即可正常自动更新。
-- **自更新安装目录不可写时给出明确错误**：替换脚本在 App 退出后运行，失败无法回传界面。现在退出前先检查安装目录可写性（如非管理员账户下的 /Applications），不可写时直接提示用「管理员账户运行或到 GitHub 手动下载」，不再静默失败。
-- **修复 OpenAI 兼容引擎「测试连接 / 拉取模型」报错**：测试连接此前固定调用 OpenAI 私有的 `/v1/responses` 端点，而多数「OpenAI 兼容」服务（Azure、DeepSeek、OpenRouter、Ollama、本地推理服务等）只实现 `/v1/chat/completions`，导致配置能保存、测试却失败。现在 OpenAI 协议统一改用通用的 `/v1/chat/completions`；同时拉取模型列表时不再向非 Anthropic 服务发送 Anthropic 专有请求头，避免严格网关因未知头拒绝。（桌面与移动端同步修复）
+- **Fixed silent macOS self-update failure**: after downloading a new DMG, the old version unmounted the disk image too early on exit, so when the replace script copied the new app from the image, the source was already gone (`ditto: Cannot get the real path for source`), `/Applications/月之门.app` was never replaced, and a restart still ran the old version. The image is now unmounted by the replace script after the copy finishes, so updates complete reliably.
+  - Note: this defect lives in the old version's own updater, so installed 0.5.0 / 0.6.0 still need a one-time manual download of this version; from 0.6.1 on, later versions auto-update normally.
+- **Clear error when the self-update install directory isn't writable**: the replace script runs after the app exits, so a failure can't report back to the UI. It now checks the install directory's writability before exiting (e.g. /Applications on a non-admin account) and, if not writable, tells you to "run as admin or download manually from GitHub" instead of failing silently.
+- **Fixed OpenAI-compatible "test connection / fetch models" errors**: test-connection previously always hit OpenAI's private `/v1/responses` endpoint, while most "OpenAI-compatible" services (Azure, DeepSeek, OpenRouter, Ollama, local inference, …) implement only `/v1/chat/completions`, so config saved but the test failed. The OpenAI protocol now uses the common `/v1/chat/completions`; fetching models also no longer sends Anthropic-specific headers to non-Anthropic services, avoiding strict gateways rejecting unknown headers. (Fixed on desktop and mobile.)
 
-### 测试
+### Tests
 
-- 更新 macOS 自更新脚本生成测试：校验镜像卸载发生在复制之后、且由脚本负责。
-- 通过 SwiftPM 全量构建与 UpdateChecker 测试；并在真实 UDZO（中文卷名）镜像上复现缺陷并验证修复。
+- Updated the macOS self-update script-generation test: verify the image is unmounted after the copy, and by the script.
+- Passed a full SwiftPM build and UpdateChecker tests; reproduced and verified the fix on a real UDZO image (Chinese volume name).
 
 ## 0.6.0
 
-本版本继续推进烧录 / 转码性能优化：在可安全使用硬件路径的环节尽量调用系统最优媒体引擎，并把下载后转码阶段的进度反馈补齐。
+This version continues burn-in / transcode performance work: where the hardware path is safe to use, it leans on the system's best media engine, and it fills in progress feedback for the post-download transcode stage.
 
-### 新增
+### Added
 
-- **硬件加速规划器**：macOS 转码路径增加 VideoToolbox 输入硬件加速规划；Windows 转码路径增加 NVENC / Intel Quick Sync / AMD AMF 对应的输入硬件加速规划。无滤镜转码可更完整地把解码与编码交给硬件媒体链路。
-- **转码百分比提示**：下载后的转码阶段现在显示「转码中 X%」，进度未知时显示「转码中…」，避免和普通后处理混在一起。
+- **Hardware-acceleration planner**: the macOS transcode path adds VideoToolbox input hardware-acceleration planning; the Windows transcode path adds NVENC / Intel Quick Sync / AMD AMF input hardware-acceleration planning. Filter-free transcoding can hand decode and encode more fully to the hardware media chain.
+- **Transcode percentage**: the post-download transcode stage now shows "Transcoding X%," or "Transcoding…" when progress is unknown, so it's not lumped in with generic post-processing.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **压制 / 转码文案降噪**：设置、文档与本地化提示不再显式标注 CPU 回退，只提示遇到兼容性问题时耗时可能比预计更长。
-- **兼容路径更明确**：HDR 转 H.264 的 tonemap 等必须经过软件滤镜的路径会保留兼容性提示，同时避免错误注入硬件输入加速参数。
-- **Windows 队列状态对齐**：Windows 端补齐下载后处理类型，转码阶段与 macOS 一样展示专门的进度文本。
-- **更新检查错误文案修正**：GitHub 限流、网络失败等更新检查错误不再误显示为「解析视频信息失败」。
+- **Burn-in / transcode copy de-noising**: settings, docs, and localized hints no longer explicitly flag CPU fallback, only noting that compatibility issues may take longer than expected.
+- **Clearer compatibility path**: paths that must go through software filters (HDR→H.264 tonemapping, etc.) keep the compatibility hint while avoiding wrongly injecting hardware input-acceleration parameters.
+- **Windows queue-state alignment**: Windows fills in the post-download processing types so the transcode stage shows dedicated progress text just like macOS.
+- **Fixed update-check error copy**: GitHub rate-limiting, network failures, and other update-check errors no longer show as "failed to resolve video info."
 
-### 测试
+### Tests
 
-- 新增 macOS / Windows 转码规划、硬件输入加速参数、HDR 兼容路径、转码进度 UI、本地化文案与更新检查错误边界测试。
-- 完整验证通过 SwiftPM 全量测试、Windows 核心库全量测试、Windows App 构建与发布面字符串检查。
+- Added macOS / Windows tests for transcode planning, hardware input-acceleration parameters, HDR compatibility paths, transcode progress UI, localized copy, and update-check error boundaries.
+- Fully verified via the SwiftPM full test suite, the Windows core-library full test suite, the Windows app build, and a release-surface string check.
 
 ## 0.5.0
 
-本版本聚焦烧录 / 转码的性能与画质：把编码交给 Apple Silicon 的硬件媒体引擎（VideoToolbox），并修复一批烧录、设置与交互问题。
+This version focuses on burn-in / transcode performance and quality: hand encoding to Apple Silicon's hardware media engine (VideoToolbox), and fix a batch of burn-in, settings, and interaction issues.
 
-### 新增
+### Added
 
-- **硬件编码加速（VideoToolbox）**：烧录与转码可交给 Mac 的硬件媒体引擎，4K 编码更快、更省电。设置 →「烧录与转码」新增「编码方式」三档：自动（硬件优先，推荐）/ 硬件加速 / 软件（画质最高，较慢）；遇到源文件或系统兼容性问题时，实际耗时可能比预计更长。HDR 源走硬件 `hevc_videotoolbox` main10 并透传 HDR10 色彩元数据（mastering-display / max-cll 保留），与软件 libx265 路径画质元数据等价。
-- **自适应压制并发**：硬件后端下自动比设置值多并行一路压制（上限 4），整体吞吐更高；兼容路径维持原值，避免多路任务互相拖慢。
-- **烧录编码可选**：设置 →「烧录与转码」新增「烧录编码」：跟随源（HEVC 源保 HEVC、保 HDR、体积更小）/ 始终 H.264（兼容最好，几乎所有设备与网页都能播）。
+- **Hardware encode acceleration (VideoToolbox)**: burn-in and transcode can go to the Mac's hardware media engine — faster, more power-efficient 4K encoding. Settings → "Burn-in & transcode" adds three "encoding" modes: Auto (hardware first, recommended) / Hardware / Software (highest quality, slower); source-file or system compatibility issues may take longer than expected. HDR sources go through hardware `hevc_videotoolbox` main10 with HDR10 color metadata passthrough (mastering-display / max-cll preserved), matching the software libx265 path's quality metadata.
+- **Adaptive burn-in concurrency**: under the hardware backend, one extra burn-in runs in parallel beyond the configured value (cap 4) for higher throughput; the compatibility path keeps the original value to avoid tasks dragging each other down.
+- **Selectable burn-in encoding**: Settings → "Burn-in & transcode" adds "burn-in encoding": follow source (HEVC source stays HEVC, keeps HDR, smaller) / always H.264 (best compatibility, plays almost everywhere).
 
-### 修复 / 改进
+### Fixes / improvements
 
-- **修复转码无进度条**：下载后转码阶段现在实时显示进度（此前缺 `-progress` 输出，进度条不动）。
-- **修复 HEVC 源烧字幕被降级成 H.264**：跟随源编码时 HEVC 4K 源烧完字幕仍是 HEVC，不再悄悄降到 H.264、掉码率掉分辨率。
-- **修复「缩放到 1080p」关闭后不生效**：关闭该开关现在能持久化（此前因 `maxBurnHeight` 为空被序列化省略、重新加载又当成默认 1080，导致关闭存不住，仍压成 1080）。
-- **AI 总结高光改为海浪效果**：计算中的「正在理解视频内容」文案改为逐字连续起伏的海浪高光（波峰沿文字滚过、字符上浮提亮，扫完留一段平静间隔再涌起），取代此前整行一道的线性流光；尊重「减弱动态效果」。
-- **AI 翻译 / AI 总结的「单独配置」补齐拉取模型与测试连接**：与主「AI 设置」一致，可先填地址+凭证、拉取服务端真实模型列表再选，并测试连接。
+- **Fixed missing transcode progress bar**: the post-download transcode stage now shows live progress (it previously lacked `-progress` output, so the bar didn't move).
+- **Fixed HEVC-source subtitle burn-in being downgraded to H.264**: with follow-source encoding, a HEVC 4K source stays HEVC after burn-in instead of quietly dropping to H.264 and losing bitrate/resolution.
+- **Fixed "scale to 1080p" off not taking effect**: turning the toggle off now persists (previously `maxBurnHeight` being empty was omitted on serialization and re-read as the 1080 default, so "off" wasn't saved and it still encoded to 1080).
+- **AI-summary highlight changed to a wave effect**: the in-progress "understanding the video" text now uses a continuous per-character wave highlight (a crest rolls across the text, characters lift and brighten, then a calm gap before it swells again), replacing the previous single linear sweep; respects "reduce motion."
+- **"Configure separately" for AI translation / summary gains fetch-models and test-connection**: like the main "AI settings," you can enter URL + credential, fetch the server's real model list, and test the connection.
 
-### 测试
+### Tests
 
-- 新增编码器选择矩阵单测（硬件 / 软件 × 源编码 × HDR × 强制 H.264，含硬件不可用回退）、转码硬件路径与 HDR main10 元数据、编码后端与烧录编码设置的持久化、硬件后端有效并发数等。
-- ffmpeg 端到端验证三条关键路径：SDR HEVC 保 HEVC、强制 H.264、HDR 硬件 main10 保留 PQ 元数据。
+- Added an encoder-selection matrix unit test (hardware / software × source codec × HDR × force-H.264, including hardware-unavailable fallback), transcode hardware paths and HDR main10 metadata, encode-backend and burn-in-encoding persistence, effective concurrency under the hardware backend, and more.
+- ffmpeg end-to-end verified three key paths: SDR HEVC keep HEVC, force H.264, and HDR hardware main10 preserving PQ metadata.
 
 ## 0.4.0
 
-产品于本版本正式定名为 **月之门**。这是一次大更新，集中在 macOS 端的 AI 能力、HDR 支持与自助更新。
+The product is officially named **Moongate** in this version. This is a major update centered on macOS AI capabilities, HDR support, and self-update.
 
-### 新增
+### Added
 
-- **产品定名「月之门」**：应用名、窗口标题、Dock、关于面板、安装包均为「月之门」；Bundle 标识 `com.moongate.app`，安装为 `/Applications/月之门.app`，Tahoe 分层图标对齐。
-- **AI 视频总结**：选片页一键用 AI 概述视频内容（数据源优先字幕、回退视频简介），下载前确认不下错；计算时为 Apple Intelligence 风格的跑马灯流光边框，完成后结果展开动画。
-- **HDR / 杜比视界下载**：解析识别每档清晰度的 HDR 片源，选片页提供「HDR」开关；HDR 默认 mkv 封装保真。
-- **下载后转码 / remux**：选片页可选输出格式（保持源 / MP4 H.264 / MP4 H.265 / MKV）。同编码换容器走 remux（无损秒级），跨编码转码；HDR 转 H.265 用 libx265 10-bit 保留 HDR，转 H.264 会 tonemap 成 SDR 并提示。
-- **HDR 保真烧字幕**：在 HDR 画面上烧录中文字幕（libx265 10-bit + HDR10 元数据透传），字幕为 SDR 颜色；libx265 不可用时回退 tonemap 成 SDR。
-- **统一「AI 设置」**：翻译与总结共享一份默认 AI 配置，各自可「跟随默认」或单独配置；新增 Apple Translation（低延迟/高保真）、Apple Intelligence 本地、PCC/Cloud Pro 引擎（按系统能力诚实判断可用性）。
-- **未登录引导**：检测到 YouTube / B 站等需要登录导致失败时，失败页提供「去登录」按钮，弹站点登录页保存 cookies 后重试。
-- **远程更新**：设置 → 更新可检查并全自动下载安装新版（来源 GitHub Releases，校验下载地址与 bundle 标识，替换后自动重启），失败有「去 GitHub 下载」兜底。
-- **依赖组件管理升级**：依赖区折叠化（全就绪折一行、有缺失自动展开），新增「删除依赖」（红色警示 + 二次确认），安装/卸载逐项显示旋转→绿勾的递进状态。
+- **Product name "月之门"**: the app name, window title, Dock, About panel, and installer are all "月之门"; bundle id `com.moongate.app`, installed as `/Applications/月之门.app`, with a Tahoe layered icon aligned.
+- **AI video summary**: one-click AI summary of the video on the picker page (subtitles first, video description as fallback) so you can confirm before downloading; an Apple Intelligence-style flowing-border highlight while computing, with a reveal animation when done.
+- **HDR / Dolby Vision download**: resolution detects the HDR source per quality tier; the picker page offers an "HDR" toggle; HDR defaults to mkv to preserve fidelity.
+- **Post-download transcode / remux**: the picker page offers an output format (keep source / MP4 H.264 / MP4 H.265 / MKV). Same codec with a new container remuxes (lossless, seconds); cross-codec transcodes; HDR→H.265 keeps HDR with libx265 10-bit, HDR→H.264 tonemaps to SDR with a heads-up.
+- **HDR-safe subtitle burn-in**: burns subtitles over HDR footage (libx265 10-bit + HDR10 metadata passthrough), subtitles in SDR color; falls back to SDR tonemapping when libx265 is unavailable.
+- **Unified "AI settings"**: translation and summary share one default AI config; each can "follow the default" or be configured separately; adds Apple Translation (low-latency/high-fidelity), on-device Apple Intelligence, and PCC/Cloud Pro engines (availability judged honestly by system capability).
+- **Sign-in guidance**: when a YouTube / Bilibili login requirement causes a failure, the failure page offers a "Sign in" button, opens the site login to save cookies, and retries.
+- **Remote update**: Settings → Update can check and fully auto-download/install a new version (from GitHub Releases, verifying the download URL and bundle id, auto-restarting after replacement), with a "download from GitHub" fallback on failure.
+- **Dependency management upgrade**: the dependency area collapses (one line when all ready, auto-expands when something's missing), adds "delete dependency" (red warning + confirmation), and shows per-item spinner→green-check progress for install/uninstall.
 
-### 修复 / 改进
+### Fixes / improvements
 
-- 修复「打开依赖配置」必崩：依赖体检（会 spawn ffmpeg 子进程）移出 SwiftUI 视图初始化路径，改异步后台执行，避免 AttributeGraph 重入崩溃。
-- 修复改名（视频下载器→月之门）导致的登录态丢失：cookies 迁移与 settings 读取解耦。
-- 修复改名后 Tahoe 分层图标失效（actool 资产名与 `CFBundleIconName` 对齐）。
-- bilibili 等站点的 HTTP 412 风控失败不再误报「页面加载失败」，给出诚实的风控提示（等待/换网络/勿反复登录）；风控不再被误判为「需要登录」。
-- 下载后处理阶段显示具体步骤（正在合并音视频 / 转码 / 提取音频 / 转换字幕），不再笼统显示「处理中」。
-- 设置面板的「AI 翻译 / AI 总结」改为「跟随默认 / 单独配置」的简单选择。
-- 主界面粘贴按钮改为胶囊样式。
-- 安装目标从 `~/Applications` 改为 `/Applications`（访达「应用程序」直接可见）。
-- VoiceOver：Apple 引擎状态面板的源语言选择器与恢复按钮恢复可独立聚焦。
-- 设置内进入依赖向导不再丢失未保存的草稿。
+- Fixed a guaranteed crash on "open dependency setup": the dependency health check (which spawns an ffmpeg child process) moved out of the SwiftUI view init path to async background execution, avoiding an AttributeGraph re-entrancy crash.
+- Fixed login loss caused by the rename (video downloader → Moongate): cookie migration is decoupled from settings reading.
+- Fixed the Tahoe layered icon breaking after the rename (actool asset name aligned with `CFBundleIconName`).
+- bilibili-style HTTP 412 throttling failures no longer misreport as "page load failed," giving an honest throttling hint (wait / switch network / don't repeatedly sign in); throttling is no longer mistaken for "needs login."
+- The post-download stage shows the specific step (merging audio/video / transcoding / extracting audio / converting subtitles) instead of a generic "processing."
+- The settings panel's "AI translation / AI summary" becomes a simple "follow default / configure separately" choice.
+- The main-screen paste button is now a capsule style.
+- The install target moved from `~/Applications` to `/Applications` (directly visible in Finder's "Applications").
+- VoiceOver: the source-language picker and reset button in the Apple-engine status panel can be focused independently again.
+- Entering the dependency wizard from settings no longer loses an unsaved draft.
 
-### 测试
+### Tests
 
-- 新增多组单元 / 边界测试：AI 设置迁移与有效配置、总结引擎能力守卫、HDR 解析与选择器、转码计划、HDR 烧录参数、登录检测、更新版本比较与下载安全校验等。
+- Added multiple unit / boundary tests: AI-settings migration and effective config, summary-engine capability guards, HDR resolution and picker, transcode planning, HDR burn-in parameters, login detection, update-version comparison and download-safety checks, and more.
