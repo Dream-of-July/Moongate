@@ -17,6 +17,7 @@ let usageText = """
 [--subs en,zh] [--auto-subs en] [--dest 路径]
   moongate-cli translate <srt路径> [--style bilingual|zh] [--provider anthropic|openai] [--engine 引擎] [--base 服务地址] [--model 模型] [--token 凭证]
   moongate-cli clean-srt <srt路径>          （只清洗不翻译，输出 <名>.clean.srt，便于检查清洗效果）
+  moongate-cli local-asr-srt --asr-words <json> --language <lang> --out <srt路径>
   moongate-cli burn <视频> <srt> [--max-height N | --keep-resolution]
   moongate-cli ping-llm [--provider anthropic|openai] [--engine 引擎] [--base 服务地址] [--model 模型] [--token 凭证]
 
@@ -24,13 +25,67 @@ let usageText = """
   --provider/--engine/--base/--model/--token 缺省读 App 设置；--token 仅供本机调试，输出时只显示前 6 位。
   --engine 支持 \(TranslationEngine.supportedCLIValues.joined(separator: " / "))。
   公司 Claude 网关通常用 --provider anthropic --base "$ANTHROPIC_BASE_URL" --token "$ANTHROPIC_AUTH_TOKEN"。
-  burn 默认按设置里的最大高度缩放（缺省 1080p）；--max-height N 覆盖、--keep-resolution 保持源分辨率。
+  burn 默认保持源分辨率；--max-height N 可显式限制高度，--keep-resolution 强制保持源分辨率。
 """
 
 func splitLangs(_ value: String) -> [String] {
     value.split(separator: ",")
         .map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { !$0.isEmpty }
+}
+
+struct ASRWordsJSON: Decodable {
+    struct Word: Decodable {
+        let start: Double
+        let end: Double
+        let text: String
+        let probability: Double?
+
+        private enum CodingKeys: String, CodingKey {
+            case start
+            case end
+            case text
+            case probability
+        }
+    }
+
+    let language: String?
+    let words: [Word]
+}
+
+func writeLocalASRSRT(wordsJSON: URL, languageCode: String, outputURL: URL) throws {
+    let payload = try JSONDecoder().decode(ASRWordsJSON.self, from: Data(contentsOf: wordsJSON))
+    let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    let transcript = ASRTranscript(
+        id: outputURL.deletingPathExtension().lastPathComponent,
+        languageCode: language.isEmpty ? (payload.language ?? "und") : language,
+        durationSeconds: nil,
+        words: payload.words.map {
+            ASRWord(
+                text: $0.text,
+                startSeconds: $0.start,
+                endSeconds: $0.end,
+                probability: $0.probability
+            )
+        },
+        sourceModelID: "subtitle_timing_eval"
+    )
+    let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+    guard !cues.isEmpty else {
+        throw MoongateError.translateFailed("Local ASR words did not contain any usable timed speech.")
+    }
+    try FileManager.default.createDirectory(
+        at: outputURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    let raw = cues.map { cue in
+        """
+        \(cue.index)
+        \(cue.start) --> \(cue.end)
+        \(cue.text)
+        """
+    }.joined(separator: "\n\n") + "\n"
+    try raw.write(to: outputURL, atomically: true, encoding: .utf8)
 }
 
 /// 凭证脱敏：只显示前 6 位，绝不回显完整值。
@@ -212,7 +267,7 @@ do {
             for subtitle in info.subtitles {
                 let flag = subtitle.isAuto ? "--auto-subs" : "--subs"
                 let mark = subtitle.isAuto ? "（自动生成）" : ""
-                print("  - \(subtitle.label)\(mark)   \(flag) \(subtitle.id)")
+                print("  - \(subtitle.label)\(mark)   \(flag) \(subtitle.languageCode)")
             }
         }
 
@@ -310,6 +365,38 @@ do {
         let result = try cleanSRTFile(at: srtURL)
         print("解析 \(result.parsed) 条 → 清洗后 \(result.cleaned) 条")
         print("输出：\(result.output.path)")
+
+    case "local-asr-srt":
+        var wordsURL: URL?
+        var languageCode = ""
+        var outputURL: URL?
+        var index = 1
+        while index < cliArguments.count {
+            let flag = cliArguments[index]
+            guard index + 1 < cliArguments.count else {
+                printErr("选项 \(flag) 缺少取值。")
+                exit(1)
+            }
+            let value = cliArguments[index + 1]
+            switch flag {
+            case "--asr-words":
+                wordsURL = URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
+            case "--language":
+                languageCode = value
+            case "--out":
+                outputURL = URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
+            default:
+                printErr("未知选项：\(flag)\n" + usageText)
+                exit(1)
+            }
+            index += 2
+        }
+        guard let wordsURL, let outputURL else {
+            printErr("local-asr-srt 需要 --asr-words 与 --out。\n" + usageText)
+            exit(1)
+        }
+        try writeLocalASRSRT(wordsJSON: wordsURL, languageCode: languageCode, outputURL: outputURL)
+        print("输出：\(outputURL.path)")
 
     case "burn":
         guard cliArguments.count >= 3 else {

@@ -2,10 +2,14 @@ namespace Moongate.Core;
 
 public enum QueueProgressPhase
 {
-    Download,
-    Transcode,
-    Translate,
-    Burn,
+    Download = 0,
+    Transcode = 1,
+    Translate = 2,
+    Burn = 3,
+    ModelDownload = 4,
+    AudioExtract = 5,
+    SpeechRecognition = 6,
+    SubtitleSegment = 7,
 }
 
 public sealed record QueueProgressPlan
@@ -22,6 +26,97 @@ public sealed record QueueProgressPlan
     }
 }
 
+public readonly record struct TaskWorkPhase
+{
+    public QueueProgressPhase Phase { get; init; }
+    public double Units { get; init; }
+
+    public TaskWorkPhase(QueueProgressPhase phase, double units)
+    {
+        Phase = phase;
+        Units = Math.Max(0, units);
+    }
+}
+
+public sealed record TaskWorkPlan
+{
+    public IReadOnlyList<TaskWorkPhase> Phases { get; }
+
+    public double TotalUnits => Phases.Sum(phase => phase.Units);
+
+    public TaskWorkPlan(IEnumerable<TaskWorkPhase> phases)
+    {
+        Phases = phases.Where(phase => phase.Units > 0).ToList();
+    }
+
+    public TaskWorkPlan(QueueProgressPlan queuePlan)
+        : this(queuePlan.Phases.Select(phase => new TaskWorkPhase(phase, units: 1)))
+    {
+    }
+
+    public TaskWorkPlan(
+        bool shouldDownloadModel = false,
+        bool shouldExtractAudio = false,
+        bool shouldRunASR = false,
+        bool shouldSegmentSubtitles = false,
+        bool shouldTranscode = false,
+        bool shouldTranslate = false,
+        bool shouldBurn = false,
+        double modelDownloadUnits = 1,
+        double downloadUnits = 1,
+        double audioExtractUnits = 1,
+        double speechRecognitionUnits = 1,
+        double subtitleSegmentUnits = 1,
+        double transcodeUnits = 1,
+        double translateUnits = 1,
+        double burnUnits = 1)
+        : this(BuildPhases(
+            shouldDownloadModel,
+            shouldExtractAudio,
+            shouldRunASR,
+            shouldSegmentSubtitles,
+            shouldTranscode,
+            shouldTranslate,
+            shouldBurn,
+            modelDownloadUnits,
+            downloadUnits,
+            audioExtractUnits,
+            speechRecognitionUnits,
+            subtitleSegmentUnits,
+            transcodeUnits,
+            translateUnits,
+            burnUnits))
+    {
+    }
+
+    private static IEnumerable<TaskWorkPhase> BuildPhases(
+        bool shouldDownloadModel,
+        bool shouldExtractAudio,
+        bool shouldRunASR,
+        bool shouldSegmentSubtitles,
+        bool shouldTranscode,
+        bool shouldTranslate,
+        bool shouldBurn,
+        double modelDownloadUnits,
+        double downloadUnits,
+        double audioExtractUnits,
+        double speechRecognitionUnits,
+        double subtitleSegmentUnits,
+        double transcodeUnits,
+        double translateUnits,
+        double burnUnits)
+    {
+        if (shouldDownloadModel) yield return new TaskWorkPhase(QueueProgressPhase.ModelDownload, modelDownloadUnits);
+        yield return new TaskWorkPhase(QueueProgressPhase.Download, downloadUnits);
+        if (shouldExtractAudio) yield return new TaskWorkPhase(QueueProgressPhase.AudioExtract, audioExtractUnits);
+        if (shouldRunASR) yield return new TaskWorkPhase(QueueProgressPhase.SpeechRecognition, speechRecognitionUnits);
+        if (shouldSegmentSubtitles) yield return new TaskWorkPhase(QueueProgressPhase.SubtitleSegment, subtitleSegmentUnits);
+        if (shouldTranscode) yield return new TaskWorkPhase(QueueProgressPhase.Transcode, transcodeUnits);
+        if (shouldTranslate) yield return new TaskWorkPhase(QueueProgressPhase.Translate, translateUnits);
+        if (shouldBurn) yield return new TaskWorkPhase(QueueProgressPhase.Burn, burnUnits);
+    }
+}
+
 public readonly record struct RemainingEstimate(double Seconds, bool IsApproximate);
 
 public readonly record struct TaskProgressSnapshot(
@@ -31,6 +126,7 @@ public readonly record struct TaskProgressSnapshot(
     bool IsTerminal)
 {
     public QueueProgressPlan? Plan { get; init; }
+    public TaskWorkPlan? WorkPlan { get; init; }
     public QueueProgressPhase? CurrentPhase { get; init; }
 
     public TaskProgressSnapshot(
@@ -39,10 +135,12 @@ public readonly record struct TaskProgressSnapshot(
         bool IsEstimatingRemaining,
         bool IsTerminal,
         QueueProgressPlan? Plan,
-        QueueProgressPhase? CurrentPhase)
+        QueueProgressPhase? CurrentPhase,
+        TaskWorkPlan? WorkPlan = null)
         : this(OverallProgress, RemainingSeconds, IsEstimatingRemaining, IsTerminal)
     {
         this.Plan = Plan;
+        this.WorkPlan = WorkPlan;
         this.CurrentPhase = CurrentPhase;
     }
 }
@@ -66,12 +164,25 @@ public static class QueueProgressEstimator
         double? phaseProgress,
         double? previousOverallProgress)
     {
-        if (plan.Phases.Count == 0) return previousOverallProgress;
+        return TaskOverallProgress(
+            new TaskWorkPlan(plan),
+            currentPhase,
+            phaseProgress,
+            previousOverallProgress);
+    }
+
+    public static double? TaskOverallProgress(
+        TaskWorkPlan workPlan,
+        QueueProgressPhase? currentPhase,
+        double? phaseProgress,
+        double? previousOverallProgress)
+    {
+        if (workPlan.TotalUnits <= 0) return previousOverallProgress;
         if (currentPhase is not { } phase) return previousOverallProgress;
         var index = -1;
-        for (var i = 0; i < plan.Phases.Count; i++)
+        for (var i = 0; i < workPlan.Phases.Count; i++)
         {
-            if (plan.Phases[i] == phase)
+            if (workPlan.Phases[i].Phase == phase)
             {
                 index = i;
                 break;
@@ -80,8 +191,8 @@ public static class QueueProgressEstimator
         if (index < 0) return previousOverallProgress;
 
         var current = NormalizedFraction(phaseProgress) ?? 0;
-        var phaseWeight = 1.0 / plan.Phases.Count;
-        var computed = index * phaseWeight + current * phaseWeight;
+        var completedUnits = workPlan.Phases.Take(index).Sum(item => item.Units);
+        var computed = (completedUnits + current * workPlan.Phases[index].Units) / workPlan.TotalUnits;
         var previous = NormalizedFraction(previousOverallProgress);
         return previous is { } p ? Math.Max(p, computed) : computed;
     }
@@ -142,7 +253,7 @@ public static class QueueProgressEstimator
 
         var overall = Math.Clamp(total / items.Count, 0, 1);
         var open = items.Where(item => !item.IsTerminal).ToList();
-        if (!open.Any(item => item.Plan is not null))
+        if (!open.Any(item => item.Plan is not null || item.WorkPlan is not null))
         {
             var remaining = open
                 .Select(item => item.RemainingSeconds)
@@ -162,7 +273,8 @@ public static class QueueProgressEstimator
         foreach (var item in open)
         {
             var taskRemaining = 0.0;
-            if (item.Plan is not { } plan)
+            var workPlan = item.WorkPlan ?? (item.Plan is { } queuePlan ? new TaskWorkPlan(queuePlan) : null);
+            if (workPlan is null)
             {
                 if (ValidSeconds(item.RemainingSeconds) is { } seconds)
                 {
@@ -180,7 +292,7 @@ public static class QueueProgressEstimator
             int nextIndex;
             if (item.CurrentPhase is { } currentPhase)
             {
-                var index = plan.Phases.ToList().IndexOf(currentPhase);
+                var index = workPlan.Phases.ToList().FindIndex(item => item.Phase == currentPhase);
                 if (index >= 0)
                 {
                     if (ValidSeconds(item.RemainingSeconds) is { } seconds)
@@ -196,21 +308,22 @@ public static class QueueProgressEstimator
                 }
                 else
                 {
-                    nextIndex = CompletedPhaseCount(item, plan);
+                    nextIndex = CompletedPhaseCount(workPlan, NormalizedFraction(item.OverallProgress) ?? 0);
                 }
             }
             else
             {
-                nextIndex = CompletedPhaseCount(item, plan);
+                nextIndex = CompletedPhaseCount(workPlan, NormalizedFraction(item.OverallProgress) ?? 0);
             }
 
-            for (var i = nextIndex; i < plan.Phases.Count; i++)
+            for (var i = nextIndex; i < workPlan.Phases.Count; i++)
             {
-                var phase = plan.Phases[i];
-                if (phaseMedianDurations.TryGetValue(phase, out var seconds) && ValidSeconds(seconds) is { } valid)
+                var phase = workPlan.Phases[i];
+                if (phaseMedianDurations.TryGetValue(phase.Phase, out var secondsPerUnit) && ValidSeconds(secondsPerUnit) is { } valid)
                 {
-                    AddWork(phaseWork, phase, valid);
-                    taskRemaining += valid;
+                    var seconds = valid * phase.Units;
+                    AddWork(phaseWork, phase.Phase, seconds);
+                    taskRemaining += seconds;
                 }
                 else
                 {
@@ -239,10 +352,18 @@ public static class QueueProgressEstimator
         return number;
     }
 
-    private static int CompletedPhaseCount(TaskProgressSnapshot item, QueueProgressPlan plan)
+    private static int CompletedPhaseCount(TaskWorkPlan plan, double overallProgress)
     {
-        var completed = (int)Math.Floor((NormalizedFraction(item.OverallProgress) ?? 0) * plan.Phases.Count + 0.0001);
-        return Math.Clamp(completed, 0, plan.Phases.Count);
+        var completedUnits = overallProgress * plan.TotalUnits;
+        var running = 0.0;
+        var count = 0;
+        foreach (var phase in plan.Phases)
+        {
+            if (running + phase.Units > completedUnits + 0.0001) break;
+            running += phase.Units;
+            count++;
+        }
+        return Math.Clamp(count, 0, plan.Phases.Count);
     }
 
     private static void AddWork(Dictionary<QueueProgressPhase, double> work, QueueProgressPhase phase, double seconds)

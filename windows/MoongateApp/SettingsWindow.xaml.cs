@@ -27,6 +27,7 @@ public partial class SettingsWindow : Window
         Updater = App.WindowsUpdater;
         DataContext = _vm;
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         // PasswordBox 不支持数据绑定，初值与变更都走代码同步。
         AITokenBox.Password = _vm.AIAuthToken;
         TokenBox.Password = _vm.AuthToken;
@@ -47,6 +48,8 @@ public partial class SettingsWindow : Window
             Updater.CheckAutomaticSilent();
             // 结构化依赖体检（可执行性/能力），细化「已安装」之外的损坏/缺能力状态。
             _ = _vm.RefreshDependencyHealthAsync();
+            // 计算 App-owned 目录占用（后台线程），填充存储管理页大小。
+            _ = _vm.CalculateStorageSizesAsync();
         };
     }
 
@@ -118,6 +121,46 @@ public partial class SettingsWindow : Window
             confirmText: Loc.S("L.Settings.ClearLogins"));
         if (!confirmed) return;
         _vm.ClearAllLogins();
+    }
+
+    // MARK: - 存储管理
+
+    /// <summary>在资源管理器中打开某 App-owned 目录（按钮 Tag 携带路径）。</summary>
+    private void OnOpenStorageFolderClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: string path } || path.Length == 0) return;
+        try
+        {
+            if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+            if (!OperatingSystem.IsWindows()) return;
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception error)
+        {
+            _vm.Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+    }
+
+    private void OnDeleteAsrModelsClick(object sender, RoutedEventArgs e)
+    {
+        var confirmed = ConfirmWindow.Show(
+            this,
+            Loc.S("L.Settings.StorageDeleteModelsConfirm"),
+            Loc.S("L.Settings.StorageDeleteModelsDetail"),
+            confirmText: Loc.S("L.Settings.StorageDelete"));
+        if (!confirmed) return;
+        _vm.DeleteAllAsrModels();
+    }
+
+    private void OnClearUpdateCacheClick(object sender, RoutedEventArgs e)
+    {
+        var confirmed = ConfirmWindow.Show(
+            this,
+            Loc.S("L.Settings.StorageClearCacheConfirm"),
+            Loc.S("L.Settings.StorageClearCacheDetail"),
+            confirmText: Loc.S("L.Settings.StorageClear"));
+        if (!confirmed) return;
+        _vm.ClearUpdateCache();
     }
 
     // MARK: - 依赖组件

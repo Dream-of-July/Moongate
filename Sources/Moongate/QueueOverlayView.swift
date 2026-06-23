@@ -9,6 +9,7 @@ import MoongateCore
 struct QueueOverlayView: View {
     @ObservedObject var queue: QueueManager
     @Binding var expanded: Bool
+    var onConfigureLocalASR: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var localizer: Localizer
 
@@ -18,6 +19,8 @@ struct QueueOverlayView: View {
                 if expanded {
                     QueueSectionView(queue: queue) {
                         expanded = false
+                    } onConfigureLocalASR: {
+                        onConfigureLocalASR()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.regularMaterial)

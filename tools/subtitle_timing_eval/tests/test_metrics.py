@@ -11,27 +11,81 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from subtitle_timing_eval import pipeline
+from subtitle_timing_eval.asr import parse_whisper_cpp_words, whisper_cpp_language
 from subtitle_timing_eval.cli import main as cli_main
 from subtitle_timing_eval.comparison import compare_reports, summarize_suite
-from subtitle_timing_eval.metrics import cue_tokens, evaluate_cues, offset_words, summarize_report, weak_boundary
+from subtitle_timing_eval.metrics import cue_tokens, evaluate_cues, evaluate_cues_against_reference_cues, offset_words, summarize_report, weak_boundary
 from subtitle_timing_eval.pipeline import (
+    audit_manual_caption_suite,
+    build_auto_reference_qa_records,
+    build_completion_audit,
     build_prepare_commands,
+    build_iteration_report,
     build_qa_packet,
     build_suite_runbook,
     build_translation_timing_proxy_srt,
     collect_eval_status,
+    collect_manual_suite_status,
     extract_srt_words,
     extract_vtt_words,
+    evaluate_reference_files,
     filter_cues_by_window,
     materialize_existing_comparisons,
+    render_qa_checklist_markdown,
+    render_qa_remaining_queue_markdown,
     render_qa_review_html,
     render_qa_markdown,
+    select_manual_caption_suite,
     summarize_qa_verdicts,
     validate_manifest,
 )
 from subtitle_timing_eval.srt import Cue, parse_srt
 from subtitle_timing_eval.vad import detect_speech_segments_from_samples
 from subtitle_timing_eval.vtt import parse_vtt_cues, parse_vtt_word_timestamps
+
+
+class AsrParsingTests(unittest.TestCase):
+    def test_parse_whisper_cpp_words_uses_token_offsets_and_filters_markers(self):
+        root = {
+            "result": {"language": "ja"},
+            "transcription": [
+                {
+                    "offsets": {"from": 0, "to": 1500},
+                    "text": "コーペンちゃん 梅",
+                    "tokens": [
+                        {"text": "[_BEG_]", "offsets": {"from": 0, "to": 0}, "p": 0.9},
+                        {"text": "コーペンちゃん", "offsets": {"from": 100, "to": 900}, "p": 0.8},
+                        {"text": "[_TT_100]", "offsets": {"from": 900, "to": 900}, "p": 0.2},
+                        {"text": "梅", "offsets": {"from": 950, "to": 1300}, "p": 0.7},
+                    ],
+                }
+            ],
+        }
+
+        words = parse_whisper_cpp_words(root)
+
+        self.assertEqual([word["text"] for word in words], ["コーペンちゃん", "梅"])
+        self.assertAlmostEqual(words[0]["start"], 0.1, places=3)
+        self.assertAlmostEqual(words[0]["end"], 0.9, places=3)
+        self.assertEqual(words[0]["probability"], 0.8)
+        self.assertEqual(whisper_cpp_language(root, "auto"), "ja")
+
+    def test_parse_whisper_cpp_words_falls_back_to_segment_text(self):
+        root = {
+            "params": {"language": "en"},
+            "transcription": [
+                {
+                    "timestamps": {"from": "00:00:02,500", "to": "00:00:03,750"},
+                    "text": "Hello there.",
+                    "tokens": [],
+                }
+            ],
+        }
+
+        words = parse_whisper_cpp_words(root)
+
+        self.assertEqual(words, [{"start": 2.5, "end": 3.75, "text": "Hello there."}])
+        self.assertEqual(whisper_cpp_language(root, None), "en")
 
 
 class SrtParsingTests(unittest.TestCase):
@@ -255,6 +309,37 @@ class TimingMetricTests(unittest.TestCase):
         self.assertEqual(report["cues"][0]["match_method"], "text")
         self.assertTrue(report["cues"][0]["accepted"])
 
+    def test_evaluate_cues_matches_joined_latin_words_to_asr_fragments(self):
+        cues = [
+            Cue(index=1, start=76.56, end=80.20, text="Quando a palestra não é dada em inglês como é o caso"),
+        ]
+        words = [
+            {"start": 76.36, "end": 76.70, "text": "Quando"},
+            {"start": 76.70, "end": 76.82, "text": "a"},
+            {"start": 76.82, "end": 77.05, "text": "pal"},
+            {"start": 77.05, "end": 77.35, "text": "estra"},
+            {"start": 77.35, "end": 77.58, "text": "não"},
+            {"start": 77.58, "end": 77.70, "text": "é"},
+            {"start": 77.70, "end": 77.82, "text": "d"},
+            {"start": 77.82, "end": 78.00, "text": "ada"},
+            {"start": 78.00, "end": 78.10, "text": "em"},
+            {"start": 78.10, "end": 78.34, "text": "ingl"},
+            {"start": 78.34, "end": 78.58, "text": "ês"},
+            {"start": 78.58, "end": 78.80, "text": "como"},
+            {"start": 78.80, "end": 78.92, "text": "é"},
+            {"start": 78.92, "end": 79.05, "text": "o"},
+            {"start": 79.05, "end": 79.35, "text": "caso"},
+        ]
+
+        report = evaluate_cues(cues, words, sample_id="latin_joined_fragments")
+        row = report["cues"][0]
+
+        self.assertEqual(cue_tokens("inglês"), ["inglês"])
+        self.assertEqual(row["match_method"], "text")
+        self.assertAlmostEqual(row["reference_start"], 76.36, places=2)
+        self.assertAlmostEqual(row["reference_end"], 79.35, places=2)
+        self.assertTrue(row["accepted"])
+
     def test_evaluate_cues_text_matches_cjk_words_with_multi_character_chunks(self):
         cues = [
             Cue(index=1, start=10.00, end=11.90, text="日本行きたい"),
@@ -438,6 +523,29 @@ class TimingMetricTests(unittest.TestCase):
         self.assertAlmostEqual(overlap_report["cues"][0]["reference_start"], 10.10, places=2)
         self.assertTrue(overlap_report["cues"][0]["accepted"])
 
+    def test_overlap_alignment_does_not_swallow_next_dense_cjk_word(self):
+        cues = [
+            Cue(index=1, start=0.35, end=4.61, text="现在只17块钱1717对"),
+        ]
+        words = [
+            {"start": 0.15, "end": 0.48, "text": "现在"},
+            {"start": 0.48, "end": 0.63, "text": "只"},
+            {"start": 0.73, "end": 1.20, "text": "17"},
+            {"start": 1.20, "end": 1.44, "text": "块"},
+            {"start": 1.44, "end": 1.70, "text": "钱"},
+            {"start": 1.85, "end": 2.56, "text": "17"},
+            {"start": 2.71, "end": 3.32, "text": "17"},
+            {"start": 3.47, "end": 4.54, "text": "对"},
+            {"start": 4.69, "end": 6.04, "text": "嗨"},
+        ]
+
+        report = evaluate_cues(cues, words, sample_id="dense_cjk_overlap", alignment_mode="overlap")
+        row = report["cues"][0]
+
+        self.assertAlmostEqual(row["reference_end"], 4.54, places=2)
+        self.assertEqual(row["early_cutoff_ms"], 0.0)
+        self.assertTrue(row["accepted"])
+
     def test_evaluate_cues_prefers_near_partial_latin_match_over_far_exact_repeat(self):
         cues = [
             Cue(index=1, start=10.00, end=12.40, text="Allow me to say, I am a linguist."),
@@ -486,6 +594,44 @@ class TimingMetricTests(unittest.TestCase):
         self.assertFalse(rows[1]["accepted"])
         self.assertGreater(rows[2]["early_cutoff_ms"], 150)
         self.assertFalse(rows[2]["accepted"])
+
+    def test_reference_cue_alignment_scores_candidate_against_human_timing(self):
+        reference = [
+            Cue(index=1, start=1.00, end=3.00, text="Human translation A"),
+            Cue(index=2, start=4.00, end=6.00, text="Human translation B"),
+        ]
+        candidate = [
+            Cue(index=1, start=1.05, end=3.20, text="候选翻译 A"),
+            Cue(index=2, start=4.20, end=5.70, text="候选翻译 B"),
+        ]
+
+        report = evaluate_cues_against_reference_cues(candidate, reference, sample_id="human_ref")
+        summary = summarize_report(report)
+
+        self.assertEqual(report["alignment_mode"], "reference_cue")
+        self.assertTrue(report["cues"][0]["accepted"])
+        self.assertEqual(report["cues"][0]["match_method"], "reference_overlap")
+        self.assertFalse(report["cues"][1]["accepted"])
+        self.assertGreater(report["cues"][1]["early_cutoff_ms"], 150)
+        self.assertEqual(summary["accepted_ratio"], 0.5)
+
+    def test_reference_cue_alignment_allows_contiguous_split_inside_human_cue(self):
+        reference = [
+            Cue(index=1, start=10.00, end=20.00, text="Human long translation with an aside"),
+        ]
+        candidate = [
+            Cue(index=1, start=10.00, end=15.00, text="候选翻译上半句"),
+            Cue(index=2, start=15.00, end=20.00, text="候选翻译下半句"),
+        ]
+
+        report = evaluate_cues_against_reference_cues(candidate, reference, sample_id="human_ref_split")
+        summary = summarize_report(report)
+
+        self.assertTrue(report["cues"][0]["accepted"])
+        self.assertTrue(report["cues"][1]["accepted"])
+        self.assertEqual(report["cues"][0]["reference_end"], 15.0)
+        self.assertEqual(report["cues"][1]["reference_start"], 15.0)
+        self.assertEqual(summary["accepted_ratio"], 1.0)
 
 
 class VadTests(unittest.TestCase):
@@ -655,6 +801,38 @@ class ComparisonTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
+    def _write_passing_comparison(self, root: Path, sample_id: str, language_group: str, accepted_ratio: float = 1.0) -> None:
+        sample_dir = root / sample_id
+        sample_dir.mkdir(parents=True)
+        (sample_dir / "comparison.json").write_text(json.dumps({
+            "sample_id": sample_id,
+            "language_group": language_group,
+            "gate_mode": "timing",
+            "optimized": {
+                "passes_timing_gate": True,
+                "summary": {"accepted_ratio": accepted_ratio},
+                "gate_failures": [],
+            },
+        }), encoding="utf-8")
+        (sample_dir / "baseline.report.json").write_text(json.dumps({
+            "window_start_seconds": 0,
+            "window_end_seconds": 120,
+            "cues": [{"index": 1, "start": 1.0, "end": 3.0, "text": "baseline"}],
+        }), encoding="utf-8")
+        (sample_dir / "optimized.report.json").write_text(json.dumps({
+            "window_start_seconds": 0,
+            "window_end_seconds": 120,
+            "cues": [{
+                "index": 1,
+                "start": 1.0,
+                "end": 3.0,
+                "text": "optimized",
+                "accepted": True,
+                "start_error_ms": 0,
+                "end_error_ms": 0,
+            }],
+        }), encoding="utf-8")
+
     def test_prepare_commands_default_to_audio_only_for_eval_smoke(self):
         sample = {
             "id": "sample",
@@ -721,6 +899,31 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(any(command.startswith("ffmpeg ") and "sample.section.wav" in command for command in flattened))
         self.assertTrue(any("--skip-download" in command and "--convert-subs srt" in command for command in flattened))
         self.assertTrue(any("--skip-download" in command and "--convert-subs" not in command for command in flattened))
+
+    def test_prepare_sample_writes_blocker_when_media_download_is_bot_gated(self):
+        sample = {
+            "id": "sample",
+            "source": "https://www.youtube.com/watch?v=example",
+            "subtitle_lang": "pt",
+            "section": {"start_seconds": 60, "duration_seconds": 120},
+        }
+        error = subprocess.CalledProcessError(
+            1,
+            ["yt-dlp"],
+            stderr="Sign in to confirm you’re not a bot",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(pipeline, "run_command", side_effect=error), patch("builtins.print"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    pipeline.prepare_sample(sample, artifacts_root=temp_dir)
+
+            blocker = json.loads((Path(temp_dir) / "sample" / "blocker.prepare.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(blocker["sample_id"], "sample")
+        self.assertEqual(blocker["stage"], "prepare")
+        self.assertEqual(blocker["reason"], "youtube_bot_gate")
+        self.assertIn("Sign in to confirm", blocker["message"])
 
     def test_filter_cues_by_window_keeps_only_overlapping_sample_section(self):
         cues = [
@@ -856,6 +1059,79 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(row["weak_boundary"])
         self.assertTrue(row["accepted"])
 
+    def test_reference_metrics_cli_writes_human_reference_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = root / "candidate.srt"
+            reference = root / "reference.srt"
+            output = root / "reference.report.json"
+            reference.write_text(
+                "1\n00:00:10,000 --> 00:00:12,000\nHuman line.\n",
+                encoding="utf-8",
+            )
+            candidate.write_text(
+                "1\n00:00:10,050 --> 00:00:12,100\nCandidate line.\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "reference-metrics",
+                "--candidate",
+                str(candidate),
+                "--reference",
+                str(reference),
+                "--sample-id",
+                "human_reference",
+                "--window-start-seconds",
+                "10",
+                "--window-end-seconds",
+                "13",
+                "--out",
+                str(output),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["alignment_mode"], "reference_cue")
+        self.assertEqual(payload["summary"]["accepted_ratio"], 1.0)
+        self.assertEqual(payload["window_start_seconds"], 10.0)
+        self.assertEqual(payload["window_end_seconds"], 13.0)
+
+    def test_evaluate_files_can_offset_section_relative_candidate_cues(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = root / "local-asr.srt"
+            words = root / "words.json"
+            report_path = root / "report.json"
+            candidate.write_text(
+                "1\n00:00:00,200 --> 00:00:01,000\nHello there.\n",
+                encoding="utf-8",
+            )
+            words.write_text(json.dumps({
+                "words": [
+                    {"start": 0.20, "end": 0.55, "text": "Hello"},
+                    {"start": 0.56, "end": 1.00, "text": "there"},
+                ]
+            }), encoding="utf-8")
+
+            report = pipeline.evaluate_files(
+                str(candidate),
+                str(words),
+                sample_id="section-relative",
+                output_path=str(report_path),
+                asr_offset_seconds=90.0,
+                candidate_offset_seconds=90.0,
+                window_start=90.0,
+                window_end=92.0,
+            )
+
+        self.assertEqual(report["cue_count"], 1)
+        self.assertEqual(report["cues"][0]["start"], 90.2)
+        self.assertTrue(report["cues"][0]["accepted"])
+
     def test_build_suite_runbook_includes_manifest_coverage_and_overlap_translation(self):
         manifest = {
             "coverage_goal": {"required_language_groups": ["en", "translated"]},
@@ -893,6 +1169,15 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([sample["sample_id"] for sample in runbook["samples"]], ["english", "translated"])
         translated = runbook["samples"][1]
         self.assertEqual(translated["language_group"], "translated")
+        english = runbook["samples"][0]
+        self.assertIn("local_asr_source_srt", english["artifacts"])
+        self.assertIn("local_asr_srt", english["commands"])
+        self.assertIn("local-asr-srt", english["commands"]["local_asr_srt"])
+        self.assertIn("--asr-words", english["commands"]["local_asr_srt"])
+        self.assertIn("local-asr.en.srt", english["artifacts"]["local_asr_source_srt"])
+        self.assertIn("local-asr.en.srt", " ".join(english["commands"]["optimized_metrics"]))
+        self.assertIn("--candidate-offset-seconds", english["commands"]["optimized_metrics"])
+        self.assertIn("10.0", english["commands"]["optimized_metrics"])
         self.assertIn("--alignment-mode", translated["commands"]["baseline_metrics"])
         self.assertIn("overlap", translated["commands"]["baseline_metrics"])
         self.assertIn("--alignment-mode", translated["commands"]["optimized_metrics"])
@@ -903,6 +1188,258 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("status", runbook["status_completion_command"])
         self.assertIn("custom/samples.json", runbook["status_completion_command"])
         self.assertIn("artifacts/subtitle_timing_eval/status.current.json", " ".join(runbook["status_completion_command"]))
+
+    def test_build_suite_runbook_can_use_local_whisper_cpp_asr(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["ja"]},
+            "samples": [
+                {
+                    "id": "koupen",
+                    "source": "https://www.youtube.com/watch?v=q4Fgq49ivbA",
+                    "category": "japanese_animation",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"start_seconds": 0, "duration_seconds": 112},
+                },
+            ],
+        }
+
+        runbook = build_suite_runbook(
+            manifest,
+            artifacts_root="artifacts/subtitle_timing_eval",
+            asr_engine="whisper-cpp",
+            whisper_cli="/opt/homebrew/bin/whisper-cli",
+            model_path="/Users/xianjingheng/Library/Application Support/月之门/asr/models/ggml-large-v3-turbo-q5_0.bin",
+            ffmpeg="/opt/homebrew/bin/ffmpeg",
+            whisper_cpp_no_gpu=True,
+        )
+
+        command = runbook["samples"][0]["commands"]["asr"]
+        self.assertIn("--engine", command)
+        self.assertIn("whisper-cpp", command)
+        self.assertIn("--whisper-cli", command)
+        self.assertIn("/opt/homebrew/bin/whisper-cli", command)
+        self.assertIn("--model-path", command)
+        self.assertIn("ggml-large-v3-turbo-q5_0.bin", " ".join(command))
+        self.assertIn("--ffmpeg", command)
+        self.assertIn("--no-gpu", command)
+
+    def test_build_suite_runbook_can_scope_to_manual_selection(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "zh", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "mandarin_translated",
+                    "source": "https://www.youtube.com/watch?v=zh_en",
+                    "category": "translated_public_subtitle",
+                    "language_group": "translated",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions", "translated_timing"],
+                },
+                {
+                    "id": "unselected_japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 2,
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+                {"id": "mandarin_translated", "suite_language": "zh"},
+            ],
+        }
+
+        runbook = build_suite_runbook(
+            manifest,
+            artifacts_root="artifacts/subtitle_timing_eval",
+            manifest_path="custom/samples.json",
+            selection=selection,
+            selection_path="artifacts/subtitle_timing_eval/manual-suite.current.json",
+        )
+
+        self.assertEqual(runbook["runbook_scope"], "manual_suite")
+        self.assertEqual(runbook["required_language_groups"], ["en", "zh"])
+        self.assertEqual([sample["sample_id"] for sample in runbook["samples"]], ["english", "mandarin_translated"])
+        self.assertEqual(runbook["samples"][1]["language_group"], "zh")
+        self.assertNotIn("unselected_japanese", " ".join(runbook["suite_command"]))
+        self.assertIn("manual-suite-status", runbook["status_completion_command"])
+        self.assertIn("manual-suite.current.json", " ".join(runbook["status_completion_command"]))
+
+    def test_build_suite_runbook_only_incomplete_filters_selected_suite_status(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "zh", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "mandarin_translated",
+                    "source": "https://www.youtube.com/watch?v=zh_en",
+                    "category": "translated_public_subtitle",
+                    "language_group": "translated",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions", "translated_timing"],
+                },
+                {
+                    "id": "unselected_japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 2,
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+                {"id": "mandarin_translated", "suite_language": "zh"},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            runbook = build_suite_runbook(
+                manifest,
+                artifacts_root=temp_dir,
+                selection=selection,
+                only_incomplete=True,
+            )
+
+        self.assertEqual(runbook["runbook_scope"], "manual_suite_incomplete")
+        self.assertEqual([sample["sample_id"] for sample in runbook["samples"]], ["english", "mandarin_translated"])
+        self.assertEqual(runbook["filtered_out_sample_ids"], [])
+
+    def test_runbook_cli_can_scope_to_incomplete_manual_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            selection_path = root / "manual-suite.json"
+            output = root / "runbook.json"
+            artifacts = root / "artifacts"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "zh"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                    {
+                        "id": "mandarin_translated",
+                        "source": "https://www.youtube.com/watch?v=zh_en",
+                        "category": "translated_public_subtitle",
+                        "language_group": "translated",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["zh"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions", "translated_timing"],
+                    },
+                    {
+                        "id": "mandarin_source",
+                        "source": "https://www.youtube.com/watch?v=zh",
+                        "category": "mandarin_talk",
+                        "language_group": "zh",
+                        "subtitle_lang": "zh",
+                        "spoken_languages": ["zh"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                ],
+            }), encoding="utf-8")
+            selection_path.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 2,
+                "selected": [
+                    {"id": "english", "suite_language": "en"},
+                    {"id": "mandarin_translated", "suite_language": "zh"},
+                ],
+            }), encoding="utf-8")
+            english_dir = artifacts / "english"
+            english_dir.mkdir(parents=True)
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "runbook",
+                "--manifest",
+                str(manifest_path),
+                "--selection",
+                str(selection_path),
+                "--artifacts",
+                str(artifacts),
+                "--only-incomplete",
+                "--out",
+                str(output),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["runbook_scope"], "manual_suite_incomplete")
+        self.assertEqual([sample["sample_id"] for sample in payload["samples"]], ["english", "mandarin_translated"])
+        self.assertIn("manual-suite-status", payload["status_completion_command"])
 
     def test_collect_eval_status_reports_missing_and_failing_language_groups(self):
         manifest = {
@@ -1130,6 +1667,67 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(status["samples"]["english"]["status"], "insufficient_window")
         self.assertEqual(status["samples"]["english"]["comparison_window_seconds"], 30.0)
         self.assertEqual(status["samples"]["english"]["manifest_window_seconds"], 300.0)
+
+    def test_collect_eval_status_prefers_sufficient_timing_over_preserve_comparison(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "english_interview",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"start_seconds": 0, "duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            report_window = {
+                "sample_id": "english",
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [
+                    {"index": 1, "start": 1.0, "end": 3.0, "text": "Hello"}
+                ],
+            }
+            for token in ["timing", "preserve"]:
+                (english_dir / f"baseline.{token}.report.json").write_text(json.dumps(report_window), encoding="utf-8")
+                (english_dir / f"optimized.{token}.report.json").write_text(json.dumps(report_window), encoding="utf-8")
+            (english_dir / "comparison.timing.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": False,
+                    "summary": {"accepted_ratio": 0.5},
+                    "gate_failures": ["accepted_ratio"],
+                },
+            }), encoding="utf-8")
+            (english_dir / "comparison.preserve.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            status = collect_eval_status(manifest, temp_dir)
+
+        self.assertFalse(status["passes_strict_timing_gate"])
+        self.assertFalse(status["passes_sample_completion_gate"])
+        self.assertEqual(status["failing_samples"], ["english"])
+        self.assertEqual(status["failing_strict_timing_language_groups"], ["en"])
+        self.assertEqual(status["samples"]["english"]["gate_mode"], "timing")
+        self.assertEqual(status["samples"]["english"]["comparison"].split("/")[-1], "comparison.timing.json")
 
     def test_status_cli_can_require_sample_completion_gate(self):
         manifest = {
@@ -1407,6 +2005,239 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(segment["optimized_start"], 45.0)
         self.assertEqual(segment["optimized_end"], 46.0)
 
+    def test_build_qa_packet_flags_text_quality_risk_for_machine_accepted_gibberish(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "title": "English sample",
+                    "source": "https://www.youtube.com/watch?v=abc123",
+                    "category": "english_interview",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"start_seconds": 40, "duration_seconds": 120},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample_dir = Path(temp_dir) / "english"
+            sample_dir.mkdir()
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0, "cue_count": 1},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {"index": 1, "start": 45.0, "end": 47.0, "text": "These are the engine cores"},
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 45.0,
+                        "end": 47.0,
+                        "text": "sand wich zebra xray quantum static",
+                        "accepted": True,
+                        "start_error_ms": 0,
+                        "end_error_ms": 0,
+                        "early_cutoff_ms": 0,
+                        "late_hold_ms": 0,
+                        "long_idle_hold_ms": 0,
+                        "weak_boundary": False,
+                    },
+                ],
+            }), encoding="utf-8")
+
+            packet = build_qa_packet(manifest, temp_dir, max_segments_per_group=1, segment_mode="representative")
+
+        segment = packet["language_groups"][0]["segments"][0]
+        self.assertIn("low_text_overlap", segment["text_quality_flags"])
+
+        checklist = render_qa_checklist_markdown(packet)
+
+        self.assertIn("Text Risk", checklist)
+        self.assertIn("low_text_overlap", checklist)
+
+    def test_build_qa_packet_can_scope_to_manual_suite_selection(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "title": "English sample",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"start_seconds": 0, "duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese",
+                    "title": "Japanese sample",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"start_seconds": 0, "duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected": [{"id": "japanese", "suite_language": "ja"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for sample_id, group in [("english", "en"), ("japanese", "ja")]:
+                sample_dir = Path(temp_dir) / sample_id
+                sample_dir.mkdir()
+                (sample_dir / "comparison.json").write_text(json.dumps({
+                    "sample_id": sample_id,
+                    "language_group": group,
+                    "gate_mode": "timing",
+                    "optimized": {
+                        "passes_timing_gate": True,
+                        "summary": {"accepted_ratio": 1.0},
+                        "gate_failures": [],
+                    },
+                }), encoding="utf-8")
+                (sample_dir / "baseline.report.json").write_text(json.dumps({
+                    "window_start_seconds": 0,
+                    "window_end_seconds": 120,
+                    "cues": [{"index": 1, "start": 1.0, "end": 2.0, "text": "%s baseline" % sample_id}],
+                }), encoding="utf-8")
+                (sample_dir / "optimized.report.json").write_text(json.dumps({
+                    "window_start_seconds": 0,
+                    "window_end_seconds": 120,
+                    "cues": [{"index": 1, "start": 1.0, "end": 2.0, "text": "%s optimized" % sample_id, "accepted": True}],
+                }), encoding="utf-8")
+
+            packet = build_qa_packet(manifest, temp_dir, max_segments_per_group=1, selection=selection)
+
+        self.assertEqual(packet["status"]["report_scope"], "manual_suite")
+        self.assertEqual(packet["status"]["selected_sample_ids"], ["japanese"])
+        self.assertEqual([group["language_group"] for group in packet["language_groups"]], ["ja"])
+        self.assertEqual(packet["language_groups"][0]["segments"][0]["sample_id"], "japanese")
+
+    def test_build_qa_packet_representative_mode_prefers_accepted_middle_rows(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "title": "English sample",
+                    "source": "https://www.youtube.com/watch?v=abc123",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"start_seconds": 0, "duration_seconds": 120},
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample_dir = Path(temp_dir) / "english"
+            sample_dir.mkdir()
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 0.9},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [
+                    {"index": 1, "start": 1.0, "end": 2.0, "text": "bad baseline"},
+                    {"index": 2, "start": 4.0, "end": 7.0, "text": "good baseline"},
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 1.0,
+                        "end": 2.0,
+                        "duration": 1.0,
+                        "text": "bad row",
+                        "accepted": False,
+                        "start_error_ms": -700,
+                        "end_error_ms": 950,
+                    },
+                    {
+                        "index": 2,
+                        "start": 4.1,
+                        "end": 7.0,
+                        "duration": 2.9,
+                        "text": "good row",
+                        "accepted": True,
+                        "start_error_ms": 100,
+                        "end_error_ms": 0,
+                    },
+                ],
+            }), encoding="utf-8")
+
+            risk_packet = build_qa_packet(manifest, temp_dir, max_segments_per_group=1)
+            packet = build_qa_packet(
+                manifest,
+                temp_dir,
+                max_segments_per_group=1,
+                segment_mode="representative",
+            )
+
+        self.assertEqual(risk_packet["language_groups"][0]["segments"][0]["optimized_text"], "bad row")
+        self.assertEqual(packet["language_groups"][0]["segments"][0]["optimized_text"], "good row")
+
+    def test_build_auto_reference_qa_records_marks_source_and_skips_rejected_rows(self):
+        packet = {
+            "status": {"segment_mode": "representative"},
+            "language_groups": [
+                {
+                    "language_group": "en",
+                    "segments": [
+                        {"sample_id": "a", "accepted": True, "start_error_ms": 20, "end_error_ms": 40},
+                        {"sample_id": "b", "accepted": False, "start_error_ms": 700, "end_error_ms": 20},
+                    ],
+                }
+            ],
+        }
+
+        result = build_auto_reference_qa_records(packet)
+
+        self.assertEqual(result["verdict_source"], "auto_reference")
+        self.assertEqual(result["record_count"], 1)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["records"][0]["human_verdict"], "PASS")
+        self.assertEqual(result["records"][0]["verdict_source"], "auto_reference")
+
     def test_summarize_qa_verdicts_requires_passes_per_language_group(self):
         markdown = (
             "# Subtitle Timing QA Packet\n\n"
@@ -1450,6 +2281,52 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(summary["language_groups"]["en"]["unchecked_count"], 1)
         self.assertEqual(summary["language_groups"]["zh"]["fail_count"], 1)
         self.assertEqual(summary["failing_language_groups"], ["en", "zh"])
+
+    def test_summarize_qa_verdicts_tracks_text_risk_verdicts_and_notes(self):
+        markdown = (
+            "# Subtitle Timing QA Checklist\n\n"
+            "## en\n\n"
+            "| Review ID | Review Time | Cue | Suggested | Text Risk | Accepted | Start ms | End ms | Hold ms | Baseline | Optimized | Human Verdict | Notes |\n"
+            "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n"
+            "| en:english:1 | url | english | auto_reference:PASS | low_text_overlap | True | 0 | 0 | 0 | a | b | PASS |  |\n"
+            "| en:english:2 | url | english | auto_reference:PASS | expanded_vs_reference | True | 0 | 0 | 0 | a | b | FAIL | bad text |\n"
+            "| en:english:3 | url | english | auto_reference:PASS | low_text_overlap | True | 0 | 0 | 0 | a | b |  |  |\n"
+            "| en:english:4 | url | english | auto_reference:PASS |  | True | 0 | 0 | 0 | a | a | PASS | normal |\n"
+        )
+
+        summary = summarize_qa_verdicts(markdown, required_language_groups=["en"], min_pass_per_group=2)
+        group = summary["language_groups"]["en"]
+
+        self.assertEqual(group["text_risk_count"], 3)
+        self.assertEqual(group["text_risk_pass_count"], 1)
+        self.assertEqual(group["text_risk_fail_count"], 1)
+        self.assertEqual(group["text_risk_unchecked_count"], 1)
+        self.assertEqual(group["text_risk_pass_without_notes_count"], 1)
+        self.assertEqual(group["text_risk_pass_without_notes"][0]["review_id"], "en:english:1")
+
+    def test_summarize_qa_verdicts_can_require_notes_for_text_risk_passes(self):
+        markdown = (
+            "# Subtitle Timing QA Checklist\n\n"
+            "## en\n\n"
+            "| Review ID | Review Time | Cue | Suggested | Text Risk | Accepted | Start ms | End ms | Hold ms | Baseline | Optimized | Human Verdict | Notes |\n"
+            "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n"
+            "| en:english:1 | url | english | auto_reference:PASS | low_text_overlap | True | 0 | 0 | 0 | a | b | PASS |  |\n"
+            "| en:english:2 | url | english | auto_reference:PASS |  | True | 0 | 0 | 0 | a | a | PASS | normal |\n"
+        )
+
+        summary = summarize_qa_verdicts(
+            markdown,
+            required_language_groups=["en"],
+            min_pass_per_group=2,
+            require_text_risk_notes=True,
+        )
+        group = summary["language_groups"]["en"]
+
+        self.assertFalse(summary["passes_qa_gate"])
+        self.assertTrue(summary["requires_text_risk_notes"])
+        self.assertEqual(summary["failing_language_groups"], ["en"])
+        self.assertEqual(group["pass_count"], 2)
+        self.assertEqual(group["text_risk_pass_without_notes_count"], 1)
 
     def test_qa_verdicts_cli_writes_summary_before_require_pass_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1502,6 +2379,59 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(payload["passes_qa_gate"])
         self.assertEqual(payload["language_groups"]["en"]["unchecked_count"], 1)
 
+    def test_qa_verdicts_cli_can_require_text_risk_pass_notes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            qa_report = root / "qa.md"
+            output = root / "qa.verdicts.json"
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=example",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            qa_report.write_text(
+                "# Subtitle Timing QA Checklist\n\n"
+                "## en\n\n"
+                "| Review ID | Review Time | Cue | Text Risk | Human Verdict | Notes |\n"
+                "| --- | --- | --- | --- | --- | --- |\n"
+                "| en:english:1 | url | sample-a | low_text_overlap | PASS |  |\n"
+                "| en:english:2 | url | sample-b |  | PASS | checked |\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-verdicts",
+                "--manifest",
+                str(manifest),
+                "--qa-report",
+                str(qa_report),
+                "--out",
+                str(output),
+                "--require-text-risk-notes",
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("qa verdict gate failed", str(failure.exception))
+        self.assertFalse(payload["passes_qa_gate"])
+        self.assertTrue(payload["requires_text_risk_notes"])
+        self.assertEqual(payload["language_groups"]["en"]["text_risk_pass_without_notes_count"], 1)
+
     def test_qa_verdicts_cli_accepts_review_json_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1547,6 +2477,338 @@ class PipelineTests(unittest.TestCase):
 
         self.assertTrue(payload["passes_qa_gate"])
         self.assertEqual(payload["language_groups"]["en"]["pass_count"], 2)
+
+    def test_qa_verdicts_cli_accepts_auto_reference_records_export(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            review_json = root / "qa.autofill.json"
+            output = root / "qa.verdicts.json"
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=example",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            review_json.write_text(json.dumps({
+                "verdict_source": "auto_reference",
+                "records": [
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                ],
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-verdicts",
+                "--manifest",
+                str(manifest),
+                "--review-json",
+                str(review_json),
+                "--out",
+                str(output),
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["passes_qa_gate"])
+        self.assertEqual(payload["language_groups"]["en"]["pass_count"], 2)
+
+    def test_qa_verdicts_cli_rejects_auto_reference_when_human_source_required(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            review_json = root / "qa.autofill.json"
+            output = root / "qa.verdicts.json"
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=example",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            review_json.write_text(json.dumps({
+                "verdict_source": "auto_reference",
+                "records": [
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                ],
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-verdicts",
+                "--manifest",
+                str(manifest),
+                "--review-json",
+                str(review_json),
+                "--out",
+                str(output),
+                "--require-human-source",
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("qa verdict gate failed", str(failure.exception))
+        self.assertFalse(payload["passes_qa_gate"])
+        self.assertEqual(payload["language_groups"]["en"]["non_human_source_count"], 2)
+
+    def test_qa_verdicts_cli_accepts_human_review_source_when_required(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            review_json = root / "qa.verdicts.review.json"
+            output = root / "qa.verdicts.json"
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=example",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            review_json.write_text(json.dumps({
+                "reviews": [
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "human_review"},
+                    {"language_group": "en", "sample_id": "english", "human_verdict": "PASS", "verdict_source": "human_review"},
+                ]
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-verdicts",
+                "--manifest",
+                str(manifest),
+                "--review-json",
+                str(review_json),
+                "--out",
+                str(output),
+                "--require-human-source",
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["passes_qa_gate"])
+        self.assertEqual(payload["language_groups"]["en"]["non_human_source_count"], 0)
+
+    def test_qa_verdicts_cli_uses_selection_languages_as_required_groups(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            selection = root / "manual-suite.json"
+            qa_report = root / "qa.md"
+            output = root / "qa.verdicts.json"
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "ja"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    },
+                    {
+                        "id": "japanese",
+                        "source": "https://www.youtube.com/watch?v=ja",
+                        "category": "japanese_talk",
+                        "language_group": "ja",
+                        "subtitle_lang": "ja",
+                        "spoken_languages": ["ja"],
+                        "section": {"duration_seconds": 120},
+                    },
+                ],
+            }), encoding="utf-8")
+            selection.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 1,
+                "selected": [{"id": "japanese", "suite_language": "ja"}],
+            }), encoding="utf-8")
+            qa_report.write_text(
+                "# Subtitle Timing QA Packet\n\n"
+                "## ja\n\n"
+                "| Review Time | Cue | Accepted | Start ms | End ms | Hold ms | Baseline | Optimized | Human Verdict | Notes |\n"
+                "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n"
+                "| url | sample-a | True | 0 | 0 | 0 | a | a | PASS | checked |\n"
+                "| url | sample-b | True | 0 | 0 | 0 | b | b | PASS | checked |\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-verdicts",
+                "--manifest",
+                str(manifest),
+                "--selection",
+                str(selection),
+                "--qa-report",
+                str(qa_report),
+                "--out",
+                str(output),
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["passes_qa_gate"])
+        self.assertEqual(payload["required_language_groups"], ["ja"])
+        self.assertNotIn("en", payload["failing_language_groups"])
+
+    def test_render_qa_checklist_markdown_shows_suggestions_without_counting_as_human_verdicts(self):
+        packet = {
+            "status": {
+                "passes_timing_gate": True,
+                "passes_sample_completion_gate": True,
+                "sample_count": 1,
+                "comparison_count": 1,
+                "segment_mode": "representative",
+                "timing_language_groups": ["en"],
+                "preservation_language_groups": [],
+                "missing_samples": [],
+                "blocked_samples": [],
+                "failing_samples": [],
+            },
+            "language_groups": [
+                {
+                    "language_group": "en",
+                    "segments": [
+                        {
+                            "sample_id": "english",
+                            "url": "https://www.youtube.com/watch?v=abc123&t=45s",
+                            "accepted": True,
+                            "start_error_ms": 0,
+                            "end_error_ms": 0,
+                            "late_hold_ms": 0,
+                            "baseline_text": "Original line",
+                            "optimized_text": "Optimized line",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        markdown = render_qa_checklist_markdown(packet, {
+            "records": [
+                {
+                    "review_id": "en:english:1",
+                    "human_verdict": "PASS",
+                    "verdict_source": "auto_reference",
+                }
+            ]
+        })
+        summary = summarize_qa_verdicts(markdown, required_language_groups=["en"], min_pass_per_group=1)
+
+        self.assertIn("Subtitle Timing QA Checklist", markdown)
+        self.assertIn("auto_reference:PASS", markdown)
+        self.assertIn("Review ID", markdown)
+        self.assertIn("en:english:1", markdown)
+        self.assertIn("Human Verdict", markdown)
+        self.assertFalse(summary["passes_qa_gate"])
+        self.assertEqual(summary["language_groups"]["en"]["unchecked_count"], 1)
+
+    def test_render_qa_remaining_queue_skips_human_reviewed_rows_only(self):
+        packet = {
+            "status": {
+                "passes_timing_gate": True,
+                "passes_sample_completion_gate": True,
+                "sample_count": 1,
+                "comparison_count": 1,
+                "segment_mode": "representative",
+                "timing_language_groups": ["en"],
+                "preservation_language_groups": [],
+                "missing_samples": [],
+                "blocked_samples": [],
+                "failing_samples": [],
+            },
+            "language_groups": [
+                {
+                    "language_group": "en",
+                    "segments": [
+                        {
+                            "sample_id": "english",
+                            "url": "https://www.youtube.com/watch?v=abc123&t=45s",
+                            "accepted": True,
+                            "start_error_ms": 0,
+                            "end_error_ms": 0,
+                            "late_hold_ms": 0,
+                            "baseline_text": "Original line",
+                            "optimized_text": "Optimized line",
+                        },
+                        {
+                            "sample_id": "english",
+                            "url": "https://www.youtube.com/watch?v=abc123&t=55s",
+                            "accepted": True,
+                            "start_error_ms": 100,
+                            "end_error_ms": 100,
+                            "late_hold_ms": 100,
+                            "baseline_text": "Second original",
+                            "optimized_text": "Second optimized",
+                            "text_quality_flags": ["low_text_overlap"],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        queue = render_qa_remaining_queue_markdown(
+            packet,
+            prefill_reviews={
+                "records": [
+                    {"review_id": "en:english:1", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                    {"review_id": "en:english:2", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                ]
+            },
+            human_reviews={
+                "reviews": [
+                    {"review_id": "en:english:1", "human_verdict": "PASS", "verdict_source": "human_review"}
+                ]
+            },
+        )
+
+        self.assertIn("human-reviewed rows: `1`", queue)
+        self.assertIn("remaining rows: `1`", queue)
+        self.assertIn("text-risk rows: `1`", queue)
+        self.assertIn("text-risk review IDs: `en:english:2`", queue)
+        self.assertIn("Review ID", queue)
+        self.assertIn("en:english:2", queue)
+        self.assertNotIn("t=45s", queue)
+        self.assertIn("t=55s", queue)
+        self.assertIn("auto_reference:PASS", queue)
 
     def test_render_qa_review_html_embeds_local_media_and_verdict_controls(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1622,7 +2884,22 @@ class PipelineTests(unittest.TestCase):
                 ],
             }
 
-            html = render_qa_review_html(packet, manifest, str(root), str(output))
+            html = render_qa_review_html(
+                packet,
+                manifest,
+                str(root),
+                str(output),
+                prefill_reviews={
+                    "records": [
+                        {
+                            "review_id": "en:english:1",
+                            "human_verdict": "PASS",
+                            "verdict_source": "auto_reference",
+                            "notes": "Auto-reference metrics passed.",
+                        }
+                    ]
+                },
+            )
 
         self.assertIn("english.section.wav#t=3.250,7.750", html)
         self.assertIn("https://www.youtube.com/watch?v=abc123&t=45s", html)
@@ -1632,6 +2909,11 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("data-window=\"optimized\"", html)
         self.assertIn("data-verdict=\"PASS\"", html)
         self.assertIn("data-verdict=\"FAIL\"", html)
+        self.assertIn("Suggested by", html)
+        self.assertIn("data-suggested-verdict", html)
+        self.assertIn("\"suggested_verdict\": \"PASS\"", html)
+        self.assertIn("verdict_source", html)
+        self.assertIn("human_review", html)
         self.assertIn("Export JSON", html)
 
     def test_render_qa_review_html_finds_media_next_to_comparison(self):
@@ -1684,6 +2966,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             manifest = root / "samples.json"
+            prefill = root / "qa.autofill.json"
             output = root / "qa.review.html"
             sample_dir = root / "english"
             sample_dir.mkdir()
@@ -1732,6 +3015,15 @@ class PipelineTests(unittest.TestCase):
                     }
                 ]
             }), encoding="utf-8")
+            prefill.write_text(json.dumps({
+                "records": [
+                    {
+                        "review_id": "en:english:1",
+                        "human_verdict": "PASS",
+                        "verdict_source": "auto_reference",
+                    }
+                ]
+            }), encoding="utf-8")
 
             with patch.object(sys, "argv", [
                 "subtitle_timing_eval",
@@ -1742,6 +3034,8 @@ class PipelineTests(unittest.TestCase):
                 str(root),
                 "--out",
                 str(output),
+                "--prefill-json",
+                str(prefill),
             ]):
                 with contextlib.redirect_stdout(io.StringIO()):
                     cli_main()
@@ -1750,7 +3044,295 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIn("Moongate Subtitle Timing QA", html)
         self.assertIn("english.section.wav#t=4.250,7.750", html)
+        self.assertIn("Suggested by", html)
         self.assertIn("Export Markdown", html)
+
+    def test_qa_checklist_cli_writes_suggestion_columns_from_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            prefill = root / "qa.autofill.json"
+            output = root / "qa.checklist.md"
+            sample_dir = root / "english"
+            sample_dir.mkdir()
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "title": "English sample",
+                        "source": "https://www.youtube.com/watch?v=abc123",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"start_seconds": 40, "duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {"passes_timing_gate": True, "summary": {"accepted_ratio": 1.0}},
+            }), encoding="utf-8")
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {"index": 1, "start": 45.0, "end": 47.0, "text": "Original line"}
+                ]
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 45.0,
+                        "end": 47.0,
+                        "text": "Optimized line",
+                        "accepted": True,
+                        "start_error_ms": 100,
+                        "end_error_ms": 200,
+                        "late_hold_ms": 200,
+                    }
+                ]
+            }), encoding="utf-8")
+            prefill.write_text(json.dumps({
+                "records": [
+                    {
+                        "review_id": "en:english:1",
+                        "human_verdict": "PASS",
+                        "verdict_source": "auto_reference",
+                    }
+                ]
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-checklist",
+                "--manifest",
+                str(manifest),
+                "--artifacts",
+                str(root),
+                "--out",
+                str(output),
+                "--prefill-json",
+                str(prefill),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            markdown = output.read_text(encoding="utf-8")
+
+        self.assertIn("Subtitle Timing QA Checklist", markdown)
+        self.assertIn("auto_reference:PASS", markdown)
+        self.assertIn("Human Verdict", markdown)
+
+    def test_qa_remaining_cli_writes_only_unreviewed_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            prefill = root / "qa.autofill.json"
+            human_reviews = root / "qa.review.json"
+            output = root / "qa.remaining.md"
+            sample_dir = root / "english"
+            sample_dir.mkdir()
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "title": "English sample",
+                        "source": "https://www.youtube.com/watch?v=abc123",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"start_seconds": 40, "duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {"passes_timing_gate": True, "summary": {"accepted_ratio": 1.0}},
+            }), encoding="utf-8")
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {"index": 1, "start": 45.0, "end": 47.0, "text": "Original line"},
+                    {"index": 2, "start": 55.0, "end": 57.0, "text": "Second original"},
+                ]
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 45.0,
+                        "end": 47.0,
+                        "text": "Optimized line",
+                        "accepted": True,
+                        "start_error_ms": 100,
+                        "end_error_ms": 200,
+                        "late_hold_ms": 200,
+                    },
+                    {
+                        "index": 2,
+                        "start": 55.0,
+                        "end": 57.0,
+                        "text": "Second optimized",
+                        "accepted": True,
+                        "start_error_ms": 50,
+                        "end_error_ms": 50,
+                        "late_hold_ms": 50,
+                    },
+                ]
+            }), encoding="utf-8")
+            prefill.write_text(json.dumps({
+                "records": [
+                    {"review_id": "en:english:1", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                    {"review_id": "en:english:2", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                ]
+            }), encoding="utf-8")
+            human_reviews.write_text(json.dumps({
+                "reviews": [
+                    {"review_id": "en:english:2", "human_verdict": "PASS", "verdict_source": "human_review"}
+                ]
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-remaining",
+                "--manifest",
+                str(manifest),
+                "--artifacts",
+                str(root),
+                "--out",
+                str(output),
+                "--prefill-json",
+                str(prefill),
+                "--human-review-json",
+                str(human_reviews),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            markdown = output.read_text(encoding="utf-8")
+
+        self.assertIn("Subtitle Timing QA Remaining Queue", markdown)
+        self.assertIn("human-reviewed rows: `1`", markdown)
+        self.assertIn("remaining rows: `1`", markdown)
+        self.assertNotIn("Optimized line", markdown)
+        self.assertIn("Second optimized", markdown)
+
+    def test_qa_remaining_cli_accepts_human_markdown_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            prefill = root / "qa.autofill.json"
+            human_report = root / "qa.review.md"
+            output = root / "qa.remaining.md"
+            sample_dir = root / "english"
+            sample_dir.mkdir()
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "title": "English sample",
+                        "source": "https://www.youtube.com/watch?v=abc123",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"start_seconds": 40, "duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {"passes_timing_gate": True, "summary": {"accepted_ratio": 1.0}},
+            }), encoding="utf-8")
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {"index": 1, "start": 45.0, "end": 47.0, "text": "Original line"},
+                    {"index": 2, "start": 55.0, "end": 57.0, "text": "Second original"},
+                ]
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 40,
+                "window_end_seconds": 160,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 45.0,
+                        "end": 47.0,
+                        "text": "Optimized line",
+                        "accepted": True,
+                        "start_error_ms": 100,
+                        "end_error_ms": 200,
+                        "late_hold_ms": 200,
+                    },
+                    {
+                        "index": 2,
+                        "start": 55.0,
+                        "end": 57.0,
+                        "text": "Second optimized",
+                        "accepted": True,
+                        "start_error_ms": 50,
+                        "end_error_ms": 50,
+                        "late_hold_ms": 50,
+                    },
+                ]
+            }), encoding="utf-8")
+            prefill.write_text(json.dumps({
+                "records": [
+                    {"review_id": "en:english:1", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                    {"review_id": "en:english:2", "human_verdict": "PASS", "verdict_source": "auto_reference"},
+                ]
+            }), encoding="utf-8")
+            human_report.write_text(
+                "# Subtitle Timing QA Checklist\n\n"
+                "## en\n\n"
+                "| Review ID | Review Time | Cue | Suggested | Start ms | End ms | Hold ms | Optimized | Human Verdict | Notes |\n"
+                "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |\n"
+                "| en:english:2 | https://www.youtube.com/watch?v=abc123&t=not-the-generated-time | english | auto_reference:PASS | 100 | 200 | 200 | Optimized line | PASS | checked |\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "qa-remaining",
+                "--manifest",
+                str(manifest),
+                "--artifacts",
+                str(root),
+                "--out",
+                str(output),
+                "--prefill-json",
+                str(prefill),
+                "--human-qa-report",
+                str(human_report),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            markdown = output.read_text(encoding="utf-8")
+
+        self.assertIn("human-reviewed rows: `1`", markdown)
+        self.assertIn("remaining rows: `1`", markdown)
+        self.assertNotIn("Optimized line", markdown)
+        self.assertIn("Second optimized", markdown)
 
     def test_materialize_existing_comparisons_pairs_matching_reports(self):
         manifest = {
@@ -1799,6 +3381,1532 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(comparison["gate_mode"], "preserve")
         self.assertTrue(comparison["optimized"]["passes_timing_gate"])
 
+    def test_materialize_existing_comparisons_uses_preserve_for_non_auto_human_caption_samples(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["es"]},
+            "samples": [
+                {
+                    "id": "spanish",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "spanish_talk",
+                    "language_group": "es",
+                    "subtitle_lang": "es",
+                    "spoken_languages": ["es"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["dense_speech"],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample_dir = Path(temp_dir) / "spanish"
+            sample_dir.mkdir()
+            baseline = evaluate_cues(
+                [Cue(index=1, start=1.0, end=3.0, text="Hola mundo")],
+                [{"start": 1.0, "end": 3.0, "text": "Hola"}, {"start": 3.0, "end": 3.1, "text": "mundo"}],
+                sample_id="spanish",
+            )
+            baseline["summary"] = summarize_report(baseline)
+            optimized = evaluate_cues(
+                [Cue(index=1, start=1.0, end=3.0, text="Hola mundo")],
+                [{"start": 1.0, "end": 3.0, "text": "Hola"}, {"start": 3.0, "end": 3.1, "text": "mundo"}],
+                sample_id="spanish",
+            )
+            optimized["summary"] = summarize_report(optimized)
+            (sample_dir / "baseline.report.json").write_text(json.dumps(baseline), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps(optimized), encoding="utf-8")
+
+            materialize_existing_comparisons(manifest, temp_dir)
+
+            comparison = json.loads((sample_dir / "comparison.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(comparison["gate_mode"], "preserve")
+
+    def test_select_manual_caption_suite_uses_seeded_distinct_language_manual_samples(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja", "es"]},
+            "samples": [
+                {
+                    "id": "english_manual_a",
+                    "source": "https://www.youtube.com/watch?v=en_a",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "english_manual_b",
+                    "source": "https://www.youtube.com/watch?v=en_b",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese_manual",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "spanish_public",
+                    "source": "https://www.youtube.com/watch?v=es_public",
+                    "category": "spanish_talk",
+                    "language_group": "es",
+                    "subtitle_lang": "es",
+                    "spoken_languages": ["es"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["dense_speech"],
+                },
+                {
+                    "id": "spanish_auto",
+                    "source": "https://www.youtube.com/watch?v=es_auto",
+                    "category": "spanish_auto",
+                    "language_group": "es-auto",
+                    "subtitle_lang": "es-orig",
+                    "spoken_languages": ["es"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["automatic_captions"],
+                },
+                {
+                    "id": "french_caption_kind_auto",
+                    "source": "https://www.youtube.com/watch?v=fr_auto",
+                    "category": "french_auto",
+                    "language_group": "fr",
+                    "subtitle_lang": "fr",
+                    "spoken_languages": ["fr"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["dense_speech"],
+                    "caption_kind": "automatic",
+                },
+                {
+                    "id": "german_reference_kind_autogenerated",
+                    "source": "https://www.youtube.com/watch?v=de_auto",
+                    "category": "german_auto",
+                    "language_group": "de",
+                    "subtitle_lang": "de",
+                    "spoken_languages": ["de"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["dense_speech"],
+                    "reference_kind": "auto-generated",
+                },
+            ],
+        }
+
+        first = select_manual_caption_suite(manifest, count=3, seed="suite-a")
+        second = select_manual_caption_suite(manifest, count=3, seed="suite-a")
+
+        self.assertTrue(first["ready"])
+        self.assertEqual(first["selected"], second["selected"])
+        self.assertEqual(first["selected_count"], 3)
+        self.assertEqual(len({item["language_group"] for item in first["selected"]}), 3)
+        self.assertIn("spanish_public", [item["id"] for item in first["selected"]])
+        self.assertNotIn("spanish_auto", [item["id"] for item in first["selected"]])
+        self.assertNotIn("french_caption_kind_auto", [item["id"] for item in first["selected"]])
+        self.assertNotIn("german_reference_kind_autogenerated", [item["id"] for item in first["selected"]])
+        self.assertEqual(sorted(first["available_language_groups"]), ["en", "es", "ja"])
+
+    def test_select_manual_caption_suite_reports_shortfall_for_ten_language_goal(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english_manual",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese_manual",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+
+        result = select_manual_caption_suite(manifest, count=10, seed="ten-language-smoke")
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["requested_count"], 10)
+        self.assertEqual(result["selected_count"], 2)
+        self.assertEqual(result["missing_distinct_language_count"], 8)
+        self.assertEqual(result["rejection_reason"], "not_enough_distinct_manual_caption_languages")
+
+    def test_select_manual_caption_suite_can_exclude_blocked_samples(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english_manual",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese_blocked",
+                    "source": "https://www.youtube.com/watch?v=blocked",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese_backup",
+                    "source": "https://www.youtube.com/watch?v=backup",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+
+        result = select_manual_caption_suite(
+            manifest,
+            count=2,
+            seed="blocked-ja",
+            excluded_sample_ids=["japanese_blocked"],
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["excluded_sample_ids"], ["japanese_blocked"])
+        self.assertEqual({item["suite_language"] for item in result["selected"]}, {"en", "ja"})
+        self.assertIn("japanese_backup", [item["id"] for item in result["selected"]])
+        self.assertNotIn("japanese_blocked", [item["id"] for item in result["selected"]])
+
+    def test_select_manual_caption_suite_deduplicates_by_spoken_language_not_translated_group(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["zh", "translated"]},
+            "samples": [
+                {
+                    "id": "mandarin_source",
+                    "source": "https://www.youtube.com/watch?v=zh",
+                    "category": "mandarin_talk",
+                    "language_group": "zh",
+                    "subtitle_lang": "zh-TW",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "mandarin_translated",
+                    "source": "https://www.youtube.com/watch?v=zh_en",
+                    "category": "translated_public_subtitle",
+                    "language_group": "translated",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions", "translated_timing"],
+                },
+            ],
+        }
+
+        result = select_manual_caption_suite(manifest, count=2, seed="spoken-language")
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["available_language_groups"], ["zh"])
+        self.assertEqual(result["selected_count"], 1)
+        self.assertEqual(result["missing_distinct_language_count"], 1)
+
+    def test_select_manual_suite_cli_writes_json_and_can_require_ready(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            output = root / "manual-suite.json"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english_manual",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    }
+                ],
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "select-manual-suite",
+                "--manifest",
+                str(manifest_path),
+                "--count",
+                "10",
+                "--seed",
+                "manual-qa",
+                "--out",
+                str(output),
+                "--require-ready",
+            ]):
+                with self.assertRaises(SystemExit) as context:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("manual suite is not ready", str(context.exception))
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["selected_count"], 1)
+        self.assertEqual(payload["missing_distinct_language_count"], 9)
+
+    def test_collect_manual_suite_status_filters_to_selected_source_languages(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "zh", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "mandarin_translated",
+                    "source": "https://www.youtube.com/watch?v=zh_en",
+                    "category": "translated_public_subtitle",
+                    "language_group": "translated",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions", "translated_timing"],
+                },
+                {
+                    "id": "unselected_japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 2,
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+                {"id": "mandarin_translated", "suite_language": "zh"},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 0.95},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            status = collect_manual_suite_status(manifest, selection, temp_dir)
+
+        self.assertFalse(status["passes_manual_suite_gate"])
+        self.assertEqual(status["required_language_groups"], ["en", "zh"])
+        self.assertEqual(status["missing_samples"], ["mandarin_translated"])
+        self.assertNotIn("unselected_japanese", status["missing_samples"])
+        self.assertEqual(status["samples"]["mandarin_translated"]["language_group"], "zh")
+
+    def test_collect_manual_suite_status_requires_strict_timing_not_only_preserve(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected": [{"id": "english", "suite_language": "en"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            status = collect_manual_suite_status(manifest, selection, temp_dir)
+
+        self.assertTrue(status["passes_language_coverage_gate"])
+        self.assertTrue(status["passes_sample_completion_gate"])
+        self.assertFalse(status["passes_strict_timing_gate"])
+        self.assertFalse(status["passes_manual_suite_gate"])
+        self.assertEqual(status["preservation_language_groups"], ["en"])
+        self.assertEqual(status["missing_strict_timing_language_groups"], ["en"])
+
+    def test_manual_suite_status_cli_writes_scoped_status_and_can_require_ready(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            selection_path = root / "manual-suite.json"
+            output = root / "manual-suite-status.json"
+            artifacts = root / "artifacts"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "zh"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                    {
+                        "id": "mandarin_translated",
+                        "source": "https://www.youtube.com/watch?v=zh_en",
+                        "category": "translated_public_subtitle",
+                        "language_group": "translated",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["zh"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions", "translated_timing"],
+                    },
+                    {
+                        "id": "unselected_mandarin",
+                        "source": "https://www.youtube.com/watch?v=zh",
+                        "category": "mandarin_talk",
+                        "language_group": "zh",
+                        "subtitle_lang": "zh",
+                        "spoken_languages": ["zh"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                ],
+            }), encoding="utf-8")
+            selection_path.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 2,
+                "selected": [
+                    {"id": "english", "suite_language": "en"},
+                    {"id": "mandarin_translated", "suite_language": "zh"},
+                ],
+            }), encoding="utf-8")
+            english_dir = artifacts / "english"
+            english_dir.mkdir(parents=True)
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "manual-suite-status",
+                "--manifest",
+                str(manifest_path),
+                "--selection",
+                str(selection_path),
+                "--artifacts",
+                str(artifacts),
+                "--out",
+                str(output),
+                "--require-ready",
+            ]):
+                with self.assertRaises(SystemExit) as context:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("manual suite gate failed", str(context.exception))
+        self.assertFalse(payload["passes_manual_suite_gate"])
+        self.assertEqual(payload["required_language_groups"], ["en", "zh"])
+        self.assertEqual(payload["missing_samples"], ["mandarin_translated"])
+        self.assertNotIn("unselected_mandarin", payload["missing_samples"])
+        self.assertEqual(payload["comparison_count"], 1)
+
+    def test_completion_audit_keeps_goal_open_until_human_qa_passes(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+                {
+                    "id": "japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 2,
+            "selected_count": 2,
+            "requires_human_captions": True,
+            "distinct_language_groups_required": True,
+            "seed": "unit-seed",
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+                {"id": "japanese", "suite_language": "ja"},
+            ],
+        }
+        passing_qa = {
+            "passes_qa_gate": True,
+            "failing_language_groups": [],
+            "verdict_input_type": "json",
+            "requires_human_source": True,
+            "language_groups": {
+                "en": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                "ja": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+            },
+        }
+        unchecked_human_qa = {
+            "passes_qa_gate": False,
+            "failing_language_groups": ["en", "ja"],
+            "language_groups": {
+                "en": {"pass_count": 0, "fail_count": 0, "unchecked_count": 2},
+                "ja": {"pass_count": 0, "fail_count": 0, "unchecked_count": 2},
+            },
+        }
+        audit = {"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_passing_comparison(root, "english", "en", accepted_ratio=1.0)
+            self._write_passing_comparison(root, "japanese", "ja", accepted_ratio=0.95)
+
+            result = build_completion_audit(
+                manifest,
+                selection,
+                temp_dir,
+                audit=audit,
+                auto_qa=passing_qa,
+                human_qa=unchecked_human_qa,
+                expected_count=2,
+            )
+
+        self.assertTrue(result["machine_ready"])
+        self.assertFalse(result["human_verified"])
+        self.assertFalse(result["goal_complete"])
+        self.assertIn("Finish human side-by-side QA", result["remaining_work"][0])
+        self.assertEqual(
+            [item["accepted_ratio"] for item in result["sample_results"]],
+            [1.0, 0.95],
+        )
+
+    def test_completion_audit_completes_when_human_qa_gate_passes(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+                {
+                    "id": "japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 2,
+            "selected_count": 2,
+            "requires_human_captions": True,
+            "distinct_language_groups_required": True,
+            "seed": "unit-seed",
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+                {"id": "japanese", "suite_language": "ja"},
+            ],
+        }
+        passing_qa = {
+            "passes_qa_gate": True,
+            "failing_language_groups": [],
+            "verdict_input_type": "json",
+            "requires_human_source": True,
+            "language_groups": {
+                "en": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                "ja": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+            },
+        }
+        audit = {"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_passing_comparison(root, "english", "en", accepted_ratio=1.0)
+            self._write_passing_comparison(root, "japanese", "ja", accepted_ratio=0.95)
+
+            result = build_completion_audit(
+                manifest,
+                selection,
+                temp_dir,
+                audit=audit,
+                auto_qa=passing_qa,
+                human_qa=passing_qa,
+                expected_count=2,
+            )
+
+        self.assertTrue(result["machine_ready"])
+        self.assertTrue(result["human_verified"])
+        self.assertTrue(result["goal_complete"])
+        self.assertEqual(result["remaining_work"], [])
+
+    def test_completion_audit_reports_text_quality_risk_rows(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected_count": 1,
+            "requires_human_captions": True,
+            "distinct_language_groups_required": True,
+            "seed": "unit-seed",
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+            ],
+        }
+        passing_qa = {
+            "passes_qa_gate": True,
+            "failing_language_groups": [],
+            "verdict_input_type": "json",
+            "requires_human_source": True,
+            "language_groups": {
+                "en": {"pass_count": 1, "fail_count": 0, "unchecked_count": 0},
+            },
+        }
+        audit = {"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_passing_comparison(root, "english", "en", accepted_ratio=1.0)
+            sample_dir = root / "english"
+            (sample_dir / "baseline.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [{"index": 1, "start": 1.0, "end": 3.0, "text": "These are the engine cores"}],
+            }), encoding="utf-8")
+            (sample_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [{
+                    "index": 1,
+                    "start": 1.0,
+                    "end": 3.0,
+                    "text": "sand wich zebra xray quantum static",
+                    "accepted": True,
+                    "start_error_ms": 0,
+                    "end_error_ms": 0,
+                }],
+            }), encoding="utf-8")
+
+            result = build_completion_audit(
+                manifest,
+                selection,
+                temp_dir,
+                audit=audit,
+                auto_qa=passing_qa,
+                human_qa=passing_qa,
+                expected_count=1,
+                min_pass_per_group=1,
+            )
+
+        self.assertEqual(result["text_quality_risk_count"], 1)
+        self.assertEqual(result["text_quality_risks"][0]["review_id"], "en:english:1")
+        self.assertEqual(result["text_quality_risks"][0]["text_quality_flags"], ["low_text_overlap"])
+        self.assertTrue(result["goal_complete"])
+
+    def test_completion_audit_requires_notes_for_human_text_risk_passes(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected_count": 1,
+            "requires_human_captions": True,
+            "distinct_language_groups_required": True,
+            "seed": "unit-seed",
+            "selected": [
+                {"id": "english", "suite_language": "en"},
+            ],
+        }
+        passing_qa = {
+            "passes_qa_gate": True,
+            "failing_language_groups": [],
+            "verdict_input_type": "json",
+            "requires_human_source": True,
+            "language_groups": {
+                "en": {"pass_count": 1, "fail_count": 0, "unchecked_count": 0},
+            },
+        }
+        human_qa_with_unnoted_risk = {
+            "passes_qa_gate": True,
+            "failing_language_groups": [],
+            "verdict_input_type": "markdown",
+            "requires_text_risk_notes": True,
+            "language_groups": {
+                "en": {
+                    "pass_count": 1,
+                    "fail_count": 0,
+                    "unchecked_count": 0,
+                    "text_risk_pass_without_notes_count": 1,
+                },
+            },
+        }
+        audit = {"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_passing_comparison(root, "english", "en", accepted_ratio=1.0)
+
+            result = build_completion_audit(
+                manifest,
+                selection,
+                temp_dir,
+                audit=audit,
+                auto_qa=passing_qa,
+                human_qa=human_qa_with_unnoted_risk,
+                expected_count=1,
+                min_pass_per_group=1,
+                require_text_risk_notes=True,
+            )
+
+        self.assertTrue(result["machine_ready"])
+        self.assertFalse(result["human_verified"])
+        self.assertFalse(result["goal_complete"])
+        self.assertIn("Finish human side-by-side QA", result["remaining_work"][0])
+
+    def test_completion_audit_cli_writes_report_before_require_complete_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            selection_path = root / "selection.json"
+            audit_path = root / "audit.json"
+            auto_qa_path = root / "auto-qa.json"
+            human_qa_path = root / "human-qa.json"
+            output = root / "completion.json"
+            artifacts = root / "artifacts"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "ja"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    },
+                    {
+                        "id": "japanese",
+                        "source": "https://www.youtube.com/watch?v=ja",
+                        "category": "japanese_talk",
+                        "language_group": "ja",
+                        "subtitle_lang": "ja",
+                        "spoken_languages": ["ja"],
+                        "section": {"duration_seconds": 120},
+                    },
+                ],
+            }), encoding="utf-8")
+            selection_path.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 2,
+                "selected_count": 2,
+                "requires_human_captions": True,
+                "distinct_language_groups_required": True,
+                "seed": "unit-seed",
+                "selected": [
+                    {"id": "english", "suite_language": "en"},
+                    {"id": "japanese", "suite_language": "ja"},
+                ],
+            }), encoding="utf-8")
+            audit_path.write_text(json.dumps({"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}), encoding="utf-8")
+            passing_qa = {
+                "passes_qa_gate": True,
+                "failing_language_groups": [],
+                "language_groups": {
+                    "en": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                    "ja": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                },
+            }
+            auto_qa_path.write_text(json.dumps(passing_qa), encoding="utf-8")
+            human_qa_path.write_text(json.dumps({
+                "passes_qa_gate": False,
+                "failing_language_groups": ["en"],
+                "language_groups": {
+                    "en": {"pass_count": 1, "fail_count": 0, "unchecked_count": 1},
+                    "ja": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                },
+            }), encoding="utf-8")
+            self._write_passing_comparison(artifacts, "english", "en", accepted_ratio=1.0)
+            self._write_passing_comparison(artifacts, "japanese", "ja", accepted_ratio=0.95)
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "completion-audit",
+                "--manifest",
+                str(manifest_path),
+                "--selection",
+                str(selection_path),
+                "--artifacts",
+                str(artifacts),
+                "--audit-json",
+                str(audit_path),
+                "--auto-qa-json",
+                str(auto_qa_path),
+                "--human-qa-json",
+                str(human_qa_path),
+                "--expected-count",
+                "2",
+                "--out",
+                str(output),
+                "--require-complete",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("completion audit failed", str(failure.exception))
+        self.assertTrue(payload["machine_ready"])
+        self.assertFalse(payload["goal_complete"])
+
+    def test_completion_audit_cli_accepts_markdown_human_qa_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            selection_path = root / "selection.json"
+            audit_path = root / "audit.json"
+            auto_qa_path = root / "auto-qa.json"
+            human_qa_report = root / "human-qa.md"
+            output = root / "completion.json"
+            artifacts = root / "artifacts"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "ja"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    },
+                    {
+                        "id": "japanese",
+                        "source": "https://www.youtube.com/watch?v=ja",
+                        "category": "japanese_talk",
+                        "language_group": "ja",
+                        "subtitle_lang": "ja",
+                        "spoken_languages": ["ja"],
+                        "section": {"duration_seconds": 120},
+                    },
+                ],
+            }), encoding="utf-8")
+            selection_path.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 2,
+                "selected_count": 2,
+                "requires_human_captions": True,
+                "distinct_language_groups_required": True,
+                "seed": "unit-seed",
+                "selected": [
+                    {"id": "english", "suite_language": "en"},
+                    {"id": "japanese", "suite_language": "ja"},
+                ],
+            }), encoding="utf-8")
+            audit_path.write_text(json.dumps({"passes_all_seed_gates": True, "passing_seed_count": 3, "seed_count": 3}), encoding="utf-8")
+            passing_qa = {
+                "passes_qa_gate": True,
+                "failing_language_groups": [],
+                "language_groups": {
+                    "en": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                    "ja": {"pass_count": 2, "fail_count": 0, "unchecked_count": 0},
+                },
+            }
+            auto_qa_path.write_text(json.dumps(passing_qa), encoding="utf-8")
+            human_qa_report.write_text(
+                "\n".join([
+                    "# Subtitle Timing QA Checklist",
+                    "",
+                    "## en",
+                    "",
+                    "| Review Time | Cue | Human Verdict | Notes |",
+                    "| --- | --- | --- | --- |",
+                    "| english.section.wav#t=1.000,2.000 | english | PASS | ok |",
+                    "| english.section.wav#t=3.000,4.000 | english | PASS | ok |",
+                    "",
+                    "## ja",
+                    "",
+                    "| Review Time | Cue | Human Verdict | Notes |",
+                    "| --- | --- | --- | --- |",
+                    "| japanese.section.wav#t=1.000,2.000 | japanese | PASS | ok |",
+                    "| japanese.section.wav#t=3.000,4.000 | japanese | PASS | ok |",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            self._write_passing_comparison(artifacts, "english", "en", accepted_ratio=1.0)
+            self._write_passing_comparison(artifacts, "japanese", "ja", accepted_ratio=0.95)
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "completion-audit",
+                "--manifest",
+                str(manifest_path),
+                "--selection",
+                str(selection_path),
+                "--artifacts",
+                str(artifacts),
+                "--audit-json",
+                str(audit_path),
+                "--auto-qa-json",
+                str(auto_qa_path),
+                "--human-qa-report",
+                str(human_qa_report),
+                "--expected-count",
+                "2",
+                "--out",
+                str(output),
+                "--require-complete",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["machine_ready"])
+        self.assertTrue(payload["human_verified"])
+        self.assertTrue(payload["goal_complete"])
+        self.assertEqual(payload["remaining_work"], [])
+
+    def test_audit_manual_caption_suite_reports_seed_gates_and_thin_language_groups(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja", "zh"]},
+            "samples": [
+                {
+                    "id": "english_a",
+                    "source": "https://www.youtube.com/watch?v=en_a",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "english_b",
+                    "source": "https://www.youtube.com/watch?v=en_b",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "japanese",
+                    "source": "https://www.youtube.com/watch?v=ja",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+                {
+                    "id": "mandarin",
+                    "source": "https://www.youtube.com/watch?v=zh",
+                    "category": "mandarin_talk",
+                    "language_group": "zh",
+                    "subtitle_lang": "zh",
+                    "spoken_languages": ["zh"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for sample_id, language_group in [
+                ("english_a", "en"),
+                ("english_b", "en"),
+                ("japanese", "ja"),
+                ("mandarin", "zh"),
+            ]:
+                sample_dir = Path(temp_dir) / sample_id
+                sample_dir.mkdir()
+                (sample_dir / "comparison.json").write_text(json.dumps({
+                    "sample_id": sample_id,
+                    "language_group": language_group,
+                    "gate_mode": "timing",
+                    "optimized": {
+                        "passes_timing_gate": True,
+                        "summary": {"accepted_ratio": 1.0},
+                        "gate_failures": [],
+                    },
+                }), encoding="utf-8")
+
+            audit = audit_manual_caption_suite(
+                manifest,
+                temp_dir,
+                seeds=["audit-a", "audit-b", "audit-c"],
+                count=3,
+            )
+
+        self.assertTrue(audit["passes_all_seed_gates"])
+        self.assertEqual(audit["seed_count"], 3)
+        self.assertEqual(audit["passing_seed_count"], 3)
+        self.assertEqual(audit["language_candidate_counts"], {"en": 2, "ja": 1, "zh": 1})
+        self.assertEqual(audit["thin_language_groups"], ["ja", "zh"])
+        self.assertEqual(audit["effective_random_language_groups"], ["en"])
+        self.assertEqual(len(audit["seed_results"]), 3)
+
+    def test_manual_suite_audit_cli_writes_json_before_require_pass_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "samples.json"
+            artifacts = root / "artifacts"
+            output = root / "audit.json"
+            manifest_path.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "ja"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_talk",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                    {
+                        "id": "japanese",
+                        "source": "https://www.youtube.com/watch?v=ja",
+                        "category": "japanese_talk",
+                        "language_group": "ja",
+                        "subtitle_lang": "ja",
+                        "spoken_languages": ["ja"],
+                        "section": {"duration_seconds": 120},
+                        "stressors": ["manual_captions"],
+                    },
+                ],
+            }), encoding="utf-8")
+            english_dir = artifacts / "english"
+            english_dir.mkdir(parents=True)
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "manual-suite-audit",
+                "--manifest",
+                str(manifest_path),
+                "--artifacts",
+                str(artifacts),
+                "--count",
+                "2",
+                "--seed",
+                "audit-fail",
+                "--out",
+                str(output),
+                "--require-pass",
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertIn("manual suite audit failed", str(failure.exception))
+        self.assertFalse(payload["passes_all_seed_gates"])
+        self.assertEqual(payload["failing_seed_count"], 1)
+        self.assertEqual(payload["seed_results"][0]["missing_samples"], ["japanese"])
+
+    def test_iteration_report_prioritizes_cross_sample_failure_modes(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "english_interview",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+                {
+                    "id": "japanese",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            english_dir = root / "english"
+            english_dir.mkdir()
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": False,
+                    "summary": {
+                        "accepted_ratio": 0.42,
+                        "p90_abs_start_error_ms": 760,
+                        "p90_abs_end_error_ms": 1200,
+                        "early_cutoff_count": 3,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 2,
+                        "cjk_singleton_count": 0,
+                        "p90_reading_speed_chars_per_second": 18,
+                    },
+                    "gate_failures": ["accepted_ratio", "early_cutoff"],
+                },
+            }), encoding="utf-8")
+            (english_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 1.0,
+                        "end": 2.0,
+                        "text": "This breaks and",
+                        "accepted": False,
+                        "start_error_ms": 760,
+                        "end_error_ms": -1200,
+                        "early_cutoff_ms": 1200,
+                        "late_hold_ms": 0,
+                        "long_idle_hold_ms": 0,
+                        "weak_boundary": True,
+                        "cjk_singleton": False,
+                    }
+                ],
+            }), encoding="utf-8")
+            japanese_dir = root / "japanese"
+            japanese_dir.mkdir()
+            (japanese_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "japanese",
+                "language_group": "ja",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": False,
+                    "summary": {
+                        "accepted_ratio": 0.65,
+                        "p90_abs_start_error_ms": 300,
+                        "p90_abs_end_error_ms": 300,
+                        "early_cutoff_count": 0,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 0,
+                        "cjk_singleton_count": 1,
+                        "p90_reading_speed_chars_per_second": 9,
+                    },
+                    "gate_failures": ["accepted_ratio", "cjk_singleton"],
+                },
+            }), encoding="utf-8")
+            (japanese_dir / "optimized.report.json").write_text(json.dumps({
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [
+                    {
+                        "index": 1,
+                        "start": 4.0,
+                        "end": 6.5,
+                        "text": "ね",
+                        "accepted": False,
+                        "start_error_ms": 300,
+                        "end_error_ms": 300,
+                        "early_cutoff_ms": 0,
+                        "late_hold_ms": 300,
+                        "long_idle_hold_ms": 0,
+                        "weak_boundary": False,
+                        "cjk_singleton": True,
+                    }
+                ],
+            }), encoding="utf-8")
+
+            report = build_iteration_report(manifest, str(root), max_examples_per_issue=1)
+
+        self.assertFalse(report["ready_for_release"])
+        self.assertEqual(report["status"]["failing_samples"], ["english", "japanese"])
+        self.assertEqual(report["top_priorities"][0]["issue"], "accepted_ratio")
+        self.assertIn("early_cutoff", [item["issue"] for item in report["top_priorities"]])
+        self.assertIn("cjk_singleton", [item["issue"] for item in report["top_priorities"]])
+        self.assertEqual(report["language_groups"]["en"]["issues"]["early_cutoff"]["sample_count"], 1)
+        self.assertEqual(report["language_groups"]["ja"]["issues"]["cjk_singleton"]["sample_count"], 1)
+        self.assertEqual(report["examples_by_issue"]["weak_boundary"][0]["text"], "This breaks and")
+        self.assertEqual(report["examples_by_issue"]["cjk_singleton"][0]["text"], "ね")
+
+    def test_iteration_report_cli_writes_release_readiness_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            output = root / "iteration.json"
+            sample_dir = root / "english"
+            sample_dir.mkdir()
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=example",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    }
+                ],
+            }), encoding="utf-8")
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {
+                        "accepted_ratio": 0.95,
+                        "p90_abs_start_error_ms": 200,
+                        "p90_abs_end_error_ms": 300,
+                        "early_cutoff_count": 0,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 0,
+                        "cjk_singleton_count": 0,
+                        "p90_reading_speed_chars_per_second": 12,
+                    },
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "iteration-report",
+                "--manifest",
+                str(manifest),
+                "--artifacts",
+                str(root),
+                "--out",
+                str(output),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["ready_for_release"])
+        self.assertEqual(payload["top_priorities"], [])
+
+    def test_iteration_report_cli_can_scope_to_manual_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "samples.json"
+            selection_path = root / "manual-suite.json"
+            output = root / "iteration.json"
+            english_dir = root / "english"
+            english_dir.mkdir()
+            manifest.write_text(json.dumps({
+                "coverage_goal": {"required_language_groups": ["en", "ja", "fr"]},
+                "samples": [
+                    {
+                        "id": "english",
+                        "source": "https://www.youtube.com/watch?v=en",
+                        "category": "english_interview",
+                        "language_group": "en",
+                        "subtitle_lang": "en",
+                        "spoken_languages": ["en"],
+                        "section": {"duration_seconds": 120},
+                    },
+                    {
+                        "id": "japanese",
+                        "source": "https://www.youtube.com/watch?v=ja",
+                        "category": "japanese_talk",
+                        "language_group": "ja",
+                        "subtitle_lang": "ja",
+                        "spoken_languages": ["ja"],
+                        "section": {"duration_seconds": 120},
+                    },
+                    {
+                        "id": "french_unselected",
+                        "source": "https://www.youtube.com/watch?v=fr",
+                        "category": "french_talk",
+                        "language_group": "fr",
+                        "subtitle_lang": "fr",
+                        "spoken_languages": ["fr"],
+                        "section": {"duration_seconds": 120},
+                    },
+                ],
+            }), encoding="utf-8")
+            selection_path.write_text(json.dumps({
+                "ready": True,
+                "requested_count": 2,
+                "selected_count": 2,
+                "selected": [
+                    {"id": "english", "suite_language": "en"},
+                    {"id": "japanese", "suite_language": "ja"},
+                ],
+            }), encoding="utf-8")
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {
+                        "accepted_ratio": 0.95,
+                        "p90_abs_start_error_ms": 200,
+                        "p90_abs_end_error_ms": 300,
+                        "early_cutoff_count": 0,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 0,
+                        "cjk_singleton_count": 0,
+                        "p90_reading_speed_chars_per_second": 12,
+                    },
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            with patch.object(sys, "argv", [
+                "subtitle_timing_eval",
+                "iteration-report",
+                "--manifest",
+                str(manifest),
+                "--artifacts",
+                str(root),
+                "--selection",
+                str(selection_path),
+                "--out",
+                str(output),
+            ]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_main()
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["report_scope"], "manual_suite")
+        self.assertEqual(payload["status"]["sample_count"], 2)
+        self.assertEqual(set(payload["language_groups"]), {"en", "ja"})
+        self.assertEqual(payload["top_priorities"][0]["issue"], "missing_artifact")
+        self.assertEqual(payload["top_priorities"][0]["samples"], ["japanese"])
+
+    def test_iteration_report_does_not_force_strict_ratio_on_passing_preserve_samples(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["translated"]},
+            "samples": [
+                {
+                    "id": "translated",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "auto_translate",
+                    "language_group": "translated",
+                    "subtitle_lang": "zh-CN",
+                    "alignment_mode": "overlap",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions", "translated_timing"],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample_dir = Path(temp_dir) / "translated"
+            sample_dir.mkdir()
+            (sample_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "translated",
+                "language_group": "translated",
+                "gate_mode": "preserve",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "passes_preservation_gate": True,
+                    "summary": {
+                        "accepted_ratio": 0.35,
+                        "p90_abs_start_error_ms": 1800,
+                        "p90_abs_end_error_ms": 1600,
+                        "early_cutoff_count": 4,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 0,
+                        "cjk_singleton_count": 0,
+                        "p90_reading_speed_chars_per_second": 12,
+                    },
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            report = build_iteration_report(manifest, temp_dir)
+
+        self.assertTrue(report["ready_for_release"])
+        self.assertEqual(report["top_priorities"], [])
+
+    def test_iteration_report_prioritizes_missing_evidence_before_algorithm_tuning(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en", "ja"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "english_interview",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                },
+                {
+                    "id": "japanese",
+                    "source": "https://www.youtube.com/watch?v=example",
+                    "category": "japanese_talk",
+                    "language_group": "ja",
+                    "subtitle_lang": "ja",
+                    "spoken_languages": ["ja"],
+                    "section": {"duration_seconds": 120},
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {
+                        "accepted_ratio": 0.95,
+                        "p90_abs_start_error_ms": 200,
+                        "p90_abs_end_error_ms": 300,
+                        "early_cutoff_count": 0,
+                        "long_idle_hold_count": 0,
+                        "weak_boundary_count": 12,
+                        "cjk_singleton_count": 0,
+                        "p90_reading_speed_chars_per_second": 12,
+                    },
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+
+            report = build_iteration_report(manifest, temp_dir)
+
+        self.assertEqual(report["top_priorities"][0]["issue"], "missing_artifact")
+        self.assertEqual(report["top_priorities"][1]["issue"], "weak_boundary")
+
 
 class ManifestTests(unittest.TestCase):
     def test_sample_manifest_has_required_coverage(self):
@@ -1812,6 +4920,7 @@ class ManifestTests(unittest.TestCase):
         self.assertGreaterEqual(len(samples), 10)
         self.assertIn("english_interview", categories)
         self.assertIn("japanese_talk", categories)
+        self.assertIn("japanese_animation", categories)
         self.assertIn("korean_talk", categories)
         self.assertIn("cantonese_chinese", categories)
         self.assertIn("mandarin_talk", categories)
@@ -1833,11 +4942,25 @@ class ManifestTests(unittest.TestCase):
             self.assertTrue(sample["id"])
             self.assertTrue(sample["source"])
             self.assertTrue(sample["language_group"])
-            self.assertGreaterEqual(sample["section"]["duration_seconds"], 120)
+            self.assertGreaterEqual(sample["section"]["duration_seconds"], 60)
             self.assertLessEqual(sample["section"]["duration_seconds"], 360)
         for sample in samples:
             if sample["category"] == "auto_translate":
                 self.assertEqual(sample.get("alignment_mode"), "overlap")
+
+    def test_sample_manifest_can_select_ten_distinct_manual_caption_source_languages(self):
+        manifest_path = Path(__file__).resolve().parents[1] / "samples.json"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        result = select_manual_caption_suite(
+            data,
+            count=10,
+            seed="manual-caption-suite-2026-06-22",
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["selected_count"], 10)
+        self.assertEqual(len({item["suite_language"] for item in result["selected"]}), 10)
 
     def test_manifest_validation_rejects_missing_mainstream_language_group(self):
         data = {

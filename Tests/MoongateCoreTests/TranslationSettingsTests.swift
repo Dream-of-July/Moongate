@@ -102,6 +102,81 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(decoded.smartTranslationPromptsEnabled)
     }
 
+    func testLocalASRSettingsDefaultOffAndRoundTripThroughJSON() throws {
+        let fresh = AppSettings()
+        XCTAssertFalse(fresh.localASREnabled)
+        XCTAssertEqual(fresh.localASRRuntimePath, "")
+        XCTAssertEqual(fresh.localASRModelPath, "")
+        XCTAssertEqual(fresh.localASRModelID, "")
+
+        let settings = AppSettings(
+            localASREnabled: true,
+            localASRRuntimePath: " /opt/moongate/bin/whisper-cli\n",
+            localASRModelPath: "\n/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin ",
+            localASRModelID: " whisper.cpp:small-q5_1\n"
+        )
+        let encoded = try JSONEncoder().encode(settings)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["localASREnabled"] as? Bool, true)
+        XCTAssertEqual(object["localASRRuntimePath"] as? String, "/opt/moongate/bin/whisper-cli")
+        XCTAssertEqual(object["localASRModelPath"] as? String, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
+        XCTAssertEqual(object["localASRModelID"] as? String, "whisper.cpp:small-q5_1")
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertTrue(decoded.localASREnabled)
+        XCTAssertEqual(decoded.localASRRuntimePath, "/opt/moongate/bin/whisper-cli")
+        XCTAssertEqual(decoded.localASRModelPath, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
+        XCTAssertEqual(decoded.localASRModelID, "whisper.cpp:small-q5_1")
+    }
+
+    func testBurnInPreservesSourceResolutionByDefault() throws {
+        XCTAssertNil(AppSettings().maxBurnHeight)
+
+        let migrated = try decodeSettings("""
+        {
+          "translationProvider": "anthropic",
+          "translationBaseURL": "https://api.anthropic.com",
+          "translationModel": "claude",
+          "translationAuthToken": ""
+        }
+        """)
+        XCTAssertNil(migrated.maxBurnHeight)
+
+        let explicit1080 = try decodeSettings("""
+        {"maxBurnHeight": 1080}
+        """)
+        XCTAssertEqual(explicit1080.maxBurnHeight, 1080)
+    }
+
+    func testCLIHelpDescribesBurnDefaultAsKeepingSourceResolution() throws {
+        let cliSource = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("moongate-cli")
+            .appendingPathComponent("main.swift"))
+
+        XCTAssertTrue(cliSource.contains("burn 默认保持源分辨率"))
+        XCTAssertFalse(cliSource.contains("缺省 1080p"))
+    }
+
+    func testCompletionNotificationSettingsDefaultOnAndRoundTrip() throws {
+        let fresh = AppSettings()
+        XCTAssertTrue(fresh.completionNotificationsEnabled)
+        XCTAssertTrue(fresh.completionSoundEnabled)
+
+        let settings = AppSettings(
+            completionNotificationsEnabled: false,
+            completionSoundEnabled: false
+        )
+        let encoded = try JSONEncoder().encode(settings)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["completionNotificationsEnabled"] as? Bool, false)
+        XCTAssertEqual(object["completionSoundEnabled"] as? Bool, false)
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertFalse(decoded.completionNotificationsEnabled)
+        XCTAssertFalse(decoded.completionSoundEnabled)
+    }
+
     func testSmartTranslationAdviceParsesLyricsAndChangesPrompt() throws {
         let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
         {
@@ -133,6 +208,11 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(prompt.contains("不要让某行停在"))
         // 拆行时不得在前面的行提前译出靠后行的动词、造成重复。
         XCTAssertTrue(prompt.contains("不要提前把动词译出来"))
+        // 数字/单位/所有格跨行时要用完整上下文理解。
+        XCTAssertTrue(prompt.contains("99."))
+        XCTAssertTrue(prompt.contains("8%"))
+        XCTAssertTrue(prompt.contains("Sun's"))
+        XCTAssertTrue(prompt.contains("太阳的"))
         // 上下文尾句不再要求逐字贴原文，改为允许同句相邻行间重排。
         XCTAssertFalse(prompt.contains("逐字逐句贴近原文"))
         // 日语源语言：含少样本重排范例。
@@ -140,7 +220,7 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(prompt.contains("别让某行停在「你的」"))
         // 歌曲：文学化改写 + 放宽不增不减（带护栏）。
         XCTAssertTrue(prompt.contains("文学性"))
-        XCTAssertTrue(prompt.contains("放宽前面第 3 条"))
+        XCTAssertTrue(prompt.contains("放宽前面第 4 条"))
         XCTAssertTrue(prompt.contains("不得编造原文完全没有的情节或事实"))
     }
 
@@ -168,6 +248,8 @@ final class TranslationSettingsTests: XCTestCase {
             sourceLanguageCode: "en"
         )
         XCTAssertTrue(en.contains("正在把英语字幕翻译成简体中文"))
+        XCTAssertTrue(en.contains("99."))
+        XCTAssertTrue(en.contains("Sun's"))
         XCTAssertFalse(en.contains("日文→中文重排示例"))
     }
 
@@ -206,7 +288,7 @@ final class TranslationSettingsTests: XCTestCase {
             XCTAssertTrue(prompt.contains(expectedHint), rawPreset)
             XCTAssertTrue(prompt.contains("测试摘要"), rawPreset)
             // 文学化"放宽不增不减"只对歌曲开放，不得泄漏到其它内容类型。
-            XCTAssertFalse(prompt.contains("放宽前面第 3 条"), rawPreset)
+            XCTAssertFalse(prompt.contains("放宽前面第 4 条"), rawPreset)
         }
     }
 
@@ -379,6 +461,81 @@ final class TranslationSettingsTests: XCTestCase {
             }
         }
         XCTAssertEqual(ModelListURLProtocol.requestCount(), 0)
+    }
+
+    func testListTranslationModelsRetriesGatewayWithoutLimitWhenRequestShapeIsRejected() async throws {
+        ModelListURLProtocol.reset(responses: [
+            (400, #"{"error":"unexpected query"}"#),
+            (200, #"{"data":[{"id":"claude-gateway"},{"id":"claude-gateway"}]}"#)
+        ])
+        URLProtocol.registerClass(ModelListURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ModelListURLProtocol.self) }
+
+        let settings = AppSettings(
+            translationEngine: .anthropicCompatible,
+            translationBaseURL: "https://gateway.example.com",
+            translationModel: "",
+            translationAuthToken: "secret-token"
+        )
+
+        let models = try await listTranslationModels(settings: settings)
+
+        XCTAssertEqual(models, ["claude-gateway"])
+        let requests = ModelListURLProtocol.capturedRequests()
+        XCTAssertEqual(requests.map { $0.url?.absoluteString }, [
+            "https://gateway.example.com/v1/models?limit=1000",
+            "https://gateway.example.com/v1/models"
+        ])
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "x-api-key"), "secret-token")
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
+    }
+
+    func testListTranslationModelsDoesNotRetryOfficialAnthropicWithoutLimit() async throws {
+        ModelListURLProtocol.reset(responses: [
+            (400, #"{"error":"bad request"}"#),
+            (200, #"{"data":[{"id":"should-not-fetch"}]}"#)
+        ])
+        URLProtocol.registerClass(ModelListURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ModelListURLProtocol.self) }
+
+        let settings = AppSettings(
+            translationEngine: .anthropicCompatible,
+            translationBaseURL: "https://api.anthropic.com",
+            translationModel: "",
+            translationAuthToken: "secret-token"
+        )
+
+        do {
+            _ = try await listTranslationModels(settings: settings)
+            XCTFail("Official Anthropic should not retry without the limit query.")
+        } catch MoongateError.translateFailed {
+            XCTAssertEqual(ModelListURLProtocol.capturedRequests().map { $0.url?.absoluteString }, [
+                "https://api.anthropic.com/v1/models?limit=1000"
+            ])
+        }
+    }
+
+    func testListTranslationModelsOpenAICompatibleUsesBearerOnly() async throws {
+        ModelListURLProtocol.reset(responses: [
+            (200, #"{"data":[{"id":"gpt-gateway"}]}"#)
+        ])
+        URLProtocol.registerClass(ModelListURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ModelListURLProtocol.self) }
+
+        let settings = AppSettings(
+            translationEngine: .openAICompatible,
+            translationBaseURL: "https://gateway.example.com",
+            translationModel: "",
+            translationAuthToken: "secret-token"
+        )
+
+        let models = try await listTranslationModels(settings: settings)
+
+        XCTAssertEqual(models, ["gpt-gateway"])
+        let request = try XCTUnwrap(ModelListURLProtocol.capturedRequests().first)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
+        XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "anthropic-version"))
     }
 
     func testAppleFoundationOnDeviceReadinessIsBlockedWhenRuntimeModelAvailabilityIsUnknown() {
@@ -655,6 +812,43 @@ final class TranslationSettingsTests: XCTestCase {
         func delete(_ key: String) {}
     }
 
+    /// 统计 get 调用次数，用于验证启动期 load 不读 Keychain（避免首次启动弹授权）。
+    private final class CountingCredentialStore: CredentialStore, @unchecked Sendable {
+        private let backing = InMemoryCredentialStore()
+        private(set) var getCount = 0
+        func get(_ key: String) -> String? { getCount += 1; return backing.get(key) }
+        func set(_ key: String, _ value: String) throws { try backing.set(key, value) }
+        func delete(_ key: String) { backing.delete(key) }
+    }
+
+    func testStartupLoadSkipsCredentialReadsUntilHydrated() throws {
+        let prevStore = AppSettings.credentialStore
+        defer { AppSettings.credentialStore = prevStore }
+        let store = CountingCredentialStore()
+        AppSettings.credentialStore = store
+
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("月之门", isDirectory: true)
+        let settingsURL = dir.appendingPathComponent("settings.json")
+        var s = AppSettings()
+        s.aiBaseURL = "https://example.com"
+        s.aiAuthToken = "tok-ai"
+        try s.save(supportDirectory: dir, settingsFileURL: settingsURL)
+        let legacy = root.appendingPathComponent("none")
+
+        // 启动路径：readCredentials: false 不应触发任何 Keychain 读取，Token 留空待 hydrate。
+        let countBeforeLazy = store.getCount
+        let lazy = AppSettings.load(supportDirectory: dir, legacySupportDirectory: legacy, readCredentials: false)
+        XCTAssertEqual(store.getCount, countBeforeLazy, "启动 load 不应读取凭证")
+        XCTAssertEqual(lazy.aiAuthToken, "")
+
+        // 显式需要时：readCredentials: true 从安全存储补齐。
+        let hydrated = AppSettings.load(supportDirectory: dir, legacySupportDirectory: legacy, readCredentials: true)
+        XCTAssertEqual(hydrated.aiAuthToken, "tok-ai")
+        XCTAssertGreaterThan(store.getCount, countBeforeLazy, "hydrate 路径应读取凭证")
+    }
+
     func testCredentialsMigrateLegacyPlaintextIntoStoreAndStripFromDisk() throws {
         let prevStore = AppSettings.credentialStore
         defer { AppSettings.credentialStore = prevStore }
@@ -772,6 +966,7 @@ final class TranslationSettingsTests: XCTestCase {
         var original = AppSettings(translationModel: "")
         original.lastSubtitleMode = "burnIn"
         original.lastSubtitleLangs = ["en", "en-orig"]
+        original.lastPrimarySubtitleTrackID = "localASR|whisper.cpp|ja|local"
         original.lastOutputFormat = .mp4H264
         original.lastPreferHDR = true
 
@@ -780,6 +975,7 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertEqual(decoded.lastSubtitleMode, "burnIn")
         XCTAssertEqual(decoded.lastSubtitleLangs, ["en", "en-orig"])
+        XCTAssertEqual(decoded.lastPrimarySubtitleTrackID, "localASR|whisper.cpp|ja|local")
         XCTAssertEqual(decoded.lastOutputFormat, .mp4H264)
         XCTAssertTrue(decoded.lastPreferHDR)
     }
@@ -798,8 +994,94 @@ final class TranslationSettingsTests: XCTestCase {
         let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacyJSON.utf8))
         XCTAssertNil(decoded.lastSubtitleMode)
         XCTAssertEqual(decoded.lastSubtitleLangs, [])
+        XCTAssertNil(decoded.lastPrimarySubtitleTrackID)
         XCTAssertNil(decoded.lastOutputFormat)
         XCTAssertFalse(decoded.lastPreferHDR)
+    }
+
+    func testSubtitleTrackIDsDistinguishSameLanguageSources() {
+        let manual = SubtitleChoice(languageCode: "ja", label: "Japanese", sourceKind: .manual)
+        let auto = SubtitleChoice(languageCode: "ja", label: "Japanese auto", sourceKind: .platformAuto)
+        let localASR = SubtitleChoice(
+            languageCode: "ja",
+            label: "Japanese local ASR",
+            sourceKind: .localASR,
+            provider: "whisper.cpp",
+            variant: "ggml-small"
+        )
+
+        XCTAssertEqual(manual.languageCode, "ja")
+        XCTAssertEqual(auto.languageCode, "ja")
+        XCTAssertEqual(localASR.languageCode, "ja")
+        XCTAssertEqual(Set([manual.id, auto.id, localASR.id]).count, 3)
+        XCTAssertFalse(manual.isAuto)
+        XCTAssertTrue(auto.isAuto)
+        XCTAssertFalse(localASR.isAuto)
+
+        XCTAssertEqual(SubtitleTrackID(rawValue: manual.id).sourceKind, .manual)
+        XCTAssertEqual(SubtitleTrackID(rawValue: auto.id).sourceKind, .platformAuto)
+        XCTAssertEqual(SubtitleTrackID(rawValue: "ja").languageCode, "ja")
+        XCTAssertEqual(SubtitleTrackID(rawValue: "ja").sourceKind, .manual)
+    }
+
+    func testDownloadRequestKeepsStableSubtitleTracksAndFiltersYtDlpSources() {
+        let manual = SubtitleChoice(languageCode: "ja", label: "Japanese", sourceKind: .manual)
+        let auto = SubtitleChoice(languageCode: "ja", label: "Japanese auto", sourceKind: .platformAuto)
+        let localASR = SubtitleChoice(
+            languageCode: "ja",
+            label: "Japanese local ASR",
+            sourceKind: .localASR,
+            provider: "whisper.cpp",
+            variant: "small"
+        )
+        let imported = SubtitleChoice(
+            languageCode: "ja",
+            label: "Imported Japanese",
+            sourceKind: .importedFile,
+            provider: "user"
+        )
+
+        let request = DownloadRequest(
+            url: "https://example.com/video",
+            videoID: "video",
+            formatID: "137",
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [manual, auto, localASR, imported],
+            primarySubtitleTrackID: localASR.id,
+            destinationDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        XCTAssertEqual(request.requestedSubtitleTracks.map(\.id), [manual.id, auto.id, localASR.id, imported.id])
+        XCTAssertEqual(request.primarySubtitleTrack?.id, localASR.id)
+        XCTAssertEqual(request.primarySubtitleLanguageCode, "ja")
+        XCTAssertEqual(request.ytDlpSubtitleLangs, ["ja"])
+        XCTAssertEqual(request.ytDlpAutoSubtitleLangs, ["ja"])
+    }
+
+    func testDownloadRequestFallsBackToManualFirstPrimarySubtitleTrack() {
+        let manual = SubtitleChoice(languageCode: "ja", label: "Japanese", sourceKind: .manual)
+        let auto = SubtitleChoice(languageCode: "ja", label: "Japanese auto", sourceKind: .platformAuto)
+        let localASR = SubtitleChoice(
+            languageCode: "ja",
+            label: "Japanese local ASR",
+            sourceKind: .localASR,
+            provider: "whisper.cpp",
+            variant: "small"
+        )
+
+        let request = DownloadRequest(
+            url: "https://example.com/video",
+            videoID: "video",
+            formatID: "137",
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [localASR, auto, manual],
+            destinationDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        XCTAssertEqual(request.primarySubtitleTrack?.id, manual.id)
+        XCTAssertEqual(request.primarySubtitleLanguageCode, "ja")
     }
 
     // MARK: 0.7 多语言 / 翻译目标 / 引导（M1.5 跨平台 parity 门禁）
@@ -1062,6 +1344,39 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cues[0].sourceFragments[1].endSeconds, 1.2, accuracy: 0.001)
         XCTAssertEqual(cues[0].sourceFragments[2].startSeconds, 1.2, accuracy: 0.001)
         XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 2.0, accuracy: 0.001)
+    }
+
+    func testParseVTTSkipsCueIdentifiersAndMetadataBlocks() {
+        let raw = """
+        WEBVTT
+
+        STYLE
+        ::cue { color: red; }
+
+        REGION
+        id:fred
+        width:40%
+
+        NOTE this block is not a cue
+        00:00:00.000 --> 00:00:01.000
+        Should not appear
+
+        cue-1
+        00:00:01.000 --> 00:00:03.000 align:start position:0%
+        Hello<00:00:02.000><c> world</c>
+
+        cue-2
+        00:00:03.500 --> 00:00:04.500
+        Next line
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues.map(\.text), ["Hello world", "Next line"])
+        XCTAssertEqual(cues[0].sourceFragments.map(\.text), ["Hello", "world"])
+        XCTAssertFalse(cues.map(\.text).joined(separator: " ").contains("cue-"))
+        XCTAssertFalse(cues.map(\.text).joined(separator: " ").contains("Should not appear"))
     }
 
     func testParseVTTCapsTrailingInlineDisplayHold() {
@@ -1502,7 +1817,11 @@ final class TranslationSettingsTests: XCTestCase {
 
         let cleaned = cleanCues(input)
 
-        XCTAssertGreaterThan(cleaned.count, 1)
+        XCTAssertGreaterThan(
+            cleaned.count,
+            1,
+            cleaned.map { "\($0.start) --> \($0.end) :: \($0.text)" }.joined(separator: " | ")
+        )
         XCTAssertEqual(cleaned.first?.start, "00:00:00,000")
         XCTAssertEqual(cleaned.last?.end, "00:00:15,000")
         XCTAssertEqual(
@@ -1725,7 +2044,9 @@ final class TranslationSettingsTests: XCTestCase {
         """
 
         let cleaned = cleanCues(parseSRT(raw))
-
+        if cleaned.count <= 1 {
+            XCTFail(cleaned.map { "\($0.start) --> \($0.end) :: \($0.text)" }.joined(separator: " | "))
+        }
         XCTAssertGreaterThan(cleaned.count, 1)
         XCTAssertEqual(
             cleaned.map(\.text).joined(),
@@ -2455,6 +2776,59 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cleaned[1].text, "la la la")
     }
 
+    func testCleanCuesKeepsDecimalPercentAndMergesEnglishOrphanTail() {
+        let input = [
+            SubtitleCue(
+                index: 1,
+                start: "00:00:00,000",
+                end: "00:00:12,000",
+                text: "The The Sun is uh 99.8% of all mass in the solar system."
+            ),
+            SubtitleCue(
+                index: 2,
+                start: "00:00:12,010",
+                end: "00:00:15,000",
+                text: "And Jupiter is about 0.1% and Earth is in the miscellaneous category."
+            ),
+            SubtitleCue(
+                index: 3,
+                start: "00:00:15,010",
+                end: "00:00:19,500",
+                text: "hopefully at the solar system, and send spaceships to other star"
+            ),
+            SubtitleCue(
+                index: 4,
+                start: "00:00:19,510",
+                end: "00:00:20,800",
+                text: "systems."
+            ),
+            SubtitleCue(
+                index: 5,
+                start: "00:00:20,900",
+                end: "00:00:21,140",
+                text: "The Starship"
+            ),
+            SubtitleCue(
+                index: 6,
+                start: "00:00:21,150",
+                end: "00:00:25,400",
+                text: "V4 will make uh Starship V3 look kind of short."
+            )
+        ]
+
+        let cleaned = cleanCues(input)
+        let texts = cleaned.map(\.text)
+
+        XCTAssertTrue(texts.contains { $0.contains("99.8%") })
+        XCTAssertFalse(texts.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("99.") })
+        XCTAssertFalse(texts.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("8%") })
+        XCTAssertTrue(texts.contains { $0.contains("0.1%") })
+        XCTAssertTrue(texts.contains { $0.contains("other star systems.") })
+        XCTAssertFalse(texts.contains("systems."))
+        XCTAssertTrue(texts.contains { $0.contains("The Starship V4 will make") })
+        XCTAssertFalse(texts.contains("The Starship"))
+    }
+
     func testCleanCuesTedxColonHandoffAndShortAsideAvoidLateHolds() throws {
         let raw = """
         1
@@ -2979,6 +3353,13 @@ final class TranslationSettingsTests: XCTestCase {
         try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
     }
 
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
     private func readinessIssues(for settings: AppSettings) -> [TranslationReadinessIssue.Kind] {
         settings.translationReadiness().issues.map(\.kind)
     }
@@ -3073,10 +3454,12 @@ private struct LegacyRecordingSubtitleTranslator: SubtitleTranslator {
 private final class ModelListURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     private static var requests: [URLRequest] = []
+    private static var responses: [(Int, String)] = []
 
-    static func reset() {
+    static func reset(responses newResponses: [(Int, String)] = []) {
         lock.lock()
         requests = []
+        responses = newResponses
         lock.unlock()
     }
 
@@ -3086,10 +3469,23 @@ private final class ModelListURLProtocol: URLProtocol, @unchecked Sendable {
         return requests.count
     }
 
-    override class func canInit(with request: URLRequest) -> Bool {
+    static func capturedRequests() -> [URLRequest] {
         lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    private static func recordAndNextResponse(_ request: URLRequest) -> (Int, String) {
+        lock.lock()
+        defer { lock.unlock() }
         requests.append(request)
-        lock.unlock()
+        if responses.isEmpty {
+            return (200, #"{"data":[{"id":"should-not-fetch"}]}"#)
+        }
+        return responses.removeFirst()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
         return true
     }
 
@@ -3098,14 +3494,15 @@ private final class ModelListURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
+        let (statusCode, body) = Self.recordAndNextResponse(request)
         let response = HTTPURLResponse(
             url: request.url ?? URL(fileURLWithPath: "/"),
-            statusCode: 200,
+            statusCode: statusCode,
             httpVersion: nil,
             headerFields: ["Content-Type": "application/json"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"data":[{"id":"should-not-fetch"}]}"#.utf8))
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

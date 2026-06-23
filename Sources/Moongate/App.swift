@@ -38,6 +38,48 @@ struct MoongateApp: App {
                 .keyboardShortcut(",", modifiers: .command)
             }
         }
+
+        // 独立设置窗口：只保留红灯关闭；设置项实时同步，无需「完成」按钮。
+        Window(localizer.t(L.App.settingsWindowTitle), id: "settings") {
+            SettingsView(model: model)
+                .environmentObject(localizer)
+                .background(SettingsWindowAccessor())
+                .onDisappear {
+                    // 关闭设置窗口：复位 showSettings 并消费挂起动作（登录 / 依赖配置）。
+                    model.showSettings = false
+                    model.consumePendingSettingsActions()
+                }
+        }
+        .defaultSize(width: 820, height: 640)
+        .windowResizability(.contentSize)
+    }
+}
+
+/// 设置窗口不是文档窗口：只允许红灯关闭，隐藏黄灯/绿灯。
+struct SettingsWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            Self.configure(window: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            Self.configure(window: nsView.window)
+        }
+    }
+
+    private static func configure(window: NSWindow?) {
+        guard let window else { return }
+        window.styleMask.remove([.miniaturizable, .resizable])
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        window.standardWindowButton(.closeButton)?.isHidden = false
+        window.standardWindowButton(.closeButton)?.isEnabled = true
     }
 }
 

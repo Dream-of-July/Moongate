@@ -280,11 +280,55 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     private var hlsCacheOrder: [String] = []
 
     final class DownloadProgressTracker: @unchecked Sendable {
+        private let expectedMediaDownloads: Int
+        private var completedMediaDownloads = 0
+        private var lastRawFraction: Double?
+        private var lastDisplayedFraction: Double?
+
+        init(expectedMediaDownloads: Int = 1) {
+            self.expectedMediaDownloads = max(1, expectedMediaDownloads)
+        }
+
+        func normalizedEtaText(_ text: String?) -> String? {
+            expectedMediaDownloads > 1 ? nil : text
+        }
+
         func normalizedPercent(_ percent: Double?) -> Double? {
             guard let percent else { return nil }
             guard percent.isFinite else { return nil }
-            return min(max(percent, 0), 100)
+            let rawFraction = min(max(percent, 0), 100) / 100
+            if let lastRawFraction,
+               lastRawFraction > 0.5,
+               rawFraction + 0.15 < lastRawFraction {
+                completedMediaDownloads += 1
+            }
+            lastRawFraction = rawFraction
+
+            let mediaDownloads = max(expectedMediaDownloads, completedMediaDownloads + 1)
+            let combined = (Double(completedMediaDownloads) + rawFraction) / Double(mediaDownloads)
+            let liveFraction = min(combined, 0.98)
+            let displayed = max(lastDisplayedFraction ?? 0, liveFraction)
+            lastDisplayedFraction = displayed
+            return displayed * 100
         }
+    }
+
+    static func expectedMediaDownloadCount(for formatID: String) -> Int {
+        containsMergeOperator(formatID) ? 2 : 1
+    }
+
+    private static func containsMergeOperator(_ selector: String) -> Bool {
+        var bracketDepth = 0
+        for character in selector {
+            if character == "[" {
+                bracketDepth += 1
+            } else if character == "]" {
+                bracketDepth = max(0, bracketDepth - 1)
+            } else if character == "+", bracketDepth == 0 {
+                return true
+            }
+        }
+        return false
     }
 
     public init() {}
@@ -805,11 +849,10 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 return Self.sizeText(bytes: videoBytes + (audioBytes ?? 0))
             }
 
-            // 最高档直接排第一（formats[0] 为推荐项），用通配格式串拿最佳画质。
-            for (index, height) in heights.prefix(6).enumerated() {
-                let formatID = index == 0
-                    ? "bv*+ba/b"
-                    : "bv*[height<=\(height)]+ba/b[height<=\(height)]"
+            // 每个可见档位先精确绑定高度，再回退到不高于该档位的可用格式。
+            // 避免 2160p/4K 行被 yt-dlp 的通配 best selector 解析成 1080p。
+            for height in heights.prefix(6) {
+                let formatID = Self.videoTierFormatSelector(height: height)
                 let tier = videoFormats.filter { Self.intValue($0["height"]) == height }
                 // 该档是否有 HDR 流。
                 let hdrAvailable = tier.contains {
@@ -931,7 +974,13 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             } else {
                 label = entry.lang
             }
-            choices.append(SubtitleChoice(id: entry.lang, label: label, isAuto: false))
+            choices.append(SubtitleChoice(
+                languageCode: entry.lang,
+                label: label,
+                sourceKind: .hlsManifest,
+                provider: "hls",
+                variant: entry.url
+            ))
         }
         return (choices, table)
     }
@@ -1038,13 +1087,13 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
         let realDict = (json["subtitles"] as? [String: Any]) ?? [:]
         let realCodes = realDict.keys.filter { $0 != "live_chat" && $0 != "rechat" }
-        var real = realCodes.map { SubtitleChoice(id: $0, label: subtitleLabel(for: $0), isAuto: false) }
-        real.sort { subtitleSortKey($0.id) < subtitleSortKey($1.id) }
+        var real = realCodes.map {
+            SubtitleChoice(languageCode: $0, label: subtitleLabel(for: $0), sourceKind: .manual)
+        }
+        real.sort { subtitleSortKey($0.languageCode) < subtitleSortKey($1.languageCode) }
 
         let autoDict = (json["automatic_captions"] as? [String: Any]) ?? [:]
-        let realSet = Set(realCodes)
         var autoCodes = autoDict.keys.filter { code in
-            guard !realSet.contains(code) else { return false }
             if autoCaptionAllowList.contains(code) { return true }
             if let prefix = videoLangPrefix,
                code.split(separator: "-").first.map({ String($0).lowercased() }) == prefix {
@@ -1054,7 +1103,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         }
         autoCodes.sort { subtitleSortKey($0) < subtitleSortKey($1) }
         let auto = autoCodes.prefix(8).map {
-            SubtitleChoice(id: $0, label: subtitleLabel(for: $0), isAuto: true)
+            SubtitleChoice(languageCode: $0, label: subtitleLabel(for: $0), sourceKind: .platformAuto)
         }
         return real + auto
     }
@@ -1133,12 +1182,14 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             let mergeContainer = request.preferHDR ? "mkv" : "mp4"
             args += ["-f", formatSelector, "--merge-output-format", mergeContainer]
         }
-        let allSubLangs = request.subtitleLangs + request.autoSubtitleLangs
+        let subtitleLangs = request.ytDlpSubtitleLangs
+        let autoSubtitleLangs = request.ytDlpAutoSubtitleLangs
+        let allSubLangs = DownloadRequest.uniqueForYtDlpSubLangs(subtitleLangs + autoSubtitleLangs)
         if !allSubLangs.isEmpty {
             args += ["--sub-langs", allSubLangs.joined(separator: ",")]
-            if !request.subtitleLangs.isEmpty { args.append("--write-subs") }
-            if !request.autoSubtitleLangs.isEmpty { args.append("--write-auto-subs") }
-            if request.autoSubtitleLangs.isEmpty {
+            if !subtitleLangs.isEmpty { args.append("--write-subs") }
+            if !autoSubtitleLangs.isEmpty { args.append("--write-auto-subs") }
+            if autoSubtitleLangs.isEmpty {
                 args += ["--convert-subs", "srt"]
             } else {
                 args += ["--sub-format", "vtt/best"]
@@ -1155,7 +1206,9 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
         let destPrefix = destDir.path.hasSuffix("/") ? destDir.path : destDir.path + "/"
         let printedPaths = PathCollector()
-        let progressTracker = DownloadProgressTracker()
+        let progressTracker = DownloadProgressTracker(
+            expectedMediaDownloads: Self.expectedMediaDownloadCount(for: request.formatID)
+        )
         var status: Int32 = -1
         var stderrTail = ""
         // 首次下载偶发 "Requested format is not available"（YouTube n-challenge 冷启动 /
@@ -1354,7 +1407,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 percent = Double(parts[1].replacingOccurrences(of: "%", with: ""))
             }
             let speed = parts.count > 2 ? normalizeField(parts[2]) : nil
-            let eta = parts.count > 3 ? normalizeField(parts[3]) : nil
+            let eta = state.normalizedEtaText(parts.count > 3 ? normalizeField(parts[3]) : nil)
             progress(DownloadProgress(
                 phase: .downloading,
                 percent: state.normalizedPercent(percent),
@@ -1753,16 +1806,24 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return v.components(separatedBy: ".").first ?? v
     }
 
-    /// 给基础 -f 选择器加上 HDR 偏好：把每个视频选择子项 `bv*[...]` 加上 `[dynamic_range!=SDR]`，
-    /// 并在末尾补一个不带 HDR 约束的回退（HDR 流缺失时仍能下到该档）。
+    /// Selector for one visible quality tier. The exact-height branch is first so a
+    /// visible 2160p row cannot resolve to 1080p while that 2160p stream exists.
+    static func videoTierFormatSelector(height: Int) -> String {
+        "bv*[height=\(height)]+ba/b[height=\(height)]/bv*[height<=\(height)]+ba/b[height<=\(height)]"
+    }
+
+    /// 给基础 -f 选择器加上 HDR 偏好：每个 fallback 分支先尝试 HDR，再尝试原分支。
+    /// 这样 2160p 档会按「2160 HDR → 2160 普通 → <=2160 HDR → <=2160 普通」回退，
+    /// 不会为了 HDR 静默跳到低一档。
     /// preferHDR=false 时原样返回。
     static func applyHDRPreference(to selector: String, preferHDR: Bool) -> String {
         guard preferHDR else { return selector }
-        // 在每个 "bv*" 后面紧跟的部分插入 dynamic_range 约束。
-        // 基础串形如 "bv*+ba/b" 或 "bv*[height<=1080]+ba/b[height<=1080]"。
-        // 策略：对整串做 HDR 版（bv* → bv*[dynamic_range!=SDR]），再以 "/" 回退到原始串。
-        let hdrVariant = selector.replacingOccurrences(of: "bv*", with: "bv*[dynamic_range!=SDR]")
-        return hdrVariant + "/" + selector
+        let branches = selector.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        return branches.flatMap { branch -> [String] in
+            let hdrVariant = branch.replacingOccurrences(of: "bv*", with: "bv*[dynamic_range!=SDR]")
+            guard hdrVariant != branch else { return [branch] }
+            return [hdrVariant, branch]
+        }.joined(separator: "/")
     }
     private static func doubleValue(_ any: Any?) -> Double? {
         if let number = any as? NSNumber { return number.doubleValue }

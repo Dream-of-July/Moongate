@@ -53,6 +53,7 @@ internal sealed class FakeEngine : IDownloadEngine
 internal sealed class FakeTranslator : ISubtitleTranslator
 {
     public int CallCount;
+    public string? LastInput;
     public Func<string, string>? OnTranslate { get; set; }
     public Exception? ThrowOnTranslate { get; set; }
 
@@ -61,6 +62,7 @@ internal sealed class FakeTranslator : ISubtitleTranslator
         Action<double> progress, CancellationToken ct = default)
     {
         Interlocked.Increment(ref CallCount);
+        LastInput = srtFile;
         if (ThrowOnTranslate is { } e) return Task.FromException<string>(e);
         var output = OnTranslate?.Invoke(srtFile) ?? srtFile[..^4] + ".zh-Hans.srt";
         return Task.FromResult(output);
@@ -71,6 +73,7 @@ internal sealed class FakeBurner : ISubtitleBurner
 {
     public int CallCount;
     public List<(string Video, string Subtitle)> Burns { get; } = [];
+    public List<int?> MaxHeights { get; } = [];
     public string? LastOutputTag;
 
     public Task<string> BurnAsync(
@@ -80,8 +83,54 @@ internal sealed class FakeBurner : ISubtitleBurner
     {
         Interlocked.Increment(ref CallCount);
         LastOutputTag = outputTag;
-        lock (Burns) Burns.Add((video, subtitle));
+        lock (Burns)
+        {
+            Burns.Add((video, subtitle));
+            MaxHeights.Add(maxHeight);
+        }
         return Task.FromResult(video[..^4] + (outputTag ?? "（字幕版）") + ".mp4");
+    }
+}
+
+internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
+{
+    public int CallCount;
+    public List<(string Video, string Language)> Calls { get; } = [];
+
+    public Task<string> GenerateSourceSubtitleAsync(
+        string videoFile,
+        string languageCode,
+        TaskControlToken? control,
+        Action<AsrProgress> progress,
+        CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref CallCount);
+        lock (Calls) Calls.Add((videoFile, languageCode));
+        progress(new AsrProgress { Phase = AsrProgressPhase.AudioExtract, CompletedUnits = 1, TotalUnits = 1 });
+        progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 1, TotalUnits = 1 });
+        progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 1, TotalUnits = 1 });
+        var output = Path.Combine(
+            Path.GetDirectoryName(videoFile) ?? ".",
+            Path.GetFileNameWithoutExtension(videoFile) + ".local-asr." + languageCode + ".srt");
+        Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+        File.WriteAllText(output, "1\n00:00:00,000 --> 00:00:01,500\n梅雨 が 明ける。\n");
+        return Task.FromResult(output);
+    }
+}
+
+internal sealed class RecordingCompletionNotifier : IQueueCompletionNotifier
+{
+    private readonly object _lock = new();
+    private readonly List<QueueCompletionNotification> _notifications = [];
+
+    public IReadOnlyList<QueueCompletionNotification> Notifications
+    {
+        get { lock (_lock) return [.. _notifications]; }
+    }
+
+    public void QueueDidComplete(QueueCompletionNotification notification)
+    {
+        lock (_lock) _notifications.Add(notification);
     }
 }
 
@@ -89,7 +138,7 @@ internal sealed class FakeBurner : ISubtitleBurner
 public class QueueManagerTests
 {
     [Fact]
-    public void NextDownloadProgressState_ShowsRealPercentAndNeverStalls()
+    public void NextDownloadProgressState_KeepsDisplayedPercentMonotonic()
     {
         QueueManager.DownloadProgressState S(double? p, bool proc) => new(p, proc);
 
@@ -99,12 +148,12 @@ public class QueueManagerTests
         Assert.Equal(S(0.55, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.55));
         // < 0.5 个百分点的抖动：节流（不变）。
         Assert.Equal(S(0.40, false), QueueManager.NextDownloadProgressState(S(0.40, false), 0.402));
-        // 关键①：视频流到 100% 后音频流从 0 开始——如实回落显示（进度条仍在动），不卡在 100%。
-        Assert.Equal(S(0.05, false), QueueManager.NextDownloadProgressState(S(1.0, false), 0.05));
+        // 关键①：视频流到高位后音频流从低位开始，用户可见百分比不再回落。
+        Assert.Equal(S(1.0, false), QueueManager.NextDownloadProgressState(S(1.0, false), 0.05));
         // 关键②：不把下载藏成转圈「处理中」——下载阶段的百分比始终 isProcessing=false。
         Assert.Equal(S(0.62, false), QueueManager.NextDownloadProgressState(S(0.20, false), 0.62));
-        // 较大回落（换流）如实显示。
-        Assert.Equal(S(0.10, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.10));
+        // 较大回落（换流）也不回退显示。
+        Assert.Equal(S(0.95, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.10));
     }
 
     [Theory]
@@ -145,6 +194,40 @@ public class QueueManagerTests
         Assert.Equal(0.25, afterDownload.Value, precision: 4);
         Assert.Equal(afterDownload.Value, secondStreamRestart.Value);
         Assert.True(translating.Value > secondStreamRestart.Value);
+    }
+
+    [Fact]
+    public void QueueProgressEstimator_WeightsASRHeavyTasksByUnits()
+    {
+        var plan = new TaskWorkPlan(
+            shouldExtractAudio: true,
+            shouldRunASR: true,
+            shouldSegmentSubtitles: true,
+            shouldTranscode: false,
+            shouldTranslate: true,
+            shouldBurn: false,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: 12,
+            subtitleSegmentUnits: 1,
+            translateUnits: 2);
+
+        var downloadDone = QueueProgressEstimator.TaskOverallProgress(
+            plan,
+            QueueProgressPhase.Download,
+            phaseProgress: 1.0,
+            previousOverallProgress: null);
+        var halfASR = QueueProgressEstimator.TaskOverallProgress(
+            plan,
+            QueueProgressPhase.SpeechRecognition,
+            phaseProgress: 0.5,
+            previousOverallProgress: downloadDone);
+
+        Assert.NotNull(downloadDone);
+        Assert.NotNull(halfASR);
+        Assert.Equal(2.0 / 18.0, downloadDone.Value, precision: 4);
+        Assert.Equal(9.0 / 18.0, halfASR.Value, precision: 4);
+        Assert.True(downloadDone.Value < 0.25);
     }
 
     [Fact]
@@ -240,7 +323,52 @@ public class QueueManagerTests
     }
 
     [Fact]
-    public async Task DownloadProgress_StoresPhasePercentButKeepsOverallProgressMonotonic()
+    public void QueueProgressEstimator_UsesWorkUnitsForQueuedASRPhases()
+    {
+        var plan = new TaskWorkPlan(
+            shouldExtractAudio: true,
+            shouldRunASR: true,
+            shouldSegmentSubtitles: true,
+            shouldTranscode: false,
+            shouldTranslate: true,
+            shouldBurn: false,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: 12,
+            subtitleSegmentUnits: 1,
+            translateUnits: 2);
+        var snapshot = QueueProgressEstimator.QueueSnapshot(
+            [
+                new TaskProgressSnapshot(
+                    OverallProgress: null,
+                    RemainingSeconds: null,
+                    IsEstimatingRemaining: false,
+                    IsTerminal: false,
+                    Plan: null,
+                    CurrentPhase: null,
+                    WorkPlan: plan),
+            ],
+            new Dictionary<QueueProgressPhase, double>
+            {
+                [QueueProgressPhase.Download] = 15,
+                [QueueProgressPhase.AudioExtract] = 8,
+                [QueueProgressPhase.SpeechRecognition] = 30,
+                [QueueProgressPhase.SubtitleSegment] = 5,
+                [QueueProgressPhase.Translate] = 20,
+            },
+            new Dictionary<QueueProgressPhase, int>
+            {
+                [QueueProgressPhase.Download] = 2,
+                [QueueProgressPhase.SpeechRecognition] = 1,
+                [QueueProgressPhase.Translate] = 1,
+            });
+
+        Assert.Equal(443, snapshot.RemainingSeconds);
+        Assert.False(snapshot.IsEstimatingRemaining);
+    }
+
+    [Fact]
+    public async Task DownloadProgress_KeepsDisplayedAndOverallProgressMonotonic()
     {
         var engine = new FakeEngine();
         var queue = new QueueManager(engine, settings: Settings(downloads: 1));
@@ -258,7 +386,7 @@ public class QueueManagerTests
         });
         var atEndOfFirstStream = queue.Item(id)!;
         Assert.Equal(1.0, atEndOfFirstStream.Progress);
-        Assert.Equal(0.25, atEndOfFirstStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal(2.0 / 14.0, atEndOfFirstStream.OverallProgress!.Value, precision: 4);
         Assert.Equal("1.2MiB/s", atEndOfFirstStream.SpeedText);
         Assert.Equal(20, atEndOfFirstStream.RemainingSeconds);
         Assert.False(atEndOfFirstStream.RemainingIsApproximate);
@@ -271,10 +399,36 @@ public class QueueManagerTests
             EtaText = "00:10",
         });
         var restartedStream = queue.Item(id)!;
-        Assert.Equal(0.05, restartedStream.Progress);
-        Assert.Equal(0.25, restartedStream.OverallProgress!.Value, precision: 4);
+        Assert.Equal(1.0, restartedStream.Progress);
+        Assert.Equal(2.0 / 14.0, restartedStream.OverallProgress!.Value, precision: 4);
         Assert.Equal("800KiB/s", restartedStream.SpeedText);
         Assert.Equal(10, restartedStream.RemainingSeconds);
+    }
+
+    [Fact]
+    public async Task CompletionNotifier_CoalescesBatchWhenQueueReachesAllDone()
+    {
+        var engine = new FakeEngine();
+        var notifier = new RecordingCompletionNotifier();
+        var queue = new QueueManager(engine, settings: Settings(downloads: 2), completionNotifier: notifier);
+        var first = queue.Enqueue(Info("a", "First video"), Request("a"), ChineseSubtitleMode.Off, Settings());
+        var second = queue.Enqueue(Info("b", "Second video"), Request("b"), ChineseSubtitleMode.Off, Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 2, "both downloads started");
+        var callA = engine.Calls.First(c => c.Request.VideoId == "a");
+        var callB = engine.Calls.First(c => c.Request.VideoId == "b");
+
+        callA.Complete("/tmp/downloads/a [a].mp4");
+        await WaitUntilAsync(() => queue.Item(first)?.Stage.Kind == ItemStageKind.Done, "first done");
+        Assert.Empty(notifier.Notifications);
+
+        callB.Complete("/tmp/downloads/b [b].mp4");
+        await WaitUntilAsync(() => queue.Item(second)?.Stage.Kind == ItemStageKind.Done, "second done");
+        await WaitUntilAsync(() => notifier.Notifications.Count == 1, "coalesced completion notification");
+
+        var notification = Assert.Single(notifier.Notifications);
+        Assert.Equal(2, notification.CompletedCount);
+        Assert.Equal(0, notification.PartialFailureCount);
+        Assert.Equal(["First video", "Second video"], notification.Titles.ToArray());
     }
 
     [Fact]
@@ -295,6 +449,9 @@ public class QueueManagerTests
         Assert.Contains("x:Key=\"L.Queue.AllEnded\"", zh);
         Assert.Contains("x:Key=\"L.Queue.AllEnded\"", en);
         Assert.Contains("x:Key=\"L.Queue.AllEnded\"", zhHant);
+        Assert.Contains("x:Key=\"L.Status.RemainingEstimating\">正在估算时间<", zh);
+        Assert.Contains("x:Key=\"L.Status.RemainingEstimating\">Estimating time...<", en);
+        Assert.Contains("x:Key=\"L.Status.RemainingEstimating\">正在估算時間<", zhHant);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)
@@ -322,20 +479,25 @@ public class QueueManagerTests
     private static DownloadRequest Request(
         string videoId = "vid1",
         IReadOnlyList<string>? subtitleLangs = null,
+        IReadOnlyList<SubtitleChoice>? subtitleTracks = null,
+        string? primarySubtitleTrackId = null,
         OutputFormat outputFormat = OutputFormat.Original) => new()
     {
         Url = $"https://example.com/{videoId}",
         VideoId = videoId,
         FormatId = "bv*+ba/b",
         SubtitleLangs = subtitleLangs ?? [],
+        SubtitleTracks = subtitleTracks ?? [],
+        PrimarySubtitleTrackId = primarySubtitleTrackId,
         DestinationDirectory = "/tmp/downloads",
         OutputFormat = outputFormat,
     };
 
-    private static AppSettings Settings(int downloads = 1, int burns = 1) => new()
+    private static AppSettings Settings(int downloads = 1, int burns = 1, int? maxBurnHeight = null) => new()
     {
         MaxConcurrentDownloads = downloads,
         MaxConcurrentBurns = burns,
+        MaxBurnHeight = maxBurnHeight,
     };
 
     /// <summary>并发槽上限：第二个任务等第一个释放下载槽后才开始。</summary>
@@ -394,6 +556,32 @@ public class QueueManagerTests
 
         engine.Calls[0].Complete("/tmp/downloads/a [a].mp4");
         await WaitUntilAsync(() => queue.Item(idA)?.Stage.Kind == ItemStageKind.Done, "A 完成");
+    }
+
+    [Fact]
+    public async Task PauseResume_ReturnWhetherStateChanged()
+    {
+        var engine = new FakeEngine();
+        var queue = new QueueManager(engine, settings: Settings(downloads: 1));
+
+        Assert.False(queue.Pause(Guid.NewGuid()));
+        Assert.False(queue.Resume(Guid.NewGuid()));
+
+        var id = queue.Enqueue(Info("a"), Request("a"), ChineseSubtitleMode.Off, Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "A 开始下载");
+
+        Assert.True(queue.Pause(id));
+        Assert.True(queue.Item(id)!.IsPaused);
+        Assert.False(queue.Pause(id));
+
+        Assert.True(queue.Resume(id));
+        await WaitUntilAsync(() => queue.Item(id)?.Control.IsPaused == false, "A 恢复运行");
+        Assert.False(queue.Resume(id));
+
+        engine.Calls[0].Complete("/tmp/downloads/a [a].mp4");
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "A 完成");
+        Assert.False(queue.Pause(id));
+        Assert.False(queue.Resume(id));
     }
 
     [Fact]
@@ -510,9 +698,33 @@ public class QueueManagerTests
         Assert.Equal(0, translator.CallCount);
         Assert.Equal(1, burner.CallCount);
         Assert.Equal(("/tmp/downloads/v [a].mp4", "/tmp/downloads/v [a].zh.srt"), burner.Burns[0]);
+        Assert.Null(burner.MaxHeights[0]);
         Assert.Equal("已烧录视频自带目标语言字幕", queue.Item(id)!.StatusText);
         // 烧录产物排在结果第一位
         Assert.Equal("/tmp/downloads/v [a]（字幕版）.mp4", queue.Item(id)!.ResultFiles[0]);
+    }
+
+    /// <summary>显式开启 1080p 限制时，才把 burn maxHeight 传给烧录器。</summary>
+    [Fact]
+    public async Task BurnIn_Explicit1080Limit_PassesMaxHeightToBurner()
+    {
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator();
+        var burner = new FakeBurner();
+        var settings = Settings(maxBurnHeight: 1080);
+        var queue = new QueueManager(engine, _ => translator, () => burner, settings);
+
+        var id = queue.Enqueue(
+            Info("a"), Request("a", subtitleLangs: ["zh"]),
+            ChineseSubtitleMode.BurnIn, settings);
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        engine.Calls[0].Complete(
+            "/tmp/downloads/v [a].mp4",
+            "/tmp/downloads/v [a].zh.srt");
+
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+        Assert.Equal(1, burner.CallCount);
+        Assert.Equal(1080, burner.MaxHeights[0]);
     }
 
     /// <summary>partialFailure：视频已下载但翻译失败 → Done + 部分失败标记（可重试字幕处理）。</summary>
@@ -671,6 +883,19 @@ public class QueueManagerTests
     }
 
     [Fact]
+    public void PickSourceSubtitle_PrefersLocalAsrForSameLanguageWhenPresent()
+    {
+        string[] files =
+        [
+            "/d/v [a].ja.vtt",
+            "/d/v [a].local-asr.ja.srt",
+            "/d/v [a].ja.srt",
+        ];
+
+        Assert.Equal("/d/v [a].local-asr.ja.srt", QueueManager.PickSourceSubtitle(files, "ja"));
+    }
+
+    [Fact]
     public void PickSourceSubtitle_ExcludesTranslatedOutputsForAllSupportedTargets()
     {
         string[] files =
@@ -719,6 +944,169 @@ public class QueueManagerTests
         Assert.Equal("（字幕版）", burner.LastOutputTag);  // 直压输出名用「（字幕版）」标签
         Assert.Equal("已烧录字幕（未翻译）", queue.Item(id)!.StatusText);
         Assert.False(queue.Item(id)!.PartialFailure);
+    }
+
+    [Fact]
+    public async Task LocalAsrTrack_GeneratesSourceSrtAndUsesItForTranslation()
+    {
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator();
+        var asr = new FakeLocalAsrGenerator();
+        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+        var localAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "small");
+
+        var id = queue.Enqueue(
+            Info("a"),
+            Request("a", subtitleTracks: [localAsr]),
+            ChineseSubtitleMode.SrtOnly,
+            Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        engine.Calls[0].Complete(
+            "/tmp/downloads/v [a].mp4",
+            "/tmp/downloads/v [a].ja.vtt");
+
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+        var source = AsrTranscriptMapper.LocalAsrSourceSrtPath("/tmp/downloads/v [a].mp4", "ja");
+        var translated = source[..^4] + ".zh-Hans.srt";
+        var item = queue.Item(id)!;
+        Assert.False(item.PartialFailure, item.StatusText);
+        Assert.Equal(1, asr.CallCount);
+        Assert.Equal(source, translator.LastInput);
+        Assert.Contains(source, item.ResultFiles);
+        Assert.Contains(translated, item.ResultFiles);
+    }
+
+    [Fact]
+    public async Task PrimaryPlatformSubtitleTrackUsesPlatformFileEvenWhenLocalAsrFileExists()
+    {
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator();
+        var asr = new FakeLocalAsrGenerator();
+        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+        var platformAuto = SubtitleChoice.Create(
+            "ja",
+            "Japanese auto",
+            SubtitleSourceKind.PlatformAuto,
+            provider: "yt-dlp",
+            variant: "auto");
+        var localAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "local");
+
+        var id = queue.Enqueue(
+            Info("a"),
+            Request("a", subtitleTracks: [platformAuto, localAsr], primarySubtitleTrackId: platformAuto.Id),
+            ChineseSubtitleMode.SrtOnly,
+            Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        engine.Calls[0].Complete(
+            "/tmp/downloads/v [a].mp4",
+            "/tmp/downloads/v [a].local-asr.ja.srt",
+            "/tmp/downloads/v [a].ja.vtt");
+
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+        Assert.Equal(0, asr.CallCount);
+        Assert.Equal("/tmp/downloads/v [a].ja.vtt", translator.LastInput);
+    }
+
+    [Fact]
+    public async Task RetryWithLocalAsr_ReusesDownloadedVideoAndReplacesSubtitleSource()
+    {
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator();
+        var asr = new FakeLocalAsrGenerator();
+        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+        var autoJa = SubtitleChoice.Create(
+            "ja",
+            "Japanese auto",
+            SubtitleSourceKind.PlatformAuto,
+            provider: "yt-dlp",
+            variant: "auto");
+
+        var id = queue.Enqueue(
+            Info("a"),
+            Request("a", subtitleTracks: [autoJa]),
+            ChineseSubtitleMode.SrtOnly,
+            Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        engine.Calls[0].Complete(
+            "/tmp/downloads/v [a].mp4",
+            "/tmp/downloads/v [a].ja.vtt");
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "初次完成");
+        Assert.Equal(1, translator.CallCount);
+        Assert.Equal(0, asr.CallCount);
+
+        queue.RetryWithLocalAsr(id);
+
+        await WaitUntilAsync(
+            () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && asr.CallCount == 1,
+            "本地 ASR 重跑完成");
+        var source = AsrTranscriptMapper.LocalAsrSourceSrtPath("/tmp/downloads/v [a].mp4", "ja");
+        var translated = source[..^4] + ".zh-Hans.srt";
+        var item = queue.Item(id)!;
+        Assert.Single(engine.Calls);
+        Assert.Equal(2, translator.CallCount);
+        Assert.Equal(source, translator.LastInput);
+        Assert.Contains(source, item.ResultFiles);
+        Assert.Contains(translated, item.ResultFiles);
+        Assert.Contains(item.Request.RequestedSubtitleTracks, track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+    }
+
+    [Fact]
+    public async Task RetryAfterLocalAsrTranslationFailure_ReusesGeneratedSourceSrtWithoutRunningAsrAgain()
+    {
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator
+        {
+            ThrowOnTranslate = MoongateException.TranslateFailed("接口超时"),
+        };
+        var asr = new FakeLocalAsrGenerator();
+        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+        var localAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "small");
+
+        var id = queue.Enqueue(
+            Info("a"),
+            Request("a", subtitleTracks: [localAsr]),
+            ChineseSubtitleMode.SrtOnly,
+            Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        engine.Calls[0].Complete("/tmp/downloads/v [a].mp4");
+        await WaitUntilAsync(
+            () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && queue.Item(id)?.PartialFailure == true,
+            "ASR 成功但翻译失败后进入部分成功");
+        var source = AsrTranscriptMapper.LocalAsrSourceSrtPath("/tmp/downloads/v [a].mp4", "ja");
+        Assert.Equal(1, asr.CallCount);
+        Assert.Equal(1, translator.CallCount);
+        Assert.Equal(source, translator.LastInput);
+        Assert.Contains(source, queue.Item(id)!.ResultFiles);
+
+        translator.ThrowOnTranslate = null;
+        queue.Retry(id);
+
+        await WaitUntilAsync(
+            () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && queue.Item(id)?.PartialFailure == false,
+            "重试只重跑翻译");
+        var translated = source[..^4] + ".zh-Hans.srt";
+        var item = queue.Item(id)!;
+        Assert.Single(engine.Calls);
+        Assert.Equal(1, asr.CallCount);
+        Assert.Equal(2, translator.CallCount);
+        Assert.Equal(source, translator.LastInput);
+        Assert.Contains(source, item.ResultFiles);
+        Assert.Contains(translated, item.ResultFiles);
     }
 
     /// <summary>直压模式：没有字幕文件时跳过烧录并提示。</summary>

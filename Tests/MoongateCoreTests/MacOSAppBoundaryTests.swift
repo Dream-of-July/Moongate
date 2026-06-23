@@ -1,7 +1,7 @@
 import XCTest
 
 final class MacOSAppBoundaryTests: XCTestCase {
-    func testAppSettingsCommandOpensExistingSettingsSheet() throws {
+    func testAppSettingsCommandOpensStandaloneSettingsWindow() throws {
         let source = try appSource()
         let commandBody = try XCTUnwrap(functionBody(prefix: "CommandGroup(replacing: .appSettings)", in: source))
 
@@ -9,8 +9,17 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("CommandGroup(replacing: .appSettings)"))
         XCTAssertTrue(commandBody.contains("model.showSettings = true"))
         XCTAssertTrue(commandBody.contains(".keyboardShortcut(\",\", modifiers: .command)"))
+        // 不使用 SwiftUI 的 Settings 场景（那是 preferences 风格）；命令本身也不直接构造 SettingsView。
         XCTAssertFalse(source.contains("Settings {"))
         XCTAssertFalse(commandBody.contains("SettingsView(model:"))
+        // 11c：设置改为独立 Window 场景，只保留红灯关闭；关闭时复位 showSettings 并消费挂起动作。
+        XCTAssertTrue(source.contains("Window(localizer.t(L.App.settingsWindowTitle), id: \"settings\")"))
+        XCTAssertTrue(source.contains("SettingsView(model: model)"))
+        XCTAssertTrue(source.contains("SettingsWindowAccessor()"))
+        XCTAssertTrue(source.contains("standardWindowButton(.miniaturizeButton)?.isHidden = true"))
+        XCTAssertTrue(source.contains("standardWindowButton(.zoomButton)?.isHidden = true"))
+        XCTAssertTrue(source.contains("window.styleMask.remove([.miniaturizable, .resizable])"))
+        XCTAssertTrue(source.contains("model.consumePendingSettingsActions()"))
     }
 
     func testAbortConfirmationExplainsChoicesWithoutChangingButtonsOrReturnMapping() throws {

@@ -353,6 +353,43 @@ public class TranslationApiTests
     }
 
     [Fact]
+    public async Task ListModels_RetriesGatewayWithoutLimitWhenRequestShapeRejected()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = request => request.Uri.Query.Contains("limit=1000", StringComparison.Ordinal)
+                ? FakeHttpHandler.Json(400, """{"error":"unexpected query"}""")
+                : FakeHttpHandler.Json(200, """{"data":[{"id":"claude-gateway"},{"id":"claude-gateway"}]}"""),
+        };
+
+        var models = await TranslationApi.ListModelsAsync(GatewaySettings(), handler);
+
+        Assert.Equal(["claude-gateway"], models);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal("https://gateway.example.com/v1/models?limit=1000", handler.Requests[0].Uri.ToString());
+        Assert.Equal("https://gateway.example.com/v1/models", handler.Requests[1].Uri.ToString());
+        Assert.Equal("secret-token", handler.Requests[0].Headers["x-api-key"]);
+        Assert.Equal("Bearer secret-token", handler.Requests[0].Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task ListModels_OfficialAnthropic_DoesNotRetryWithoutLimit()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(400, """{"error":"bad request"}"""),
+        };
+        var settings = GatewaySettings() with { TranslationBaseUrl = "https://api.anthropic.com" };
+
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            TranslationApi.ListModelsAsync(settings, handler));
+
+        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://api.anthropic.com/v1/models?limit=1000", request.Uri.ToString());
+    }
+
+    [Fact]
     public async Task ListModels_OfficialAnthropic_OmitsAuthorization()
     {
         var handler = new FakeHttpHandler
@@ -363,6 +400,24 @@ public class TranslationApiTests
         await TranslationApi.ListModelsAsync(settings, handler);
         var request = Assert.Single(handler.Requests);
         Assert.False(request.Headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task ListModels_OpenAiCompatible_UsesBearerOnly()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, """{"data":[{"id":"gpt-x"}]}"""),
+        };
+
+        var models = await TranslationApi.ListModelsAsync(
+            GatewaySettings(TranslationProvider.Openai), handler);
+
+        Assert.Equal(["gpt-x"], models);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("Bearer secret-token", request.Headers["Authorization"]);
+        Assert.False(request.Headers.ContainsKey("x-api-key"));
+        Assert.False(request.Headers.ContainsKey("anthropic-version"));
     }
 
     [Fact]
@@ -600,7 +655,8 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("翻译前上下文", translateSystem);
         Assert.Contains("Ayase", translateSystem);
         Assert.Contains("Plusonica", translateSystem);
-        Assert.Contains("不要把上下文里没有对应原文的信息添加到某一行译文", translateSystem);
+        Assert.Contains("不要把上下文里没有对应原文的信息添加到译文", translateSystem);
+        Assert.Contains("允许在相邻同句的行之间", translateSystem);
         Assert.Contains("歌词", translateSystem);
         Assert.Contains("画面感", translateSystem);
         Assert.Contains("呼吸感", translateSystem);
@@ -665,6 +721,10 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("自然语序", prompt);
         Assert.Contains("相邻行", prompt);
         Assert.Contains("悬空成分", prompt);
+        Assert.Contains("99.", prompt);
+        Assert.Contains("8%", prompt);
+        Assert.Contains("Sun's", prompt);
+        Assert.Contains("太阳的", prompt);
         Assert.Contains("圆括号", prompt);
         Assert.Contains("音效", prompt);
     }
@@ -686,6 +746,8 @@ public class ConfiguredTranslatorTests : IDisposable
         var prompt = ConfiguredTranslator.SystemPrompt("简体中文", sourceLanguageCode: "en");
 
         Assert.Contains("正在把英语字幕翻译成简体中文", prompt);
+        Assert.Contains("99.", prompt);
+        Assert.Contains("Sun's", prompt);
         Assert.DoesNotContain("日文→中文重排示例", prompt);
         Assert.DoesNotContain("左隣、あなたの", prompt);
     }
@@ -941,6 +1003,78 @@ public class ConfiguredTranslatorTests : IDisposable
         ];
         return words.Select((t, i) => new SubtitleCue(
             i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
+    }
+
+    // 8 条逐字、无标点的日文碎句（典型 Whisper 输出，含用户报的「顔 / 洗って」割裂例）。
+    private static List<SubtitleCue> JapaneseAsrCues()
+    {
+        string[] words = ["おはよう", "起きられて", "えらい", "顔", "洗って", "えらい", "テレビ見るのも", "えらい"];
+        return words.Select((t, i) => new SubtitleCue(
+            i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_Cjk_AlignsByCharacterAndRebuildsSentences()
+    {
+        // 日文无词间空格：按词对齐必然失败而回退（旧行为）。逐字符对齐后，模型断成完整句且
+        // 字符序列不变 → 对齐通过 → 合并出句子级字幕，时间按字符插值保留。
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(JapaneseAsrCues(), CancellationToken.None);
+
+        Assert.Equal(4, output.Count);
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal("顔洗ってえらい。", output[2].Text);   // 「顔」与「洗って」并入同一句，不再割裂
+        Assert.Equal("00:00:08,000", output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_Cjk_FallsBackWhenCharactersChanged()
+    {
+        // 模型擅自改字（多了「猫」）→ 字符序列对不上 → 原样返回。
+        var input = JapaneseAsrCues();
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|おはよう猫。\n2|起きられてえらい。")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(input, CancellationToken.None);
+
+        Assert.Equal(input.Select(c => c.Text), output.Select(c => c.Text));
+    }
+
+    [Fact]
+    public async Task Translate_LocalAsrSource_ResegmentsWithoutSmartAndWritesBack()
+    {
+        // 本地 Whisper 源字幕（.local-asr.ja.srt）即使 smart 关闭也应重分段，并把句子级结果写回源文件。
+        var srt = WriteSrt("clip.local-asr.ja.srt", JapaneseAsrCues());
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                if (RequestSystem(captured.Body).Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。"));
+                }
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler); // SmartTranslationPromptsEnabled = false
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var rewrittenSource = SrtTools.ParseSrt(File.ReadAllText(srt));
+        Assert.Equal(4, rewrittenSource.Count);                       // 源 .local-asr.ja.srt 被写回为整句
+        Assert.Equal("顔洗ってえらい。", rewrittenSource[2].Text);
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(4, result.Count);
     }
 
     private static List<SubtitleCue> MultilineAsrCues() =>

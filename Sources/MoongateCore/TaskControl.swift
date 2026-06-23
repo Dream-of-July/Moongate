@@ -43,20 +43,23 @@ public final class TaskControlToken: @unchecked Sendable {
         }
     }
 
-    public func pause() {
+    @discardableResult
+    public func pause() -> Bool {
         lock.lock()
-        guard !cancelled, !paused else { lock.unlock(); return }
+        guard !cancelled, !paused else { lock.unlock(); return false }
         paused = true
         let pid = activePID
         lock.unlock()
         if pid != 0 {
             Self.signalQueue.async { Self.signalTree(pid, SIGSTOP) }
         }
+        return true
     }
 
-    public func resume() {
+    @discardableResult
+    public func resume() -> Bool {
         lock.lock()
-        guard paused else { lock.unlock(); return }
+        guard paused else { lock.unlock(); return false }
         paused = false
         let pid = activePID
         let pending = waiters
@@ -66,6 +69,7 @@ public final class TaskControlToken: @unchecked Sendable {
             Self.signalQueue.async { Self.signalTree(pid, SIGCONT) }
         }
         for waiter in pending { waiter.continuation.resume() }
+        return true
     }
 
     public func cancel() {

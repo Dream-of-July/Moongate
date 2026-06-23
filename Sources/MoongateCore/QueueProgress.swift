@@ -1,7 +1,11 @@
 import Foundation
 
 public enum QueueProgressPhase: String, CaseIterable, Sendable, Equatable {
+    case modelDownload
     case download
+    case audioExtract
+    case speechRecognition
+    case subtitleSegment
     case transcode
     case translate
     case burn
@@ -16,6 +20,61 @@ public struct QueueProgressPlan: Sendable, Equatable {
         if shouldTranslate { phases.append(.translate) }
         if shouldBurn { phases.append(.burn) }
         self.phases = phases
+    }
+}
+
+public struct TaskWorkPhase: Sendable, Equatable {
+    public let phase: QueueProgressPhase
+    public let units: Double
+
+    public init(_ phase: QueueProgressPhase, units: Double) {
+        self.phase = phase
+        self.units = max(0, units)
+    }
+}
+
+public struct TaskWorkPlan: Sendable, Equatable {
+    public let phases: [TaskWorkPhase]
+
+    public var totalUnits: Double {
+        phases.map(\.units).reduce(0, +)
+    }
+
+    public init(phases: [TaskWorkPhase]) {
+        self.phases = phases.filter { $0.units > 0 }
+    }
+
+    public init(queuePlan: QueueProgressPlan) {
+        self.init(phases: queuePlan.phases.map { TaskWorkPhase($0, units: 1) })
+    }
+
+    public init(
+        shouldDownloadModel: Bool = false,
+        shouldExtractAudio: Bool = false,
+        shouldRunASR: Bool = false,
+        shouldSegmentSubtitles: Bool = false,
+        shouldTranscode: Bool,
+        shouldTranslate: Bool,
+        shouldBurn: Bool,
+        modelDownloadUnits: Double = 1,
+        downloadUnits: Double = 1,
+        audioExtractUnits: Double = 1,
+        speechRecognitionUnits: Double = 1,
+        subtitleSegmentUnits: Double = 1,
+        transcodeUnits: Double = 1,
+        translateUnits: Double = 1,
+        burnUnits: Double = 1
+    ) {
+        var phases: [TaskWorkPhase] = []
+        if shouldDownloadModel { phases.append(TaskWorkPhase(.modelDownload, units: modelDownloadUnits)) }
+        phases.append(TaskWorkPhase(.download, units: downloadUnits))
+        if shouldExtractAudio { phases.append(TaskWorkPhase(.audioExtract, units: audioExtractUnits)) }
+        if shouldRunASR { phases.append(TaskWorkPhase(.speechRecognition, units: speechRecognitionUnits)) }
+        if shouldSegmentSubtitles { phases.append(TaskWorkPhase(.subtitleSegment, units: subtitleSegmentUnits)) }
+        if shouldTranscode { phases.append(TaskWorkPhase(.transcode, units: transcodeUnits)) }
+        if shouldTranslate { phases.append(TaskWorkPhase(.translate, units: translateUnits)) }
+        if shouldBurn { phases.append(TaskWorkPhase(.burn, units: burnUnits)) }
+        self.init(phases: phases)
     }
 }
 
@@ -35,6 +94,7 @@ public struct TaskProgressSnapshot: Sendable, Equatable {
     public let isEstimatingRemaining: Bool
     public let isTerminal: Bool
     public let plan: QueueProgressPlan?
+    public let workPlan: TaskWorkPlan?
     public let currentPhase: QueueProgressPhase?
 
     public init(
@@ -43,13 +103,15 @@ public struct TaskProgressSnapshot: Sendable, Equatable {
         isEstimatingRemaining: Bool,
         isTerminal: Bool,
         plan: QueueProgressPlan? = nil,
-        currentPhase: QueueProgressPhase? = nil
+        currentPhase: QueueProgressPhase? = nil,
+        workPlan: TaskWorkPlan? = nil
     ) {
         self.overallProgress = overallProgress
         self.remainingSeconds = remainingSeconds
         self.isEstimatingRemaining = isEstimatingRemaining
         self.isTerminal = isTerminal
         self.plan = plan
+        self.workPlan = workPlan
         self.currentPhase = currentPhase
     }
 }
@@ -78,14 +140,28 @@ public enum QueueProgressEstimator {
         phaseProgress: Double?,
         previousOverallProgress: Double?
     ) -> Double? {
-        guard !plan.phases.isEmpty else { return previousOverallProgress }
+        taskOverallProgress(
+            workPlan: TaskWorkPlan(queuePlan: plan),
+            currentPhase: currentPhase,
+            phaseProgress: phaseProgress,
+            previousOverallProgress: previousOverallProgress
+        )
+    }
+
+    public static func taskOverallProgress(
+        workPlan: TaskWorkPlan,
+        currentPhase: QueueProgressPhase?,
+        phaseProgress: Double?,
+        previousOverallProgress: Double?
+    ) -> Double? {
+        guard workPlan.totalUnits > 0 else { return previousOverallProgress }
         guard let currentPhase,
-              let index = plan.phases.firstIndex(of: currentPhase) else {
+              let index = workPlan.phases.firstIndex(where: { $0.phase == currentPhase }) else {
             return previousOverallProgress
         }
         let current = normalizedFraction(phaseProgress) ?? 0
-        let phaseWeight = 1.0 / Double(plan.phases.count)
-        let computed = Double(index) * phaseWeight + current * phaseWeight
+        let completedUnits = workPlan.phases[..<index].map(\.units).reduce(0, +)
+        let computed = (completedUnits + current * workPlan.phases[index].units) / workPlan.totalUnits
         guard let previous = normalizedFraction(previousOverallProgress) else { return computed }
         return max(previous, computed)
     }
@@ -142,7 +218,7 @@ public enum QueueProgressEstimator {
         }
         let openItems = items.filter { !$0.isTerminal }
         let overall = min(max(total / Double(items.count), 0), 1)
-        let hasPlanningData = openItems.contains { $0.plan != nil }
+        let hasPlanningData = openItems.contains { $0.plan != nil || $0.workPlan != nil }
         guard hasPlanningData else {
             let remaining = openItems.compactMap(\.remainingSeconds).filter { $0.isFinite && $0 >= 0 }.max()
             let estimating = openItems.contains { $0.isEstimatingRemaining }
@@ -158,7 +234,8 @@ public enum QueueProgressEstimator {
         var hasUnknownWork = false
         for item in openItems {
             var taskRemaining = 0.0
-            guard let plan = item.plan else {
+            let workPlan = item.workPlan ?? item.plan.map(TaskWorkPlan.init(queuePlan:))
+            guard let workPlan else {
                 if let seconds = validSeconds(item.remainingSeconds) {
                     let phase = item.currentPhase ?? .download
                     phaseWork[phase, default: 0] += seconds
@@ -172,7 +249,7 @@ public enum QueueProgressEstimator {
 
             let nextIndex: Int
             if let currentPhase = item.currentPhase,
-               let index = plan.phases.firstIndex(of: currentPhase) {
+               let index = workPlan.phases.firstIndex(where: { $0.phase == currentPhase }) {
                 if let seconds = validSeconds(item.remainingSeconds) {
                     phaseWork[currentPhase, default: 0] += seconds
                     taskRemaining += seconds
@@ -181,13 +258,16 @@ public enum QueueProgressEstimator {
                 }
                 nextIndex = index + 1
             } else {
-                let completed = Int(floor((normalizedFraction(item.overallProgress) ?? 0) * Double(plan.phases.count) + 0.0001))
-                nextIndex = min(max(completed, 0), plan.phases.count)
+                nextIndex = completedPhaseCount(
+                    workPlan: workPlan,
+                    overallProgress: normalizedFraction(item.overallProgress) ?? 0
+                )
             }
 
-            for phase in plan.phases.dropFirst(nextIndex) {
-                if let seconds = validSeconds(phaseMedianDurations[phase]) {
-                    phaseWork[phase, default: 0] += seconds
+            for phase in workPlan.phases.dropFirst(nextIndex) {
+                if let secondsPerUnit = validSeconds(phaseMedianDurations[phase.phase]) {
+                    let seconds = secondsPerUnit * phase.units
+                    phaseWork[phase.phase, default: 0] += seconds
                     taskRemaining += seconds
                 } else {
                     hasUnknownWork = true
@@ -215,5 +295,17 @@ public enum QueueProgressEstimator {
     private static func validSeconds(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value >= 0 else { return nil }
         return value
+    }
+
+    private static func completedPhaseCount(workPlan: TaskWorkPlan, overallProgress: Double) -> Int {
+        let completedUnits = overallProgress * workPlan.totalUnits
+        var running = 0.0
+        var count = 0
+        for phase in workPlan.phases {
+            guard running + phase.units <= completedUnits + 0.0001 else { break }
+            running += phase.units
+            count += 1
+        }
+        return min(max(count, 0), workPlan.phases.count)
     }
 }

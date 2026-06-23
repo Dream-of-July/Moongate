@@ -258,12 +258,49 @@ public class BurnerParameterTests
         Assert.Null(FFmpegBurner.ShortSide(null, null));
     }
 
-    /// <summary>码率一致：不缩放（保持源分辨率）时不封顶码率——MaxrateFlags(null) 为空，走纯 CRF。</summary>
+    /// <summary>缺探测信息时不封顶码率；有探测信息时用 maxrate/bufsize 抑制烧录后体积膨胀。</summary>
     [Fact]
     public void MaxrateFlags_Null_NoCap_NonNull_Caps()
     {
         Assert.Empty(FFmpegBurner.MaxrateFlags(null));
         Assert.Equal(new[] { "-maxrate", "6000k", "-bufsize", "12000k" }, FFmpegBurner.MaxrateFlags(6000));
+    }
+
+    [Fact]
+    public void SoftwareNoScale_CanUseMaxrateCap()
+    {
+        var args = FFmpegBurner.SdrH264VideoArgs(6000);
+
+        Assert.Contains("-crf", args);
+        Assert.Contains("-maxrate", args);
+        Assert.Contains("6000k", args);
+    }
+
+    [Fact]
+    public void HardwareEncoders_UseBitrateCapWhenProvided()
+    {
+        var h264 = FFmpegBurner.HwH264VideoArgs("h264_nvenc", 6000);
+        Assert.Contains("-b:v", h264);
+        Assert.Contains("6000k", h264);
+        Assert.DoesNotContain("0", h264);
+
+        var hevc = FFmpegBurner.HwHevcVideoArgs("hevc_qsv", 8000);
+        Assert.Contains("-b:v", hevc);
+        Assert.Contains("8000k", hevc);
+
+        var hdr = FFmpegBurner.HwHdrVideoArgs("hevc_amf", 10000);
+        Assert.Contains("-b:v", hdr);
+        Assert.Contains("10000k", hdr);
+        Assert.DoesNotContain("-qp_p", hdr);
+    }
+
+    [Fact]
+    public void BurnerComputesMaxrateForNoScaleWhenSourceSizeIsKnown()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Burner.cs"));
+
+        Assert.Contains("var capShortSide = targetShortSide ?? sourceShortSide", source);
+        Assert.Contains("capShortSide is { } cap", source);
     }
 
     [Fact]
@@ -302,6 +339,21 @@ public class BurnerParameterTests
     {
         Assert.Equal("real error", FFmpegBurner.LastLine("info\nreal error\n  \n"));
         Assert.Equal("未知错误", FFmpegBurner.LastLine(""));
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Package.swift"))
+                && Directory.Exists(Path.Combine(dir.FullName, "windows")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate repository root.");
     }
 }
 
@@ -454,4 +506,5 @@ public class EncoderSelectionTests
         Assert.Equal("aac", chain[0][1]);
         Assert.Equal("copy", chain[1][1]);
     }
+
 }

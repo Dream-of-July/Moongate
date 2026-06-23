@@ -7,8 +7,9 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
-VERSION="0.7.6"
+VERSION="0.8.0-rc.1"
 OUT="${1:-$HOME/Downloads/Moongate-Windows-Setup-v$VERSION.exe}"
+MOONGATE_WHISPER_CPP_RUNTIME_DIR="${MOONGATE_WHISPER_CPP_RUNTIME_DIR:-}"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
@@ -22,6 +23,37 @@ dotnet publish "$WIN_DIR/MoongateApp/MoongateApp.csproj" -c Release -r win-x64 \
     -p:EnableWindowsTargeting=true \
     -p:Version="$VERSION" \
     -o "$PUBLISH_DIR" --nologo
+
+if [[ -n "$MOONGATE_WHISPER_CPP_RUNTIME_DIR" ]]; then
+    if [[ ! -d "$MOONGATE_WHISPER_CPP_RUNTIME_DIR" ]]; then
+        echo "MOONGATE_WHISPER_CPP_RUNTIME_DIR 不是目录：$MOONGATE_WHISPER_CPP_RUNTIME_DIR" >&2
+        exit 1
+    fi
+    if [[ ! -f "$MOONGATE_WHISPER_CPP_RUNTIME_DIR/whisper-cli.exe" ]]; then
+        echo "MOONGATE_WHISPER_CPP_RUNTIME_DIR 缺少 whisper-cli.exe。" >&2
+        exit 1
+    fi
+    echo "==> 打包 whisper.cpp runtime: $MOONGATE_WHISPER_CPP_RUNTIME_DIR"
+    mkdir -p "$PUBLISH_DIR/asr/runtime"
+    cp -R "$MOONGATE_WHISPER_CPP_RUNTIME_DIR"/. "$PUBLISH_DIR/asr/runtime/"
+    runtime_sha="$(shasum -a 256 "$PUBLISH_DIR/asr/runtime/whisper-cli.exe" | awk '{print $1}')"
+    cat > "$PUBLISH_DIR/asr/runtime/asr-runtime-manifest.json" <<JSON
+{
+  "runtimes": [
+    {
+      "provider": "whisper.cpp",
+      "platform": "windows",
+      "architecture": "x64",
+      "version": "${MOONGATE_WHISPER_CPP_RUNTIME_VERSION:-local}",
+      "executableRelativePath": "whisper-cli.exe",
+      "sha256": "$runtime_sha",
+      "license": "${MOONGATE_WHISPER_CPP_RUNTIME_LICENSE:-MIT}",
+      "sourceDescription": "${MOONGATE_WHISPER_CPP_RUNTIME_SOURCE:-local staged whisper.cpp runtime}"
+    }
+  ]
+}
+JSON
+fi
 
 echo "==> makensis 打安装器"
 makensis -INPUTCHARSET UTF8 \

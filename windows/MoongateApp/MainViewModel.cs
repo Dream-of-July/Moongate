@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Media;
 using System.Windows;
 using System.Windows.Threading;
 using Moongate.Core;
@@ -22,7 +23,7 @@ public enum ParseStage
 /// QueueManager 的事件在任意线程触发，这里统一经 Dispatcher 封送回 UI 线程后
 /// 增量更新 ObservableCollection（不整表重建）。
 /// </summary>
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
 {
     private readonly IDownloadEngine _engine;
     private readonly Dispatcher _dispatcher;
@@ -54,14 +55,18 @@ public sealed class MainViewModel : ObservableObject
     {
         _engine = engine;
         _settings = AppSettings.Load();
+        _dispatcher = Dispatcher.CurrentDispatcher;
         // 设置文件损坏被备份时（DATA-SETTINGS-002），给一次非阻断提示，而不是静默回默认。
         if (AppSettings.LastCorruptBackupPath is { } corruptBackup)
         {
             AppSettings.LastCorruptBackupPath = null;
             _enqueueNotice = Loc.F("L.Settings.CorruptResetFmt", corruptBackup);
         }
-        Queue = queue ?? new QueueManager(engine, settings: _settings);
-        _dispatcher = Dispatcher.CurrentDispatcher;
+        Queue = queue ?? new QueueManager(
+            engine,
+            settings: _settings,
+            localAsrGenerator: LocalAsrGeneratorFactory.Create(_settings),
+            completionNotifier: this);
         Queue.ItemsChanged += () => _dispatcher.BeginInvoke(ReconcileQueueRows);
         Queue.ItemUpdated += OnQueueItemUpdated;
 
@@ -83,6 +88,33 @@ public sealed class MainViewModel : ObservableObject
         LocalizationManager.LanguageChanged += OnLanguageChanged;
     }
 
+    public void QueueDidComplete(QueueCompletionNotification notification)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (Settings.CompletionNotificationsEnabled)
+            {
+                EnqueueNotice = CompletionNoticeText(notification);
+            }
+            if (Settings.CompletionSoundEnabled)
+            {
+                SystemSounds.Asterisk.Play();
+            }
+        });
+    }
+
+    private static string CompletionNoticeText(QueueCompletionNotification notification)
+    {
+        var text = notification.CompletedCount == 1 && notification.Titles.Count > 0
+            ? Loc.F("L.Notice.DownloadCompletedTitleFmt", notification.Titles[0])
+            : Loc.F("L.Notice.DownloadCompletedCountFmt", notification.CompletedCount);
+        if (notification.PartialFailureCount > 0)
+        {
+            text += Loc.S("L.Notice.JoinSep") + Loc.F("L.Notice.DownloadPartialFmt", notification.PartialFailureCount);
+        }
+        return text;
+    }
+
     // MARK: - 命令
 
     public RelayCommand ParseCommand { get; }
@@ -99,6 +131,9 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand ToggleQueueCommand { get; }
     public RelayCommand SummarizeCommand { get; }
     public RelayCommand CancelSummaryCommand { get; }
+
+    /// <summary>App 级共享更新服务，供主窗设置入口的「有可用更新」红点绑定（只读观察，不触发检查）。</summary>
+    public UpdateService Updater => App.WindowsUpdater;
 
     // MARK: - 阶段与派生状态
 
@@ -200,7 +235,7 @@ public sealed class MainViewModel : ObservableObject
         ? string.Join(" · ", new[] { info.DurationText, info.Uploader }.Where(s => !string.IsNullOrEmpty(s)))
         : "";
     public string? ThumbnailUrl => _currentInfo?.ThumbnailUrl;
-    public bool HasNoSubtitles => _currentInfo is { } current && current.Subtitles.Count == 0;
+    public bool HasNoSubtitles => SubtitleOptions.Count == 0;
 
     private FormatChoice? _selectedFormat;
     public FormatChoice? SelectedFormat
@@ -213,6 +248,42 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public ObservableCollection<SubtitleOptionViewModel> SubtitleOptions { get; } = [];
+
+    private string? _primarySubtitleTrackId;
+    public string? PrimarySubtitleTrackId
+    {
+        get => _primarySubtitleTrackId;
+        set
+        {
+            if (!SetProperty(ref _primarySubtitleTrackId, value)) return;
+            foreach (var option in SubtitleOptions)
+            {
+                option.RefreshPrimarySource();
+            }
+            RaisePropertyChanged(nameof(PrimarySubtitleNone));
+            RaisePropertyChanged(nameof(SelectedPrimarySubtitleOption));
+            if (_primarySubtitleTrackId is null && _chineseMode != ChineseSubtitleMode.Off)
+            {
+                ChineseMode = ChineseSubtitleMode.Off;
+                return;
+            }
+            RaiseChineseDerived();
+        }
+    }
+
+    public bool PrimarySubtitleNone
+    {
+        get => PrimarySubtitleTrackId is null;
+        set { if (value) SelectPrimarySubtitle(null); }
+    }
+
+    public SubtitleOptionViewModel? SelectedPrimarySubtitleOption =>
+        SubtitleOptions.FirstOrDefault(option => option.Id == PrimarySubtitleTrackId);
+
+    public void SelectPrimarySubtitle(SubtitleChoice? primary)
+    {
+        PrimarySubtitleTrackId = primary?.Id;
+    }
 
     // MARK: - 输出选项（HDR + 转码格式）
 
@@ -322,7 +393,7 @@ public sealed class MainViewModel : ObservableObject
         var session = _session;
         SummaryState = SummaryPhase.Running;
         var settings = Settings;
-        var preferredLangs = info.Subtitles.Select(s => s.Id).ToList();
+        var preferredLangs = info.Subtitles.Select(s => s.LanguageCode).ToList();
         try
         {
             // 优先字幕文本；最佳努力，失败/无字幕回退简介。
@@ -419,16 +490,13 @@ public sealed class MainViewModel : ObservableObject
     private static bool RequiresTranslation(ChineseSubtitleMode mode) =>
         mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn;
 
-    public bool HasSubtitleSelected => SubtitleOptions.Any(option => option.IsSelected);
+    public bool HasSubtitleSelected => SelectedPrimarySubtitleOption is not null;
     public bool ChineseModeEnabled => HasSubtitleSelected;
 
-    /// <summary>勾选多条字幕时实际作为翻译源的那条（真实字幕优先、按解析顺序取第一条）。</summary>
+    /// <summary>实际作为翻译源的主字幕来源。</summary>
     private SubtitleChoice? TranslationSourceSubtitle()
     {
-        if (_currentInfo is not { } info) return null;
-        var selectedIds = SubtitleOptions.Where(option => option.IsSelected).Select(option => option.Id).ToHashSet();
-        var chosen = info.Subtitles.Where(subtitle => selectedIds.Contains(subtitle.Id)).ToList();
-        return chosen.FirstOrDefault(subtitle => !subtitle.IsAuto) ?? chosen.FirstOrDefault();
+        return SelectedPrimarySubtitleOption?.Choice;
     }
 
     /// <summary>实际翻译源字幕是否已与翻译目标语言同一脚本（同则跳过翻译、直接使用/烧录）。</summary>
@@ -436,7 +504,7 @@ public sealed class MainViewModel : ObservableObject
     {
         var source = TranslationSourceSubtitle();
         if (source is null) return false;
-        return TranslationLanguage.Matches(source.Id, Settings.TranslationTargetLanguage);
+        return TranslationLanguage.Matches(source.LanguageCode, Settings.TranslationTargetLanguage);
     }
 
     public string? ChineseHintText
@@ -446,7 +514,6 @@ public sealed class MainViewModel : ObservableObject
             if (!HasSubtitleSelected) return Loc.S("L.Hint.SelectSubtitleFirst");
             if (ShowTranslationUnconfigured) return null;
             if (_chineseMode != ChineseSubtitleMode.Off
-                && SubtitleOptions.Count(option => option.IsSelected) > 1
                 && TranslationSourceSubtitle() is { } source)
             {
                 // 直压模式不翻译，提示「将烧录」；翻译类模式提示「将翻译」
@@ -460,7 +527,7 @@ public sealed class MainViewModel : ObservableObject
 
     public bool ShowTranslationUnconfigured =>
         HasSubtitleSelected && !Settings.IsTranslationConfigured
-        && _chineseMode != ChineseSubtitleMode.BurnOriginal;
+        && RequiresTranslation(_chineseMode);
 
     /// <summary>翻译类模式下源字幕已是中文的提示；直压模式本就不翻译，无需提示。</summary>
     public string? ChineseSourceNote =>
@@ -485,7 +552,7 @@ public sealed class MainViewModel : ObservableObject
 
     internal void OnSubtitleSelectionChanged()
     {
-        // 字幕处理依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
+        // 字幕输出依赖一个主字幕来源；全部取消时强制回「不需要」。
         if (!HasSubtitleSelected && _chineseMode != ChineseSubtitleMode.Off)
         {
             ChineseMode = ChineseSubtitleMode.Off;
@@ -504,6 +571,7 @@ public sealed class MainViewModel : ObservableObject
         {
             _settings = value;
             Queue.SyncConcurrency(value);
+            Queue.SyncLocalAsrGenerator(LocalAsrGeneratorFactory.Create(value));
             RaisePropertyChanged();
             RaiseChineseDerived();
             RaisePropertyChanged(nameof(SummaryAvailable));
@@ -670,10 +738,12 @@ public sealed class MainViewModel : ObservableObject
         CurrentInfo = info;
         SelectedFormat = info.Formats.FirstOrDefault();
         SubtitleOptions.Clear();
-        foreach (var subtitle in info.Subtitles)
+        PrimarySubtitleTrackId = null;
+        foreach (var subtitle in AvailableSubtitleChoices(info))
         {
             SubtitleOptions.Add(new SubtitleOptionViewModel(this, subtitle));
         }
+        RaisePropertyChanged(nameof(HasNoSubtitles));
         RestoreLastDownloadOptions(info);
         ResetSummary();
         SetStage(ParseStage.Ready);
@@ -692,18 +762,27 @@ public sealed class MainViewModel : ObservableObject
         SelectedOutputFormat = OutputFormats.FirstOrDefault(o => o.Format == OutputFormatFromRaw(Settings.LastOutputFormat))
             ?? OutputFormats[0];
 
-        var wantedLangs = Settings.LastSubtitleLangs.Select(NormalizedLang).ToHashSet();
         var matchedAny = false;
-        if (wantedLangs.Count > 0)
+        if (Settings.LastPrimarySubtitleTrackId is { Length: > 0 } lastPrimarySubtitleTrackId
+            && SubtitleOptions.FirstOrDefault(option => option.Id == lastPrimarySubtitleTrackId) is { } exact)
         {
+            SelectPrimarySubtitle(exact.Choice);
+            matchedAny = true;
+        }
+        else
+        {
+            var wantedLangs = Settings.LastSubtitleLangs.Select(NormalizedLang).ToHashSet();
             foreach (var lang in wantedLangs)
             {
-                var group = SubtitleOptions.Where(o => NormalizedLang(o.Id) == lang).ToList();
+                var group = SubtitleOptions
+                    .Where(o => NormalizedLang(o.LanguageCode) == lang && !o.IsLocalAsr)
+                    .ToList();
                 var best = group.FirstOrDefault(o => !o.IsAuto) ?? group.FirstOrDefault();
                 if (best is not null)
                 {
-                    best.IsSelected = true;
+                    SelectPrimarySubtitle(best.Choice);
                     matchedAny = true;
+                    break;
                 }
             }
         }
@@ -715,9 +794,44 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>字幕 id 归一成语言代码：小写、取首个 '-' 前的部分（"ja-JP"/"ja-orig" → "ja"）。</summary>
     private static string NormalizedLang(string id)
     {
-        var lower = id.ToLowerInvariant();
+        var lower = SubtitleTrackId.Parse(id).LanguageCode.ToLowerInvariant();
         var dash = lower.IndexOf('-');
         return dash >= 0 ? lower[..dash] : lower;
+    }
+
+    private IReadOnlyList<SubtitleChoice> AvailableSubtitleChoices(VideoInfo info)
+    {
+        var choices = info.Subtitles.ToList();
+        if (!Queue.HasLocalAsrGenerator) return choices;
+
+        var seenIds = choices.Select(choice => choice.Id).ToHashSet(StringComparer.Ordinal);
+        if (info.Subtitles.Count == 0)
+        {
+            var localAsr = SubtitleChoice.Create(
+                "auto",
+                Loc.S("L.Ready.LocalASRAutoDetect"),
+                SubtitleSourceKind.LocalAsr,
+                provider: "whisper.cpp",
+                variant: "local");
+            if (seenIds.Add(localAsr.Id)) choices.Add(localAsr);
+            return choices;
+        }
+
+        var seenLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var subtitle in info.Subtitles)
+        {
+            var languageCode = NormalizedLang(subtitle.LanguageCode);
+            if (languageCode.Length == 0 || !seenLanguages.Add(languageCode)) continue;
+
+            var localAsr = SubtitleChoice.Create(
+                languageCode,
+                subtitle.Label,
+                SubtitleSourceKind.LocalAsr,
+                provider: "whisper.cpp",
+                variant: "local");
+            if (seenIds.Add(localAsr.Id)) choices.Add(localAsr);
+        }
+        return choices;
     }
 
     private static string ChineseModeRaw(ChineseSubtitleMode mode) => mode switch
@@ -755,20 +869,23 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>把当前选档页的选择记住为「上次下载选项」（无变化不写盘）。</summary>
     private void PersistLastDownloadOptions()
     {
-        var selectedIds = SubtitleOptions.Where(o => o.IsSelected).Select(o => o.Id).ToList();
+        var primary = SelectedPrimarySubtitleOption;
+        List<string> selectedLangs = primary is null ? [] : [primary.LanguageCode];
         var mode = ChineseModeRaw(_chineseMode);
         var format = OutputFormatRaw(SelectedOutputFormat?.Format ?? OutputFormat.Original);
         if (mode == Settings.LastSubtitleMode
             && format == Settings.LastOutputFormat
             && _preferHdr == Settings.LastPreferHdr
-            && selectedIds.SequenceEqual(Settings.LastSubtitleLangs))
+            && PrimarySubtitleTrackId == Settings.LastPrimarySubtitleTrackId
+            && selectedLangs.SequenceEqual(Settings.LastSubtitleLangs))
         {
             return;
         }
         var updated = Settings with
         {
             LastSubtitleMode = mode,
-            LastSubtitleLangs = selectedIds,
+            LastSubtitleLangs = selectedLangs,
+            LastPrimarySubtitleTrackId = PrimarySubtitleTrackId,
             LastOutputFormat = format,
             LastPreferHdr = _preferHdr,
         };
@@ -839,6 +956,7 @@ public sealed class MainViewModel : ObservableObject
         SelectedOutputFormat = OutputFormats[0];
         ResetSummary();
         SubtitleOptions.Clear();
+        PrimarySubtitleTrackId = null;
         _chineseMode = ChineseSubtitleMode.Off;
         _candidates = [];
         Candidates.Clear();
@@ -905,13 +1023,17 @@ public sealed class MainViewModel : ObservableObject
                 // 字幕处理开启时自动选一条字幕作翻译源（真实字幕优先）
                 var subtitleLangs = new List<string>();
                 var autoSubtitleLangs = new List<string>();
+                var subtitleTracks = new List<SubtitleChoice>();
+                string? primarySubtitleTrackId = null;
                 if (mode != ChineseSubtitleMode.Off)
                 {
                     var sub = info.Subtitles.FirstOrDefault(s => !s.IsAuto) ?? info.Subtitles.FirstOrDefault();
                     if (sub is not null)
                     {
-                        if (sub.IsAuto) autoSubtitleLangs.Add(sub.Id);
-                        else subtitleLangs.Add(sub.Id);
+                        subtitleTracks.Add(sub);
+                        primarySubtitleTrackId = sub.Id;
+                        if (sub.IsAuto) autoSubtitleLangs.Add(sub.LanguageCode);
+                        else subtitleLangs.Add(sub.LanguageCode);
                     }
                 }
                 var multiFile = mode != ChineseSubtitleMode.Off
@@ -925,6 +1047,8 @@ public sealed class MainViewModel : ObservableObject
                     FormatId = formatId,
                     SubtitleLangs = subtitleLangs,
                     AutoSubtitleLangs = autoSubtitleLangs,
+                    SubtitleTracks = subtitleTracks,
+                    PrimarySubtitleTrackId = primarySubtitleTrackId,
                     DestinationDirectory = DownloadPaths.DestinationDirectory(info.Title, multiFile),
                     PreferredTitle = isPage ? info.Title : null,
                 };
@@ -947,6 +1071,7 @@ public sealed class MainViewModel : ObservableObject
         UrlText = "";
         SelectedFormat = null;
         SubtitleOptions.Clear();
+        PrimarySubtitleTrackId = null;
         _chineseMode = ChineseSubtitleMode.Off;
         SetStage(ParseStage.Idle);
         RaiseChineseDerived();
@@ -974,7 +1099,8 @@ public sealed class MainViewModel : ObservableObject
             RequestOpenSettings(Loc.S("L.Notice.ConfigureTranslationFirst"));
             return;
         }
-        var formatId = (SelectedFormat ?? info.Formats.FirstOrDefault())?.Id;
+        var selectedFormat = SelectedFormat ?? info.Formats.FirstOrDefault();
+        var formatId = selectedFormat?.Id;
         if (formatId is null) return;
         // 去重：队列里已有同源未完成任务时不再起新任务，只给一行提示。
         if (Queue.HasOpenDuplicate(info.VideoId, info.SourceUrl, formatId))
@@ -982,7 +1108,8 @@ public sealed class MainViewModel : ObservableObject
             EnqueueNotice = Loc.S("L.Notice.Duplicate");
             return;
         }
-        var chosen = SubtitleOptions.Where(option => option.IsSelected).ToList();
+        var primary = SelectedPrimarySubtitleOption;
+        List<SubtitleOptionViewModel> chosen = primary is null ? [] : [primary];
         // 会产出多个文件（字幕 / 翻译 / 烧录件）时按视频建独立文件夹；单视频直接放 Downloads。
         var multiFile = chosen.Count > 0 || _chineseMode != ChineseSubtitleMode.Off;
         var isPage = _chosenCandidate?.Kind is VideoCandidate.CandidateKind.PageMain
@@ -992,11 +1119,13 @@ public sealed class MainViewModel : ObservableObject
             Url = info.SourceUrl,
             VideoId = info.VideoId,
             FormatId = formatId,
-            SubtitleLangs = chosen.Where(option => !option.IsAuto).Select(option => option.Id).ToList(),
-            AutoSubtitleLangs = chosen.Where(option => option.IsAuto).Select(option => option.Id).ToList(),
+            SubtitleLangs = primary?.Choice.SourceKind == SubtitleSourceKind.Manual ? [primary.LanguageCode] : [],
+            AutoSubtitleLangs = primary?.Choice.SourceKind == SubtitleSourceKind.PlatformAuto ? [primary.LanguageCode] : [],
+            SubtitleTracks = chosen.Select(option => option.Choice).ToList(),
+            PrimarySubtitleTrackId = primary?.Id,
             DestinationDirectory = DownloadPaths.DestinationDirectory(info.Title, multiFile),
             PreferredTitle = isPage ? info.Title : null,
-            PreferHdr = _preferHdr && (SelectedFormat?.HdrAvailable ?? false),
+            PreferHdr = _preferHdr && (selectedFormat?.HdrAvailable ?? false),
             OutputFormat = SelectedOutputFormat?.Format ?? OutputFormat.Original,
         };
         Queue.Enqueue(info, request, _chineseMode, Settings);
@@ -1014,6 +1143,7 @@ public sealed class MainViewModel : ObservableObject
         SelectedOutputFormat = OutputFormats[0];
         ResetSummary();
         SubtitleOptions.Clear();
+        PrimarySubtitleTrackId = null;
         _chineseMode = ChineseSubtitleMode.Off;
         _candidates = [];
         Candidates.Clear();
@@ -1293,30 +1423,54 @@ public sealed class MainViewModel : ObservableObject
     internal static List<string> ExtractUrls(string input) => UrlTokenizer.Extract(input);
 }
 
-/// <summary>字幕多选里的一行。勾选状态变化回调主视图模型以联动字幕处理分组。</summary>
+/// <summary>字幕来源单选里的一行。选择状态变化回调主视图模型以联动字幕输出分组。</summary>
 public sealed class SubtitleOptionViewModel : ObservableObject
 {
     private readonly MainViewModel _owner;
+    public SubtitleChoice Choice { get; }
     public string Id { get; }
+    public string LanguageCode { get; }
     public string Label { get; }
     public bool IsAuto { get; }
+    public bool IsLocalAsr { get; }
 
-    private bool _isSelected;
+    public bool IsPrimarySource
+    {
+        get => _owner.PrimarySubtitleTrackId == Id;
+        set { if (value) _owner.SelectPrimarySubtitle(Choice); }
+    }
+
     public bool IsSelected
     {
-        get => _isSelected;
+        get => IsPrimarySource;
         set
         {
-            if (SetProperty(ref _isSelected, value)) _owner.OnSubtitleSelectionChanged();
+            if (value)
+            {
+                IsPrimarySource = true;
+            }
+            else if (IsPrimarySource)
+            {
+                _owner.SelectPrimarySubtitle(null);
+            }
         }
+    }
+
+    internal void RefreshPrimarySource()
+    {
+        RaisePropertyChanged(nameof(IsPrimarySource));
+        RaisePropertyChanged(nameof(IsSelected));
     }
 
     public SubtitleOptionViewModel(MainViewModel owner, SubtitleChoice choice)
     {
         _owner = owner;
+        Choice = choice;
         Id = choice.Id;
+        LanguageCode = choice.LanguageCode;
         Label = choice.Label;
         IsAuto = choice.IsAuto;
+        IsLocalAsr = choice.SourceKind == SubtitleSourceKind.LocalAsr;
     }
 }
 

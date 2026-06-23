@@ -13,6 +13,7 @@ public sealed class SettingsViewModel : ObservableObject
     private readonly string _modelPlaceholder = Loc.S("L.Settings.ModelPlaceholder");
 
     private readonly QueueManager _queue;
+    private readonly AppSettings _original;
     private CancellationTokenSource? _testCts;
     private CancellationTokenSource? _fetchCts;
     private List<string> _fetchedModels = [];
@@ -25,10 +26,15 @@ public sealed class SettingsViewModel : ObservableObject
     public RelayCommand DownloadsPlusCommand { get; }
     public RelayCommand BurnsMinusCommand { get; }
     public RelayCommand BurnsPlusCommand { get; }
+    public RelayCommand AdoptLocalAsrRuntimeCommand { get; }
+    public RelayCommand<AsrModelCatalogEntry> InstallLocalAsrModelCommand { get; }
+    public RelayCommand<AsrModelCatalogEntry> DeleteLocalAsrModelCommand { get; }
+    public RelayCommand RefreshStorageCommand { get; }
 
     public SettingsViewModel(AppSettings current, QueueManager queue, string? initialNotice)
     {
         _queue = queue;
+        _original = current;
         _aiProvider = current.AIProvider;
         _aiBaseUrl = current.AIBaseUrl;
         _aiAuthToken = current.AIAuthToken;
@@ -48,6 +54,8 @@ public sealed class SettingsViewModel : ObservableObject
         _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "zh-Hant" => 2, "en" => 3, _ => 0 };
         _targetLanguageIndex = current.TranslationTargetLanguage switch { "zh-Hant" => 1, "en" => 2, _ => 0 };
         _onboardingCompleted = current.OnboardingCompleted;
+        _completionNotificationsEnabled = current.CompletionNotificationsEnabled;
+        _completionSoundEnabled = current.CompletionSoundEnabled;
         _limitBurnTo1080 = current.MaxBurnHeight is not null;
         _encodeBackend = current.EncodeBackend;
         _burnAlwaysH264 = current.BurnAlwaysH264;
@@ -55,6 +63,10 @@ public sealed class SettingsViewModel : ObservableObject
         _maxBurns = current.MaxConcurrentBurns;
         _videoProxyUrl = current.VideoProxyUrl;
         _ignoreVideoCertificateErrors = current.IgnoreVideoCertificateErrors;
+        _localAsrEnabled = current.LocalAsrEnabled;
+        _localAsrRuntimePath = current.LocalAsrRuntimePath;
+        _localAsrModelPath = current.LocalAsrModelPath;
+        _localAsrModelId = current.LocalAsrModelId;
         _notice = initialNotice;
 
         AIEndpoint = new APIEndpointActions(
@@ -79,9 +91,14 @@ public sealed class SettingsViewModel : ObservableObject
         DownloadsPlusCommand = new RelayCommand(() => MaxDownloads += 1, () => MaxDownloads < 5);
         BurnsMinusCommand = new RelayCommand(() => MaxBurns -= 1, () => MaxBurns > 1);
         BurnsPlusCommand = new RelayCommand(() => MaxBurns += 1, () => MaxBurns < 3);
+        AdoptLocalAsrRuntimeCommand = new RelayCommand(AdoptLocalAsrRuntime);
+        InstallLocalAsrModelCommand = new RelayCommand<AsrModelCatalogEntry>(entry => _ = InstallLocalAsrModelAsync(entry));
+        DeleteLocalAsrModelCommand = new RelayCommand<AsrModelCatalogEntry>(DeleteLocalAsrModel);
+        RefreshStorageCommand = new RelayCommand(() => _ = CalculateStorageSizesAsync(), () => !StorageCalculating);
 
         RefreshLoginStatus();
         RefreshDependencyStatus();
+        RefreshLocalAsrModelCatalog();
     }
 
     // MARK: - 默认 AI 服务
@@ -514,6 +531,20 @@ public sealed class SettingsViewModel : ObservableObject
 
     private readonly bool _onboardingCompleted;
 
+    private bool _completionNotificationsEnabled;
+    public bool CompletionNotificationsEnabled
+    {
+        get => _completionNotificationsEnabled;
+        set => SetProperty(ref _completionNotificationsEnabled, value);
+    }
+
+    private bool _completionSoundEnabled;
+    public bool CompletionSoundEnabled
+    {
+        get => _completionSoundEnabled;
+        set => SetProperty(ref _completionSoundEnabled, value);
+    }
+
     private bool _limitBurnTo1080;
     /// <summary>勾选 = MaxBurnHeight 1080；关闭 = null（保持源分辨率）。</summary>
     public bool LimitBurnTo1080 { get => _limitBurnTo1080; set => SetProperty(ref _limitBurnTo1080, value); }
@@ -588,6 +619,144 @@ public sealed class SettingsViewModel : ObservableObject
     {
         get => _ignoreVideoCertificateErrors;
         set => SetProperty(ref _ignoreVideoCertificateErrors, value);
+    }
+
+    // MARK: - 本地语音识别
+
+    private bool _localAsrEnabled;
+    public bool LocalAsrEnabled { get => _localAsrEnabled; set => SetProperty(ref _localAsrEnabled, value); }
+
+    private string _localAsrRuntimePath;
+    public string LocalAsrRuntimePath { get => _localAsrRuntimePath; set => SetProperty(ref _localAsrRuntimePath, value); }
+
+    private string _localAsrModelPath;
+    public string LocalAsrModelPath { get => _localAsrModelPath; set => SetProperty(ref _localAsrModelPath, value); }
+
+    private string _localAsrModelId;
+    public string LocalAsrModelId { get => _localAsrModelId; set => SetProperty(ref _localAsrModelId, value); }
+
+    private IReadOnlyList<AsrModelCatalogEntry> _localAsrModelCatalogEntries = [];
+    public IReadOnlyList<AsrModelCatalogEntry> LocalAsrModelCatalogEntries
+    {
+        get => _localAsrModelCatalogEntries;
+        private set => SetProperty(ref _localAsrModelCatalogEntries, value);
+    }
+
+    private string _localAsrInstallingModelId = "";
+    public string LocalAsrInstallingModelId
+    {
+        get => _localAsrInstallingModelId;
+        private set
+        {
+            if (!SetProperty(ref _localAsrInstallingModelId, value)) return;
+            RaisePropertyChanged(nameof(CanInstallLocalAsrModel));
+        }
+    }
+
+    private double? _localAsrModelInstallProgress;
+    public double? LocalAsrModelInstallProgress
+    {
+        get => _localAsrModelInstallProgress;
+        private set => SetProperty(ref _localAsrModelInstallProgress, value);
+    }
+
+    public bool CanInstallLocalAsrModel => LocalAsrInstallingModelId.Length == 0;
+
+    private static string LocalAsrModelStoreDirectory =>
+        Path.Combine(AppSettings.SupportDirectory, "asr", "models");
+
+    private static IReadOnlyList<string> LocalAsrRuntimeSearchPaths =>
+    [
+        Path.Combine(AppSettings.SupportDirectory, "asr", "runtime"),
+        Path.Combine(AppSettings.SupportDirectory, "asr", "runtime", "bin"),
+        Path.Combine(AppContext.BaseDirectory, "asr", "runtime"),
+        Path.Combine(AppContext.BaseDirectory, "asr", "runtime", "bin"),
+    ];
+
+    private void AdoptLocalAsrRuntime()
+    {
+        var runtime = new AsrRuntimeLocator(extraSearchPaths: LocalAsrRuntimeSearchPaths).Locate();
+        if (runtime is null)
+        {
+            Notice = Loc.S("L.Settings.LocalASRRuntimeNotFound");
+            return;
+        }
+
+        LocalAsrRuntimePath = runtime.ExecutablePath;
+        Notice = string.Format(Loc.S("L.Settings.LocalASRRuntimeFound"), runtime.ExecutablePath);
+    }
+
+    private void RefreshLocalAsrModelCatalog()
+    {
+        try
+        {
+            var catalog = new AsrModelCatalog(
+                AsrModelManifest.RecommendedWhisperCpp,
+                new AsrModelStore(LocalAsrModelStoreDirectory));
+            LocalAsrModelCatalogEntries = catalog.Entries;
+        }
+        catch (Exception error)
+        {
+            Notice = error.Message;
+            LocalAsrModelCatalogEntries = [];
+        }
+    }
+
+    private async Task InstallLocalAsrModelAsync(AsrModelCatalogEntry entry)
+    {
+        if (!CanInstallLocalAsrModel) return;
+        try
+        {
+            LocalAsrInstallingModelId = entry.Id;
+            LocalAsrModelInstallProgress = 0;
+            var store = new AsrModelStore(LocalAsrModelStoreDirectory);
+            var installer = new AsrModelInstaller(AsrModelManifest.RecommendedWhisperCpp, store);
+            var status = await installer.InstallModelAsync(entry.Id, progress =>
+            {
+                if (progress.Fraction is { } fraction)
+                {
+                    LocalAsrModelInstallProgress = fraction;
+                }
+            }).ConfigureAwait(true);
+            LocalAsrModelId = entry.Id;
+            LocalAsrModelPath = status.InstalledPath;
+            Notice = string.Format(Loc.S("L.Settings.LocalASRModelInstallComplete"), entry.DisplayName);
+            RefreshLocalAsrModelCatalog();
+        }
+        catch (Exception error)
+        {
+            Notice = error.Message;
+            RefreshLocalAsrModelCatalog();
+        }
+        finally
+        {
+            LocalAsrModelInstallProgress = null;
+            LocalAsrInstallingModelId = "";
+        }
+    }
+
+    private void DeleteLocalAsrModel(AsrModelCatalogEntry entry)
+    {
+        try
+        {
+            var catalog = new AsrModelCatalog(
+                AsrModelManifest.RecommendedWhisperCpp,
+                new AsrModelStore(LocalAsrModelStoreDirectory));
+            _ = catalog.DeleteModel(entry.Id);
+            if (LocalAsrModelId == entry.Id)
+            {
+                LocalAsrModelId = "";
+                if (string.Equals(LocalAsrModelPath, entry.InstalledPath, StringComparison.Ordinal))
+                {
+                    LocalAsrModelPath = "";
+                }
+            }
+            RefreshLocalAsrModelCatalog();
+        }
+        catch (Exception error)
+        {
+            Notice = error.Message;
+        }
     }
 
     // MARK: - 站点登录
@@ -707,6 +876,183 @@ public sealed class SettingsViewModel : ObservableObject
         DependencyStatusText = Loc.F("L.Settings.DepStatusFmt", Status(ytDlp), Status(ffmpeg), Status(deno));
     }
 
+    public string StorageStatusText => Loc.F(
+        "L.Settings.StorageStatusFmt",
+        AppSettings.SupportDirectory,
+        LocalAsrModelStoreDirectory,
+        BinaryLocator.BinDirectory);
+
+    // MARK: - 存储管理（只作用于 App-owned 目录：支持数据 / 本地模型 / 依赖组件 / 更新缓存）
+
+    private bool _storageCalculating;
+    public bool StorageCalculating
+    {
+        get => _storageCalculating;
+        private set { if (SetProperty(ref _storageCalculating, value)) RefreshStorageCommand.RaiseCanExecuteChanged(); }
+    }
+
+    private string _storageSupportSizeText = "";
+    public string StorageSupportSizeText { get => _storageSupportSizeText; private set => SetProperty(ref _storageSupportSizeText, value); }
+
+    private string _storageModelsSizeText = "";
+    public string StorageModelsSizeText { get => _storageModelsSizeText; private set => SetProperty(ref _storageModelsSizeText, value); }
+
+    private string _storageComponentsSizeText = "";
+    public string StorageComponentsSizeText { get => _storageComponentsSizeText; private set => SetProperty(ref _storageComponentsSizeText, value); }
+
+    private string _storageUpdateCacheSizeText = "";
+    public string StorageUpdateCacheSizeText { get => _storageUpdateCacheSizeText; private set => SetProperty(ref _storageUpdateCacheSizeText, value); }
+
+    private string _storageTotalSizeText = "";
+    public string StorageTotalSizeText { get => _storageTotalSizeText; private set => SetProperty(ref _storageTotalSizeText, value); }
+
+    public string StorageSupportPath => AppSettings.SupportDirectory;
+    public string StorageModelsPath => LocalAsrModelStoreDirectory;
+    public string StorageComponentsPath => BinaryLocator.BinDirectory;
+
+    private long _storageModelsBytes;
+    public bool CanDeleteAsrModels => _storageModelsBytes > 0;
+
+    private long _storageUpdateCacheBytes;
+    public bool CanClearUpdateCache => _storageUpdateCacheBytes > 0;
+
+    /// <summary>后台线程计算各 App-owned 目录占用，回到 UI 线程更新文案。模型目录在支持目录之下，需从支持数据中扣除以免重复计。</summary>
+    public async Task CalculateStorageSizesAsync()
+    {
+        if (StorageCalculating) return;
+        StorageCalculating = true;
+        var calculating = Loc.S("L.Settings.StorageCalculating");
+        StorageSupportSizeText = calculating;
+        StorageModelsSizeText = calculating;
+        StorageComponentsSizeText = calculating;
+        StorageUpdateCacheSizeText = calculating;
+        StorageTotalSizeText = calculating;
+        var supportDir = AppSettings.SupportDirectory;
+        var modelsDir = LocalAsrModelStoreDirectory;
+        var componentsDir = BinaryLocator.BinDirectory;
+        try
+        {
+            var (support, models, components, updateCache) = await Task.Run(() =>
+            {
+                var m = DirectorySize(modelsDir);
+                var s = Math.Max(DirectorySize(supportDir) - m, 0);
+                return (s, m, DirectorySize(componentsDir), UpdateCacheBytes());
+            }).ConfigureAwait(true);
+            _storageModelsBytes = models;
+            _storageUpdateCacheBytes = updateCache;
+            StorageSupportSizeText = FormatBytes(support);
+            StorageModelsSizeText = FormatBytes(models);
+            StorageComponentsSizeText = FormatBytes(components);
+            StorageUpdateCacheSizeText = FormatBytes(updateCache);
+            StorageTotalSizeText = FormatBytes(support + models + components + updateCache);
+            RaisePropertyChanged(nameof(CanDeleteAsrModels));
+            RaisePropertyChanged(nameof(CanClearUpdateCache));
+        }
+        finally
+        {
+            StorageCalculating = false;
+        }
+    }
+
+    /// <summary>删除全部已安装本地模型（仅清空受管模型目录），刷新模型目录与占用。</summary>
+    public void DeleteAllAsrModels()
+    {
+        try
+        {
+            ClearDirectoryContents(LocalAsrModelStoreDirectory);
+            if (LocalAsrModelId.Length > 0)
+            {
+                LocalAsrModelId = "";
+                LocalAsrModelPath = "";
+            }
+            RefreshLocalAsrModelCatalog();
+        }
+        catch (Exception error)
+        {
+            Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+        _ = CalculateStorageSizesAsync();
+    }
+
+    /// <summary>清理更新临时缓存（安装器残留目录）。</summary>
+    public void ClearUpdateCache()
+    {
+        try
+        {
+            UpdateService.CleanStaleUpdateDirs();
+        }
+        catch (Exception error)
+        {
+            Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+        _ = CalculateStorageSizesAsync();
+    }
+
+    private static long DirectorySize(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path)) return 0;
+            long total = 0;
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try { total += new FileInfo(file).Length; }
+                catch { /* 单文件读不到大小（被占用/权限）跳过 */ }
+            }
+            return total;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static long UpdateCacheBytes()
+    {
+        try
+        {
+            var temp = Path.GetTempPath();
+            if (!Directory.Exists(temp)) return 0;
+            long total = 0;
+            foreach (var dir in Directory.EnumerateDirectories(temp, "moongate-update-*"))
+            {
+                total += DirectorySize(dir);
+            }
+            return total;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static void ClearDirectoryContents(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        foreach (var file in Directory.EnumerateFiles(path))
+        {
+            try { File.Delete(file); } catch { /* 被占用则跳过，刷新时仍计入 */ }
+        }
+        foreach (var dir in Directory.EnumerateDirectories(path))
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* 同上 */ }
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0) return "0 MB";
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit += 1;
+        }
+        return unit <= 1 ? $"{value:0} {units[unit]}" : $"{value:0.0} {units[unit]}";
+    }
+
     /// <summary>
     /// 结构化健康检查（DEP-WIN-003）：跑 --version / -filters 把状态细分为
     /// 正常/缺失/损坏/缺能力，覆盖只看文件存在的快速结果。最佳努力，失败保留快速结果。
@@ -742,7 +1088,7 @@ public sealed class SettingsViewModel : ObservableObject
 
     // MARK: - 保存
 
-    public AppSettings BuildSettings() => new()
+    public AppSettings BuildSettings() => _original with
     {
         TranslationProvider = _provider,
         TranslationBaseUrl = BaseUrl,
@@ -768,8 +1114,14 @@ public sealed class SettingsViewModel : ObservableObject
         AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "zh-Hant", 3 => "en", _ => "auto" },
         TranslationTargetLanguage = TargetLanguageIndex switch { 1 => "zh-Hant", 2 => "en", _ => "zh-Hans" },
         OnboardingCompleted = _onboardingCompleted,
+        CompletionNotificationsEnabled = CompletionNotificationsEnabled,
+        CompletionSoundEnabled = CompletionSoundEnabled,
         VideoProxyUrl = AppSettings.NormalizeVideoProxyUrl(VideoProxyUrl),
         IgnoreVideoCertificateErrors = IgnoreVideoCertificateErrors,
+        LocalAsrEnabled = LocalAsrEnabled,
+        LocalAsrRuntimePath = LocalAsrRuntimePath,
+        LocalAsrModelPath = LocalAsrModelPath,
+        LocalAsrModelId = LocalAsrModelId,
     };
 
     public bool TrySave(out string? error)

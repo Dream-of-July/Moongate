@@ -202,12 +202,14 @@ public class SettingsTests
         {
             LastSubtitleMode = "burnIn",
             LastSubtitleLangs = ["ja", "en"],
+            LastPrimarySubtitleTrackId = "localASR|whisper.cpp|ja|local",
             LastOutputFormat = "mp4H265",
             LastPreferHdr = true,
         };
         var back = AppSettings.FromJson(settings.ToJson());
         Assert.Equal("burnIn", back.LastSubtitleMode);
         Assert.Equal(new[] { "ja", "en" }, back.LastSubtitleLangs.ToArray());
+        Assert.Equal("localASR|whisper.cpp|ja|local", back.LastPrimarySubtitleTrackId);
         Assert.Equal("mp4H265", back.LastOutputFormat);
         Assert.True(back.LastPreferHdr);
     }
@@ -219,19 +221,19 @@ public class SettingsTests
         Assert.Equal(TranslationProvider.Anthropic, settings.TranslationProvider);
         Assert.Equal("https://api.anthropic.com", settings.TranslationBaseUrl);
         Assert.Equal(SubtitleStyle.Bilingual, settings.SubtitleStyle);
-        Assert.Equal(1080, settings.MaxBurnHeight);
+        Assert.Null(settings.MaxBurnHeight);
         Assert.Equal(3, settings.MaxConcurrentDownloads);
         Assert.Equal(2, settings.MaxConcurrentBurns);
     }
 
-    /// <summary>缺字段容错：空 JSON 全部回默认（maxBurnHeight 缺失按 1080 而非「保持源」）。</summary>
+    /// <summary>缺字段容错：空 JSON 全部回默认（烧录默认保持源分辨率，避免 4K 选择被静默压到 1080）。</summary>
     [Fact]
     public void FromJson_EmptyObject_AllDefaults()
     {
         var settings = AppSettings.FromJson("{}");
         // 值等价比较用 JSON（记录里含集合字段 LastSubtitleLangs，record 默认相等是引用比较，不适用）。
         Assert.Equal(new AppSettings().ToJson(), settings.ToJson());
-        Assert.Equal(1080, settings.MaxBurnHeight);
+        Assert.Null(settings.MaxBurnHeight);
     }
 
     /// <summary>显式 null 的 maxBurnHeight 表示「保持源分辨率」。</summary>
@@ -240,6 +242,14 @@ public class SettingsTests
     {
         var settings = AppSettings.FromJson("""{"maxBurnHeight": null}""");
         Assert.Null(settings.MaxBurnHeight);
+    }
+
+    /// <summary>显式 1080 保留「高分辨率烧录缩放到 1080p」选项。</summary>
+    [Fact]
+    public void FromJson_ExplicitBurnHeight1080_KeepsScaleDownSetting()
+    {
+        var settings = AppSettings.FromJson("""{"maxBurnHeight": 1080}""");
+        Assert.Equal(1080, settings.MaxBurnHeight);
     }
 
     /// <summary>0.5：编码后端 + 烧录编码 round-trip；缺键默认 Auto/false。</summary>
@@ -293,6 +303,54 @@ public class SettingsTests
         Assert.True(settings.SmartTranslationPromptsEnabled);
         Assert.True(AppSettings.FromJson(settings.ToJson()).SmartTranslationPromptsEnabled);
         Assert.Contains("\"smartTranslationPromptsEnabled\"", settings.ToJson());
+    }
+
+    [Fact]
+    public void LocalAsrSettings_DefaultOffAndRoundTripThroughJson()
+    {
+        var fresh = new AppSettings();
+        Assert.False(fresh.LocalAsrEnabled);
+        Assert.Equal("", fresh.LocalAsrRuntimePath);
+        Assert.Equal("", fresh.LocalAsrModelPath);
+        Assert.Equal("", fresh.LocalAsrModelId);
+
+        var settings = new AppSettings
+        {
+            LocalAsrEnabled = true,
+            LocalAsrRuntimePath = " C:\\Tools\\whisper-cli.exe\n",
+            LocalAsrModelPath = "\nC:\\Models\\ggml-small-q5_1.bin ",
+            LocalAsrModelId = " whisper.cpp:small-q5_1\n",
+        };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.True(back.LocalAsrEnabled);
+        Assert.Equal("C:\\Tools\\whisper-cli.exe", back.LocalAsrRuntimePath);
+        Assert.Equal("C:\\Models\\ggml-small-q5_1.bin", back.LocalAsrModelPath);
+        Assert.Equal("whisper.cpp:small-q5_1", back.LocalAsrModelId);
+        var json = settings.ToJson();
+        Assert.Contains("\"localASREnabled\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRRuntimePath\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRModelPath\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRModelID\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompletionNotificationSettings_DefaultOnAndRoundTrip()
+    {
+        var fresh = new AppSettings();
+        Assert.True(fresh.CompletionNotificationsEnabled);
+        Assert.True(fresh.CompletionSoundEnabled);
+
+        var settings = new AppSettings
+        {
+            CompletionNotificationsEnabled = false,
+            CompletionSoundEnabled = false,
+        };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.False(back.CompletionNotificationsEnabled);
+        Assert.False(back.CompletionSoundEnabled);
+        var json = settings.ToJson();
+        Assert.Contains("\"completionNotificationsEnabled\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"completionSoundEnabled\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

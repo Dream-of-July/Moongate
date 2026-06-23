@@ -56,12 +56,12 @@ public sealed class TaskControlToken
         }
     }
 
-    public void Pause()
+    public bool Pause()
     {
         int pid;
         lock (_lock)
         {
-            if (_cancelled || _paused) return;
+            if (_cancelled || _paused) return false;
             _paused = true;
             pid = _activePid;
         }
@@ -69,15 +69,16 @@ public sealed class TaskControlToken
         {
             EnqueueSignal(() => ProcessTree.SuspendTree(pid));
         }
+        return true;
     }
 
-    public void Resume()
+    public bool Resume()
     {
         int pid;
         List<(Guid, TaskCompletionSource)> pending;
         lock (_lock)
         {
-            if (!_paused) return;
+            if (!_paused) return false;
             _paused = false;
             pid = _activePid;
             pending = [.. _waiters];
@@ -88,6 +89,7 @@ public sealed class TaskControlToken
             EnqueueSignal(() => ProcessTree.ResumeTree(pid));
         }
         foreach (var (_, tcs) in pending) tcs.TrySetResult();
+        return true;
     }
 
     public void Cancel()

@@ -15,9 +15,23 @@
     <!-- First-run onboarding -->
     <sys:String x:Key="L.Onboarding.Title">Welcome to Moongate</sys:String>
     <sys:String x:Key="L.Onboarding.Subtitle">Choose the app language and subtitle target first. AI setup can wait, and Moongate still works as a video downloader.</sys:String>
+    <sys:String x:Key="L.Onboarding.LanguageStep">Language</sys:String>
+    <sys:String x:Key="L.Onboarding.SubtitleSourceStep">Subtitle source</sys:String>
+    <sys:String x:Key="L.Onboarding.TranslationMethodStep">Translation method</sys:String>
+    <sys:String x:Key="L.Onboarding.ReadinessStep">Ready</sys:String>
     <sys:String x:Key="L.Onboarding.AppLanguage">App language</sys:String>
     <sys:String x:Key="L.Onboarding.TargetLanguage">Translation target</sys:String>
+    <sys:String x:Key="L.Onboarding.PlatformSubtitlePreference">Moongate uses manual or platform auto subtitles first when they are available.</sys:String>
+    <sys:String x:Key="L.Onboarding.PreferLocalSpeechRecognition">I may use local speech recognition for a second pass</sys:String>
+    <sys:String x:Key="L.Onboarding.LocalSpeechSetupLater">Local whisper.cpp re-recognizes the audio. It is slower, may help with some languages or names, and still needs an explicit runtime/model setup later.</sys:String>
+    <sys:String x:Key="L.Onboarding.TranslationProvider">Translation service type</sys:String>
     <sys:String x:Key="L.Onboarding.AIOptional">You can continue without an API key. Configure AI later when you need subtitle translation or summaries.</sys:String>
+    <sys:String x:Key="L.Onboarding.APILaterSummary">Configure an API-compatible service later</sys:String>
+    <sys:String x:Key="L.Onboarding.ReadinessSummary">Setup summary</sys:String>
+    <sys:String x:Key="L.Onboarding.LocalSpeechSummary">Local speech recognition allowed, model setup still required</sys:String>
+    <sys:String x:Key="L.Onboarding.PlatformSubtitleSummary">Use platform subtitles first</sys:String>
+    <sys:String x:Key="L.Onboarding.Back">Back</sys:String>
+    <sys:String x:Key="L.Onboarding.Next">Next</sys:String>
     <sys:String x:Key="L.Onboarding.Start">Start using Moongate</sys:String>
 
     <!-- Main window -->
@@ -41,8 +55,14 @@
     <sys:String x:Key="L.Ready.BackToList">‹ Back to list</sys:String>
     <sys:String x:Key="L.Ready.FormatSection">Format</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">Subtitles</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleSourceSection">Subtitle source</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleOutputSection">Subtitle output</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">This video has no subtitles</sys:String>
+    <sys:String x:Key="L.Ready.NoSubtitleSource">No subtitles</sys:String>
     <sys:String x:Key="L.Ready.AutoTag">Auto</sys:String>
+    <sys:String x:Key="L.Ready.LocalASR">Local recognition</sys:String>
+    <sys:String x:Key="L.Ready.LocalASRHint">Re-recognizes the audio. Slower, but may improve some languages or proper nouns.</sys:String>
+    <sys:String x:Key="L.Ready.LocalASRAutoDetect">Auto-detect audio language</sys:String>
     <sys:String x:Key="L.Ready.ProcessSection">Subtitle processing</sys:String>
     <sys:String x:Key="L.Mode.Off">None</sys:String>
     <sys:String x:Key="L.Mode.SrtOnly">Create a translated subtitle file only</sys:String>
@@ -53,10 +73,10 @@
 
     <!-- AI summary -->
     <sys:String x:Key="L.Summary.Section">AI Summary</sys:String>
-    <sys:String x:Key="L.Summary.Button">✦ Summarize video</sys:String>
+    <sys:String x:Key="L.Summary.Button">Summarize video</sys:String>
     <sys:String x:Key="L.Summary.Hint">Let AI tell you what this video is before downloading.</sys:String>
     <sys:String x:Key="L.Summary.Running">Understanding the video…</sys:String>
-    <sys:String x:Key="L.Summary.Regenerate">↻ Regenerate</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">Regenerate</sys:String>
     <sys:String x:Key="L.Summary.Unconfigured">Summary needs a usable AI service configured in Settings: base URL, model, and credential.</sys:String>
 
     <!-- Output options -->
@@ -89,6 +109,9 @@
     <sys:String x:Key="L.Notice.BatchDupFmt">{0} already queued</sys:String>
     <sys:String x:Key="L.Notice.BatchFailedFmt">{0} failed to parse: {1}</sys:String>
     <sys:String x:Key="L.Notice.BatchFailedEtc"> etc.</sys:String>
+    <sys:String x:Key="L.Notice.DownloadCompletedTitleFmt">Download complete: {0}</sys:String>
+    <sys:String x:Key="L.Notice.DownloadCompletedCountFmt">{0} downloads complete</sys:String>
+    <sys:String x:Key="L.Notice.DownloadPartialFmt">{0} item(s) need subtitle retry</sys:String>
     <sys:String x:Key="L.Notice.JoinSep">; </sys:String>
     <sys:String x:Key="L.Notice.ListSep">, </sys:String>
 
@@ -106,6 +129,7 @@
     <sys:String x:Key="L.Row.Resume">Resume</sys:String>
     <sys:String x:Key="L.Row.Cancel">Cancel</sys:String>
     <sys:String x:Key="L.Row.RetrySubtitle">Retry subtitle steps</sys:String>
+    <sys:String x:Key="L.Row.RetryWithLocalASR">Rerun local recognition</sys:String>
     <sys:String x:Key="L.Row.Retry">Retry</sys:String>
     <sys:String x:Key="L.Row.Reveal">Show in folder</sys:String>
     <sys:String x:Key="L.Row.RevealTooltip">Open the containing folder</sys:String>
@@ -117,6 +141,12 @@
     <sys:String x:Key="L.Status.Transcoding">Transcoding…</sys:String>
     <sys:String x:Key="L.Status.DownloadingFmt">Downloading {0}%</sys:String>
     <sys:String x:Key="L.Status.Downloading">Downloading…</sys:String>
+    <sys:String x:Key="L.Status.AudioExtractingFmt">Extracting audio {0}%</sys:String>
+    <sys:String x:Key="L.Status.AudioExtracting">Extracting audio…</sys:String>
+    <sys:String x:Key="L.Status.SpeechRecognizingFmt">Recognizing audio locally {0}%</sys:String>
+    <sys:String x:Key="L.Status.SpeechRecognizing">Recognizing audio locally…</sys:String>
+    <sys:String x:Key="L.Status.SubtitleSegmentingFmt">Segmenting subtitles {0}%</sys:String>
+    <sys:String x:Key="L.Status.SubtitleSegmenting">Segmenting subtitles…</sys:String>
     <sys:String x:Key="L.Status.TranslatingFmt">Translating {0}%</sys:String>
     <sys:String x:Key="L.Status.Translating">Translating…</sys:String>
     <sys:String x:Key="L.Status.BurningFmt">Burning in {0}%</sys:String>
@@ -127,7 +157,7 @@
     <sys:String x:Key="L.Status.Unknown">Unknown error</sys:String>
     <sys:String x:Key="L.Status.RemainingExact">{0} left</sys:String>
     <sys:String x:Key="L.Status.RemainingApprox">about {0} left</sys:String>
-    <sys:String x:Key="L.Status.RemainingEstimating">Estimating…</sys:String>
+    <sys:String x:Key="L.Status.RemainingEstimating">Estimating time...</sys:String>
     <sys:String x:Key="L.Status.RemainingLessThanMinute">less than 1 min</sys:String>
     <sys:String x:Key="L.Status.RemainingMinutes">{0} min</sys:String>
     <sys:String x:Key="L.Status.RemainingHoursMinutes">{0} hr {1} min</sys:String>
@@ -140,11 +170,37 @@
 
     <!-- Settings window -->
     <sys:String x:Key="L.Settings.Title">Settings</sys:String>
+    <sys:String x:Key="L.SettingsNav.General">General</sys:String>
+    <sys:String x:Key="L.SettingsNav.SubtitlesTranslation">Subtitles &amp; Translation</sys:String>
+    <sys:String x:Key="L.SettingsNav.LocalSpeech">Local Speech Recognition</sys:String>
+    <sys:String x:Key="L.SettingsNav.AI">AI services</sys:String>
+    <sys:String x:Key="L.SettingsNav.VideoOutput">Video &amp; Output</sys:String>
+    <sys:String x:Key="L.SettingsNav.SiteLogin">Site login</sys:String>
+    <sys:String x:Key="L.SettingsNav.ComponentsStorage">Components &amp; Storage</sys:String>
+    <sys:String x:Key="L.SettingsNav.UpdatesAbout">Updates &amp; About</sys:String>
     <sys:String x:Key="L.Settings.General">General</sys:String>
     <sys:String x:Key="L.Settings.Language">Language</sys:String>
     <sys:String x:Key="L.Settings.TargetLanguage">Translation target</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">Follow system</sys:String>
     <sys:String x:Key="L.Settings.LangHint">Takes effect immediately; status text of running tasks switches on their next refresh.</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRSection">Local speech recognition</sys:String>
+    <sys:String x:Key="L.Settings.LocalASREnabled">Allow local whisper.cpp recognition</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRHelp">Re-recognizes the audio. It is slower, may help with some languages or names, and Moongate will not download a model automatically.</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimePath">whisper.cpp executable</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRFindRuntime">Find whisper-cli</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimeFound">Found whisper-cli: {0}</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimeNotFound">Could not find whisper-cli. Install whisper.cpp, or enter the executable path manually.</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelPath">Model file</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelID">Model ID</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRecommendedModels">Recommended whisper.cpp models</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSizeMemory">Size / memory</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSourceLicense">Source / license</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSHA256">SHA-256</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelStatus">Status</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRDownloadModel">Download model</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRInstallingModel">Downloading and verifying model</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelInstallComplete">{0} is ready</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRDeleteModel">Delete model</sys:String>
     <sys:String x:Key="L.Settings.AIService">AI service</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">The default AI service is reused by translation and summaries; override below when a different model is needed.</sys:String>
     <sys:String x:Key="L.Settings.Translation">Translation service</sys:String>
@@ -185,12 +241,16 @@
     <sys:String x:Key="L.Settings.EncodeBackendHint">Auto prefers NVENC / QSV / AMF. Compatibility handling may take longer than expected.</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264">Always output H.264</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">Best for compatibility. When off, Moongate keeps the source codec when possible, such as HEVC input to HEVC output.</sys:String>
-    <sys:String x:Key="L.Settings.Limit1080">Scale to 1080p when burning high-res video (faster and smaller, recommended)</sys:String>
+    <sys:String x:Key="L.Settings.Limit1080">Scale to 1080p when burning high-res video (faster and smaller)</sys:String>
     <sys:String x:Key="L.Settings.Limit1080Hint">When off, burns at the source resolution (4K is much slower and larger). Only affects subtitle burn-in, not plain downloads.</sys:String>
     <sys:String x:Key="L.Settings.Performance">Performance</sys:String>
     <sys:String x:Key="L.Settings.MaxDownloads">Concurrent downloads</sys:String>
     <sys:String x:Key="L.Settings.MaxBurns">Concurrent encodes</sys:String>
     <sys:String x:Key="L.Settings.PerfHint">Tasks over the limit wait as "Queued"; pausing one yields its slot to the next. Compatibility handling may take longer than expected. Changes apply immediately.</sys:String>
+    <sys:String x:Key="L.Settings.Notifications">Completion alerts</sys:String>
+    <sys:String x:Key="L.Settings.CompletionNotifications">Show a completion notice when the queue finishes</sys:String>
+    <sys:String x:Key="L.Settings.CompletionSound">Play a sound when the queue finishes</sys:String>
+    <sys:String x:Key="L.Settings.NotificationsHelp">When the app is foregrounded, Moongate prefers in-app status. Batch completion is coalesced into one notice.</sys:String>
     <sys:String x:Key="L.Settings.SiteLogin">Site sign-in</sys:String>
     <sys:String x:Key="L.Settings.LoginYouTube">Sign in to YouTube</sys:String>
     <sys:String x:Key="L.Settings.LoginBilibili">Sign in to Bilibili</sys:String>
@@ -214,6 +274,26 @@
     <sys:String x:Key="L.Settings.DepCorrupt">Corrupt</sys:String>
     <sys:String x:Key="L.Settings.DepNoCapability">No capability</sys:String>
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp: {0} · ffmpeg: {1} · deno: {2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageSection">Storage</sys:String>
+    <sys:String x:Key="L.Settings.StorageStatusFmt">App data: {0}&#x0a;Local ASR models: {1}&#x0a;Bundled components: {2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageUsed">Used</sys:String>
+    <sys:String x:Key="L.Settings.StorageSupportData">App data</sys:String>
+    <sys:String x:Key="L.Settings.StorageASRModels">Speech models</sys:String>
+    <sys:String x:Key="L.Settings.StorageComponents">Components</sys:String>
+    <sys:String x:Key="L.Settings.StorageUpdateCache">Update cache</sys:String>
+    <sys:String x:Key="L.Settings.StorageCalculating">Calculating…</sys:String>
+    <sys:String x:Key="L.Settings.StorageOpenFolder">Open folder</sys:String>
+    <sys:String x:Key="L.Settings.StorageDelete">Delete</sys:String>
+    <sys:String x:Key="L.Settings.StorageClear">Clear</sys:String>
+    <sys:String x:Key="L.Settings.StorageRefresh">Refresh</sys:String>
+    <sys:String x:Key="L.Settings.StorageManageHint">This only clears data the app created. Downloaded videos live in your system Downloads folder—manage them there.</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsConfirm">Delete all local speech models?</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsDetail">You'll need to download a model again to use local speech recognition.</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheConfirm">Clear update cache?</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheDetail">Removes leftover update installer temp files. Your installed app is unaffected.</sys:String>
+    <sys:String x:Key="L.Settings.AboutSection">About</sys:String>
+    <sys:String x:Key="L.Settings.AboutAppName">Moongate</sys:String>
+    <sys:String x:Key="L.Settings.AboutSource">Source and releases: Dream-of-July/moongate on GitHub.</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">Failed to save settings: {0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">Clear all sign-ins?</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsDetail">You will need to sign in again to download member-only or restricted videos.</sys:String>
@@ -231,6 +311,7 @@
     <sys:String x:Key="L.Update.FoundPrefix">New version available </sys:String>
     <sys:String x:Key="L.Update.DownloadInstall">Download &amp; update</sys:String>
     <sys:String x:Key="L.Update.OpenReleases">Open releases page</sys:String>
+    <sys:String x:Key="L.Update.AvailableBadge">Update available</sys:String>
     <sys:String x:Key="L.Update.Downloading">Downloading update… </sys:String>
     <sys:String x:Key="L.Update.Installing">Launching the installer. The app will exit to finish updating…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">The update URL is not trusted and was blocked. Please download manually from GitHub.</sys:String>

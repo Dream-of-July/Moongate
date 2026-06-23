@@ -6,15 +6,15 @@
         Width="920" Height="640" MinWidth="720" MinHeight="480"
         ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource WindowBrush}"
-        Foreground="{StaticResource PrimaryTextBrush}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource PrimaryTextBrush}"
         FontSize="13"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     <DockPanel>
         <Border DockPanel.Dock="Top" Padding="16,10"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,0,0,1">
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="0,0,0,1">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"
                             Margin="12,0,0,0">
@@ -27,18 +27,18 @@
                     <TextBlock Text="{DynamicResource L.Login.Instruction}"
                                Style="{StaticResource Caption}" Margin="0,2,0,0"/>
                     <TextBlock x:Name="UrlText" FontSize="11.5" Margin="0,2,0,0"
-                               Foreground="{StaticResource TertiaryTextBrush}"
+                               Foreground="{DynamicResource TertiaryTextBrush}"
                                TextTrimming="CharacterEllipsis"/>
                     <TextBlock x:Name="ErrorText" FontSize="11.5" Margin="0,2,0,0"
-                               Foreground="{StaticResource ErrorBrush}"
+                               Foreground="{DynamicResource ErrorBrush}"
                                TextWrapping="Wrap" Visibility="Collapsed"/>
                 </StackPanel>
             </DockPanel>
         </Border>
         <Grid>
             <TextBlock x:Name="InitText" Text="{DynamicResource L.Login.LoadingPage}" HorizontalAlignment="Center"
-                       VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}"/>
-            <wv2:WebView2 x:Name="WebView"/>
+                       VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}"/>
+            <wv2:WebView2 x:Name="WebView" AutomationProperties.Name="{DynamicResource L.Login.Instruction}"/>
         </Grid>
     </DockPanel>
 </Window>

@@ -275,6 +275,82 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(result.count, cleanCues(asrCues()).count, "smart 关 → 只走普通清洗，不走 LLM 重分段")
     }
 
+    // MARK: - CJK（日文）逐字符重分段
+
+    /// 8 条逐字、无标点的日文碎句（典型 Whisper 输出，含用户报的「顔 / 洗って」割裂例）。
+    private func japaneseAsrCues() -> [SubtitleCue] {
+        let words = ["おはよう", "起きられて", "えらい", "顔", "洗って", "えらい", "テレビ見るのも", "えらい"]
+        return words.enumerated().map { i, text in
+            SubtitleCue(index: i + 1,
+                        start: secondsToSRTTime(Double(i)),
+                        end: secondsToSRTTime(Double(i + 1)),
+                        text: text)
+        }
+    }
+
+    func testResegmentCJKAlignsByCharacterAndRebuildsSentences() async throws {
+        // 日文无词间空格：按词对齐必然失败而回退（旧行为）。逐字符对齐后，模型把碎句
+        // 断成完整句子且字符序列不变 → 对齐通过 → 合并出句子级字幕，时间轴按字符插值保留。
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(
+                    text: "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。",
+                    reachedOutputLimit: false)
+            }
+        )
+        let output = try await translator.resegmentForReadability(
+            japaneseAsrCues(), context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"))
+        XCTAssertEqual(output.count, 4, "应合并成 4 条完整句")
+        XCTAssertEqual(output[0].start, "00:00:00,000")
+        XCTAssertEqual(output[2].text, "顔洗ってえらい。", "「顔」与「洗って」应并入同一句，不再割裂")
+        XCTAssertEqual(output.last?.end, "00:00:08,000")
+    }
+
+    func testResegmentCJKFallsBackWhenCharactersChanged() async throws {
+        // 模型擅自改字（多了「猫」/漏字）→ 字符序列对不上 → 原样返回，绝不产出错位时间轴。
+        let input = japaneseAsrCues()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(text: "1|おはよう猫。\n2|起きられてえらい。", reachedOutputLimit: false)
+            }
+        )
+        let output = try await translator.resegmentForReadability(
+            input, context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"))
+        XCTAssertEqual(output.map(\.text), input.map(\.text), "对齐失败应原样返回")
+    }
+
+    func testTranslateResegmentsLocalASRSourceWithoutSmartAndWritesBack() async throws {
+        // 本地 Whisper 源字幕（.local-asr.ja.srt）即使 smart 关闭也应重分段，并把句子级结果写回源文件。
+        let source = try writeSRT("clip.local-asr.ja.srt", japaneseAsrCues())
+        let settings = cloudSettings()           // smartTranslationPromptsEnabled = false
+        let translator = ConfiguredTranslator(
+            settings: settings,
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                if (system ?? "").contains("待断句文本") {
+                    return ModelReply(
+                        text: "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。",
+                        reachedOutputLimit: false)
+                }
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+        let output = try await translator.translate(
+            srtFile: source, style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil, progress: { _ in })
+
+        let rewrittenSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
+        XCTAssertEqual(rewrittenSource.count, 4, "源 .local-asr.ja.srt 应被写回为 4 条整句")
+        XCTAssertEqual(rewrittenSource[2].text, "顔洗ってえらい。")
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 4, "译文应基于句子级源字幕，4 条")
+    }
+
     private func cloudSettings() -> AppSettings {
         AppSettings(
             translationEngine: .anthropicCompatible,

@@ -162,14 +162,114 @@ public sealed record FormatChoice
     public string? SourceContainer { get; init; }
 }
 
+public enum SubtitleSourceKind
+{
+    Manual,
+    PlatformAuto,
+    HlsManifest,
+    LocalAsr,
+    ImportedFile,
+}
+
+public sealed record SubtitleTrackId(
+    string LanguageCode,
+    SubtitleSourceKind SourceKind,
+    string Provider,
+    string? Variant = null)
+{
+    public string RawValue => string.Join("|",
+    [
+        Encode(SourceKindRaw(SourceKind)),
+        Encode(Provider),
+        Encode(LanguageCode),
+        Encode(Variant ?? ""),
+    ]);
+
+    public static SubtitleTrackId Parse(string raw)
+    {
+        var parts = raw.Split('|');
+        if (parts.Length == 4 && SourceKindFromRaw(Decode(parts[0])) is { } kind)
+        {
+            var variant = Decode(parts[3]);
+            return new SubtitleTrackId(
+                Decode(parts[2]),
+                kind,
+                Decode(parts[1]),
+                variant.Length == 0 ? null : variant);
+        }
+        return new SubtitleTrackId(raw, SubtitleSourceKind.Manual, "legacy");
+    }
+
+    public static string StableId(
+        string languageCode,
+        SubtitleSourceKind sourceKind,
+        string provider = "yt-dlp",
+        string? variant = null) =>
+        new SubtitleTrackId(languageCode, sourceKind, provider, variant).RawValue;
+
+    private static string Encode(string value) =>
+        value.Replace("%", "%25", StringComparison.Ordinal)
+            .Replace("|", "%7C", StringComparison.Ordinal);
+
+    private static string Decode(string value) =>
+        value.Replace("%7C", "|", StringComparison.Ordinal)
+            .Replace("%25", "%", StringComparison.Ordinal);
+
+    private static string SourceKindRaw(SubtitleSourceKind kind) => kind switch
+    {
+        SubtitleSourceKind.PlatformAuto => "platformAuto",
+        SubtitleSourceKind.HlsManifest => "hlsManifest",
+        SubtitleSourceKind.LocalAsr => "localASR",
+        SubtitleSourceKind.ImportedFile => "importedFile",
+        _ => "manual",
+    };
+
+    private static SubtitleSourceKind? SourceKindFromRaw(string raw) => raw switch
+    {
+        "manual" => SubtitleSourceKind.Manual,
+        "platformAuto" => SubtitleSourceKind.PlatformAuto,
+        "hlsManifest" => SubtitleSourceKind.HlsManifest,
+        "localASR" => SubtitleSourceKind.LocalAsr,
+        "importedFile" => SubtitleSourceKind.ImportedFile,
+        _ => null,
+    };
+}
+
 public sealed record SubtitleChoice
 {
-    /// <summary>语言代码，如 "en"、"zh-Hans"。</summary>
+    /// <summary>稳定字幕源 ID，包含语言、来源类型、provider 与 variant。</summary>
     public required string Id { get; init; }
+    /// <summary>语言代码，如 "en"、"zh-Hans"。</summary>
+    public required string LanguageCode { get; init; }
     /// <summary>中文展示名，如 "英语 (en)"。</summary>
     public required string Label { get; init; }
+    public required SubtitleSourceKind SourceKind { get; init; }
+    public string Provider { get; init; } = "yt-dlp";
+    public string? Variant { get; init; }
+    public string? QualityHint { get; init; }
+    public IReadOnlyDictionary<string, string> Metadata { get; init; } = new Dictionary<string, string>();
     /// <summary>是否为自动生成字幕（YouTube 自动字幕等）。</summary>
     public required bool IsAuto { get; init; }
+
+    public static SubtitleChoice Create(
+        string languageCode,
+        string label,
+        SubtitleSourceKind sourceKind,
+        string provider = "yt-dlp",
+        string? variant = null,
+        string? qualityHint = null,
+        IReadOnlyDictionary<string, string>? metadata = null) => new()
+        {
+            Id = SubtitleTrackId.StableId(languageCode, sourceKind, provider, variant),
+            LanguageCode = languageCode,
+            Label = label,
+            SourceKind = sourceKind,
+            Provider = provider,
+            Variant = variant,
+            QualityHint = qualityHint,
+            Metadata = metadata ?? new Dictionary<string, string>(),
+            IsAuto = sourceKind == SubtitleSourceKind.PlatformAuto,
+        };
 }
 
 public sealed record VideoInfo
@@ -203,6 +303,10 @@ public sealed record DownloadRequest
     public IReadOnlyList<string> SubtitleLangs { get; init; } = [];
     /// <summary>选中的自动字幕语言代码。</summary>
     public IReadOnlyList<string> AutoSubtitleLangs { get; init; } = [];
+    /// <summary>v0.8 stable subtitle source identity. Legacy language arrays remain for compatibility.</summary>
+    public IReadOnlyList<SubtitleChoice> SubtitleTracks { get; init; } = [];
+    /// <summary>The single primary subtitle source selected on the ready page.</summary>
+    public string? PrimarySubtitleTrackId { get; init; }
     public required string DestinationDirectory { get; init; }
     /// <summary>
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
@@ -213,6 +317,56 @@ public sealed record DownloadRequest
     public bool PreferHdr { get; init; }
     /// <summary>下载后转码目标格式；Original 表示不转码。</summary>
     public OutputFormat OutputFormat { get; init; } = OutputFormat.Original;
+
+    public IReadOnlyList<SubtitleChoice> RequestedSubtitleTracks =>
+        SubtitleTracks.Count > 0
+            ? SubtitleTracks
+            :
+            [
+                .. SubtitleLangs.Select(lang => SubtitleChoice.Create(lang, lang, SubtitleSourceKind.Manual)),
+                .. AutoSubtitleLangs.Select(lang => SubtitleChoice.Create(lang, lang, SubtitleSourceKind.PlatformAuto)),
+            ];
+
+    public SubtitleChoice? PrimarySubtitleTrack
+    {
+        get
+        {
+            var requested = RequestedSubtitleTracks;
+            if (!string.IsNullOrWhiteSpace(PrimarySubtitleTrackId))
+            {
+                var exact = requested.FirstOrDefault(track => track.Id == PrimarySubtitleTrackId);
+                if (exact is not null) return exact;
+            }
+            return requested.FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.Manual)
+                ?? requested.FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.PlatformAuto)
+                ?? requested.FirstOrDefault();
+        }
+    }
+
+    public string? PrimarySubtitleLanguageCode => PrimarySubtitleTrack?.LanguageCode;
+
+    public IReadOnlyList<string> YtDlpSubtitleLangs =>
+        UniqueForYtDlpSubLangs(RequestedSubtitleTracks
+            .Where(track => track.SourceKind == SubtitleSourceKind.Manual)
+            .Select(track => track.LanguageCode));
+
+    public IReadOnlyList<string> YtDlpAutoSubtitleLangs =>
+        UniqueForYtDlpSubLangs(RequestedSubtitleTracks
+            .Where(track => track.SourceKind == SubtitleSourceKind.PlatformAuto)
+            .Select(track => track.LanguageCode));
+
+    public static IReadOnlyList<string> UniqueForYtDlpSubLangs(IEnumerable<string> codes)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var code in codes)
+        {
+            var normalized = code.Trim();
+            if (normalized.Length == 0 || !seen.Add(normalized)) continue;
+            result.Add(normalized);
+        }
+        return result;
+    }
 }
 
 public sealed record DownloadProgress

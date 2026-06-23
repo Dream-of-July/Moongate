@@ -83,6 +83,37 @@ public class ProgressLineTests
     }
 
     [Fact]
+    public void MgpLine_WithTrackerAggregatesSeparateMediaStreams()
+    {
+        var tracker = new YtDlpEngine.DownloadProgressTracker(expectedMediaDownloads: 2);
+        var updates = new[]
+        {
+            "MGP| 0.0%| 1MiB/s|00:10",
+            "MGP| 50.0%| 1MiB/s|00:05",
+            "MGP|100.0%| 1MiB/s|00:00",
+            "MGP| 0.0%| 500KiB/s|00:03",
+            "MGP| 30.0%| 500KiB/s|00:02",
+            "MGP|100.0%| 500KiB/s|00:00",
+        }.Select(line => YtDlpEngine.ParseProgressLine(line, tracker)!).ToArray();
+
+        Assert.Equal([0, 25, 50, 50, 65, 98], updates.Select(update => update.Percent).ToArray());
+        Assert.All(updates, update => Assert.Null(update.EtaText));
+    }
+
+    [Fact]
+    public void ExpectedMediaDownloadCount_ClassifiesKnownSelectors()
+    {
+        var exact4K = YtDlpEngine.VideoTierFormatSelector(2160);
+        var hdr4K = YtDlpEngine.ApplyHdrPreference(exact4K, preferHdr: true);
+
+        Assert.Equal(2, YtDlpEngine.ExpectedMediaDownloadCount(exact4K));
+        Assert.Equal(2, YtDlpEngine.ExpectedMediaDownloadCount(hdr4K));
+        Assert.Equal(1, YtDlpEngine.ExpectedMediaDownloadCount("ba[ext=m4a]/ba/best"));
+        Assert.Equal(1, YtDlpEngine.ExpectedMediaDownloadCount("best"));
+        Assert.Equal(1, YtDlpEngine.ExpectedMediaDownloadCount("b[dynamic_range=HDR10+]/best"));
+    }
+
+    [Fact]
     public void PostprocessPrefixes_MapToProcessing()
     {
         foreach (var line in new[]
@@ -106,6 +137,60 @@ public class ProgressLineTests
 
 public class HlsSubtitleParsingTests
 {
+    [Fact]
+    public void SubtitleTrackIdsDistinguishSameLanguageSources()
+    {
+        var manual = SubtitleChoice.Create("ja", "Japanese", SubtitleSourceKind.Manual);
+        var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto);
+        var localAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "ggml-small");
+
+        Assert.Equal("ja", manual.LanguageCode);
+        Assert.Equal("ja", auto.LanguageCode);
+        Assert.Equal("ja", localAsr.LanguageCode);
+        Assert.Equal(3, new HashSet<string> { manual.Id, auto.Id, localAsr.Id }.Count);
+        Assert.False(manual.IsAuto);
+        Assert.True(auto.IsAuto);
+        Assert.False(localAsr.IsAuto);
+        Assert.Equal(SubtitleSourceKind.Manual, SubtitleTrackId.Parse(manual.Id).SourceKind);
+        Assert.Equal(SubtitleSourceKind.PlatformAuto, SubtitleTrackId.Parse(auto.Id).SourceKind);
+        Assert.Equal("ja", SubtitleTrackId.Parse("ja").LanguageCode);
+        Assert.Equal(SubtitleSourceKind.Manual, SubtitleTrackId.Parse("ja").SourceKind);
+    }
+
+    [Fact]
+    public void DownloadRequestPrimarySubtitleTrackUsesStableIdentityWithManualFirstFallback()
+    {
+        var manual = SubtitleChoice.Create("ja", "Japanese", SubtitleSourceKind.Manual);
+        var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto);
+        var localAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "small");
+
+        var explicitRequest = new DownloadRequest
+        {
+            Url = "https://example.com/video",
+            VideoId = "video",
+            FormatId = "137",
+            SubtitleTracks = [manual, auto, localAsr],
+            PrimarySubtitleTrackId = localAsr.Id,
+            DestinationDirectory = "/tmp",
+        };
+        Assert.Equal(localAsr.Id, explicitRequest.PrimarySubtitleTrack?.Id);
+        Assert.Equal("ja", explicitRequest.PrimarySubtitleLanguageCode);
+
+        var fallbackRequest = explicitRequest with { PrimarySubtitleTrackId = null, SubtitleTracks = [localAsr, auto, manual] };
+        Assert.Equal(manual.Id, fallbackRequest.PrimarySubtitleTrack?.Id);
+        Assert.Equal("ja", fallbackRequest.PrimarySubtitleLanguageCode);
+    }
+
     [Fact]
     public void ParsesSubtitleMediaLines_ResolvesRelativeUris()
     {
@@ -598,6 +683,77 @@ public class DownloadRetryTests
     }
 
     [Fact]
+    public void VideoTierSelector_PrefersExactHeightBeforeLowerFallback()
+    {
+        var selector = YtDlpEngine.VideoTierFormatSelector(2160);
+
+        Assert.Equal(
+            "bv*[height=2160]+ba/b[height=2160]/bv*[height<=2160]+ba/b[height<=2160]",
+            selector);
+        Assert.True(
+            selector.IndexOf("[height=2160]", StringComparison.Ordinal)
+                < selector.IndexOf("[height<=2160]", StringComparison.Ordinal),
+            "The 4K row must try exact 2160p before any <=2160 fallback, or yt-dlp may resolve it to 1080p.");
+    }
+
+    [Fact]
+    public void HdrPreference_KeepsExactHeightBeforeLowerHdrFallback()
+    {
+        var selector = YtDlpEngine.ApplyHdrPreference(YtDlpEngine.VideoTierFormatSelector(2160), preferHdr: true);
+        var branches = selector.Split('/');
+
+        Assert.Equal(
+            new[]
+            {
+                "bv*[dynamic_range!=SDR][height=2160]+ba",
+                "bv*[height=2160]+ba",
+                "b[height=2160]",
+                "bv*[dynamic_range!=SDR][height<=2160]+ba",
+                "bv*[height<=2160]+ba",
+                "b[height<=2160]",
+            },
+            branches);
+    }
+
+    [Fact]
+    public async Task DownloadWith4KSelector_PassesExactHeightFirstFormatToYtDlp()
+    {
+        var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-4k-selector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var probe = typeof(DownloadRetryTests).Assembly.Location;
+        var prevYt = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var prevFf = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+        Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+        try
+        {
+            var engine = new ScriptedDownloadEngine(destDir, "uhd123");
+            var request = new DownloadRequest
+            {
+                Url = "https://www.youtube.com/watch?v=uhd123",
+                VideoId = "uhd123",
+                FormatId = YtDlpEngine.VideoTierFormatSelector(2160),
+                DestinationDirectory = destDir,
+            };
+
+            _ = await engine.DownloadAsync(request, control: null, progress: _ => { });
+
+            var formatIndex = Assert.Single(
+                Enumerable.Range(0, engine.LastArguments.Count),
+                i => engine.LastArguments[i] == "-f");
+            Assert.Equal(
+                "bv*[height=2160]+ba/b[height=2160]/bv*[height<=2160]+ba/b[height<=2160]",
+                engine.LastArguments[formatIndex + 1]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", prevYt);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
+            try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
     public async Task AutoSubtitleDownload_PreservesRawVttTiming()
     {
         var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-auto-vtt-{Guid.NewGuid():N}");
@@ -662,6 +818,50 @@ public class DownloadRetryTests
             Assert.Contains("--convert-subs", engine.LastArguments);
             Assert.Contains("srt", engine.LastArguments);
             Assert.DoesNotContain("--sub-format", engine.LastArguments);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", prevYt);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
+            try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public async Task LocalAsrSubtitleTrack_DoesNotInvokeYtDlpSubtitleDownload()
+    {
+        var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-local-asr-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var probe = typeof(DownloadRetryTests).Assembly.Location;
+        var prevYt = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var prevFf = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+        Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+        try
+        {
+            var engine = new ScriptedDownloadEngine(destDir, "abc123");
+            var request = new DownloadRequest
+            {
+                Url = "https://www.youtube.com/watch?v=abc123",
+                VideoId = "abc123",
+                FormatId = "137",
+                SubtitleTracks =
+                [
+                    SubtitleChoice.Create(
+                        "ja",
+                        "Japanese local ASR",
+                        SubtitleSourceKind.LocalAsr,
+                        provider: "whisper.cpp",
+                        variant: "small"),
+                ],
+                DestinationDirectory = destDir,
+            };
+
+            _ = await engine.DownloadAsync(request, control: null, progress: _ => { });
+
+            Assert.DoesNotContain("--sub-langs", engine.LastArguments);
+            Assert.DoesNotContain("--write-subs", engine.LastArguments);
+            Assert.DoesNotContain("--write-auto-subs", engine.LastArguments);
         }
         finally
         {
@@ -815,7 +1015,7 @@ public class BuildVideoInfoTests
     }
 
     [Fact]
-    public async Task FormatTiers_SortedDescending_TopUsesWildcard()
+    public async Task FormatTiers_SortedDescending_TopUsesExplicitHeightBoundSelector()
     {
         var json = ParseJson("""
             {
@@ -840,24 +1040,50 @@ public class BuildVideoInfoTests
         Assert.Equal("2:31", info.DurationText);
         Assert.Equal("Someone", info.Uploader);
 
-        // 1080p 推荐档（通配串）、720p 限高档、末尾音频档
+        // 1080p 推荐档、720p 档都精确优先并带降级回退；末尾音频档。
         Assert.Equal(3, info.Formats.Count);
-        Assert.Equal("bv*+ba/b", info.Formats[0].Id);
+        Assert.Equal("bv*[height=1080]+ba/b[height=1080]/bv*[height<=1080]+ba/b[height<=1080]", info.Formats[0].Id);
         Assert.Equal("1080p · mp4", info.Formats[0].Label);
         Assert.Equal("≈ 110 MB", info.Formats[0].Detail);  // 100MB 视频 + 10MB 最佳音轨
-        Assert.Equal("bv*[height<=720]+ba/b[height<=720]", info.Formats[1].Id);
+        Assert.Equal("bv*[height=720]+ba/b[height=720]/bv*[height<=720]+ba/b[height<=720]", info.Formats[1].Id);
         Assert.Equal("≈ 60 MB", info.Formats[1].Detail);
         Assert.True(info.Formats[^1].IsAudioOnly);
         Assert.Equal("audio", info.Formats[^1].Id);
 
-        // 字幕：真实 en（live_chat 剔除）在前；自动字幕滤白名单+视频语言（fr），en 因重复剔除
-        Assert.Equal(3, info.Subtitles.Count);
-        Assert.Equal("en", info.Subtitles[0].Id);
+        // 字幕：真实 en（live_chat 剔除）在前；同语言自动字幕保留为独立稳定来源。
+        Assert.Equal(4, info.Subtitles.Count);
+        Assert.Equal("en", info.Subtitles[0].LanguageCode);
         Assert.False(info.Subtitles[0].IsAuto);
-        Assert.Equal("ja", info.Subtitles[1].Id);  // 白名单 ja 排自动字幕首位（rank 2 < fr rank 3）
+        Assert.Equal(SubtitleSourceKind.Manual, info.Subtitles[0].SourceKind);
+        Assert.Equal("en", info.Subtitles[1].LanguageCode);
         Assert.True(info.Subtitles[1].IsAuto);
-        Assert.Equal("fr", info.Subtitles[2].Id);  // 视频语言前缀命中
+        Assert.Equal(SubtitleSourceKind.PlatformAuto, info.Subtitles[1].SourceKind);
+        Assert.NotEqual(info.Subtitles[0].Id, info.Subtitles[1].Id);
+        Assert.Equal("ja", info.Subtitles[2].LanguageCode);  // 白名单 ja
         Assert.True(info.Subtitles[2].IsAuto);
+        Assert.Equal("fr", info.Subtitles[3].LanguageCode);  // 视频语言前缀命中
+        Assert.True(info.Subtitles[3].IsAuto);
+    }
+
+    [Fact]
+    public async Task FormatTiers_4KTopTierUsesExplicitHeightBoundSelector()
+    {
+        var json = ParseJson("""
+            {
+              "id": "uhd123",
+              "title": "UHD Test",
+              "formats": [
+                {"format_id":"401","vcodec":"av01","acodec":"none","height":2160,"tbr":12000,"filesize":419430400},
+                {"format_id":"248","vcodec":"vp9","acodec":"none","height":1080,"tbr":5000,"filesize":104857600},
+                {"format_id":"140","vcodec":"none","acodec":"mp4a","abr":128,"filesize":10485760}
+              ]
+            }
+            """);
+
+        var info = await new OfflineEngine().BuildVideoInfoAsync("https://www.youtube.com/watch?v=uhd123", json);
+
+        Assert.Equal("2160p · mp4", info.Formats[0].Label);
+        Assert.Equal("bv*[height=2160]+ba/b[height=2160]/bv*[height<=2160]+ba/b[height<=2160]", info.Formats[0].Id);
     }
 
     [Fact]

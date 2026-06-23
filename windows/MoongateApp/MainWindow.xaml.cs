@@ -17,6 +17,7 @@ public partial class MainWindow : Window
         _vm = new MainViewModel();
         DataContext = _vm;
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         _vm.FocusUrlRequested += FocusUrlBox;
         _vm.OpenSettingsRequested += OpenSettingsWindow;
         _vm.OpenLoginRequested += OpenLoginWindow;

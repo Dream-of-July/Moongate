@@ -54,6 +54,16 @@ final class ViewModel: ObservableObject {
     @Published var selectedOutputFormat: OutputFormat = .original {
         didSet { persistCurrentDownloadOptions() }
     }
+    @Published var primarySubtitleTrackID: String? {
+        didSet {
+            selectedSubtitleIDs = primarySubtitleTrackID.map { [$0] } ?? []
+            if primarySubtitleTrackID == nil, chineseMode != .off {
+                chineseMode = .off
+            }
+            refreshTranslationRuntimeReadiness()
+            persistCurrentDownloadOptions()
+        }
+    }
     @Published var selectedSubtitleIDs: Set<String> = [] {
         didSet {
             // 字幕处理依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
@@ -69,17 +79,30 @@ final class ViewModel: ObservableObject {
     }
     /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
     /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
-    static var persistedAppLanguage: String { AppSettings.load().appLanguage }
+    static var persistedAppLanguage: String { AppSettings.load(readCredentials: false).appLanguage }
 
-    @Published var settings = AppSettings.load() {
+    private static func localASRGeneratorSettingsChanged(_ old: AppSettings, _ new: AppSettings) -> Bool {
+        old.localASREnabled != new.localASREnabled
+            || old.localASRRuntimePath != new.localASRRuntimePath
+            || old.localASRModelPath != new.localASRModelPath
+            || old.localASRModelID != new.localASRModelID
+    }
+
+    /// 启动时不读 Keychain 凭证（避免首次启动弹授权）；首次真正需要凭证时由 hydrateCredentials() 补齐。
+    /// 默认空设置仅作占位，init 会立刻用 load(readCredentials: false) 覆盖。
+    @Published var settings = AppSettings() {
         didSet {
             CoreL10n.sync(from: settings)
             queue.syncConcurrency(from: settings)
+            if Self.localASRGeneratorSettingsChanged(oldValue, settings) {
+                queue.syncLocalASRGenerator(from: settings)
+            }
             refreshTranslationRuntimeReadiness()
             refreshSummaryRuntimeReadiness()
         }
     }
     @Published var showSettings = false
+    @Published var pendingSettingsPaneID: String?
     /// 首启引导：选择 App 语言与默认译文目标；不强制配置 API。
     @Published var showOnboarding = false
     /// 非 nil 时弹出站点登录窗（值为站点 host，如 "youtube.com"）
@@ -138,20 +161,39 @@ final class ViewModel: ObservableObject {
     /// 代际令牌：reset / 取消后，旧解析任务的回调全部作废
     private var session = 0
 
+    /// 凭证是否已从安全存储补齐（见 hydrateCredentials）。启动时为 false，首次需要时置 true。
+    private var credentialsHydrated = false
+
     init(
         engine: any DownloadEngine = makeDefaultEngine(),
         queue: QueueManager? = nil,
         updater: UpdateService? = nil,
         runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating = AppleRuntimeReadinessEvaluator()
     ) {
+        let initialSettings = AppSettings.load(readCredentials: false)
+        self.settings = initialSettings
+        self.primarySubtitleTrackID = nil
         self.engine = engine
-        self.queue = queue ?? QueueManager(engine: engine)
+        self.queue = queue ?? QueueManager(
+            engine: engine,
+            localASRGenerator: LocalASRGeneratorFactory.make(settings: initialSettings),
+            completionNotifier: SystemQueueCompletionNotifier(settingsProvider: { AppSettings.load(readCredentials: false) })
+        )
         self.updater = updater ?? UpdateService()
         self.runtimeReadinessEvaluator = runtimeReadinessEvaluator
         self.updater.prepareForUpdateUI = { [weak self] in
             self?.dismissSheetsForUpdateUI()
         }
         CoreL10n.sync(from: settings)
+    }
+
+    /// 首次真正需要 API 凭证（打开设置 / 开始下载翻译 / 总结）时，从 Keychain 补齐 Token。
+    /// 启动时刻意不读，避免首次启动还没用到 API 就弹 Keychain 授权；幂等，仅读一次。
+    /// 注意：必须在任何会写回设置（保存）之前调用，否则会把空 Token 写盖掉安全存储里的值。
+    func hydrateCredentials() {
+        guard !credentialsHydrated else { return }
+        credentialsHydrated = true
+        settings = AppSettings.load(readCredentials: true)
     }
 
     // MARK: - 派生状态
@@ -218,6 +260,9 @@ final class ViewModel: ObservableObject {
     func parse() {
         let input = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty, !isParsing else { return }
+        // 用户开始处理任务即补齐凭证：ready 页的「翻译/总结是否已配置」判断需要 Token，
+        // 且此时弹一次 Keychain 授权（仅当有旧凭证项）比首次启动就弹更合理。
+        hydrateCredentials()
 
         // 一次粘贴多条链接：逐个解析并按默认选项（最高画质）自动加入队列
         let urls = Self.extractURLs(from: input)
@@ -268,10 +313,15 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    /// 下载目的地：会产出多个文件（字幕/译文/烧录件）时在 Downloads 下按视频标题建文件夹，
-    /// 单视频文件直接放 Downloads（避免一个视频三四个文件把下载目录搅乱）。
+    /// App 管理的下载根目录。设置页的存储清理只允许操作这个目录，不能扫描整个 Downloads。
+    static var appDownloadsDirectory: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Moongate", isDirectory: true)
+    }
+
+    /// 下载目的地：所有 v0.8 产物都放在 Downloads/Moongate 下；多文件任务再按视频标题建子文件夹。
     static func destinationDirectory(forTitle title: String, multiFile: Bool) -> URL {
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        let downloads = appDownloadsDirectory
         guard multiFile else { return downloads }
         return downloads.appendingPathComponent(sanitizedFolderName(title), isDirectory: true)
     }
@@ -366,12 +416,16 @@ final class ViewModel: ObservableObject {
                     // 字幕处理开启时自动选一条字幕作翻译源（真实字幕优先）
                     var subtitleLangs: [String] = []
                     var autoSubtitleLangs: [String] = []
+                    var subtitleTracks: [SubtitleChoice] = []
+                    var primarySubtitleTrackID: String?
                     if mode != .off,
                        let sub = info.subtitles.first(where: { !$0.isAuto }) ?? info.subtitles.first {
+                        subtitleTracks = [sub]
+                        primarySubtitleTrackID = sub.id
                         if sub.isAuto {
-                            autoSubtitleLangs = [sub.id]
+                            autoSubtitleLangs = [sub.languageCode]
                         } else {
-                            subtitleLangs = [sub.id]
+                            subtitleLangs = [sub.languageCode]
                         }
                     }
                     if shouldRequireTranslationReadiness(
@@ -381,7 +435,7 @@ final class ViewModel: ObservableObject {
                         autoSubtitleLangs: autoSubtitleLangs
                     ) {
                         let translationContext = currentSettings.makeTranslationContext(
-                            sourceLanguage: subtitleLangs.first ?? autoSubtitleLangs.first
+                            sourceLanguage: subtitleTracks.first?.languageCode
                         )
                         guard await blockIfTranslationNotReady(
                             for: mode,
@@ -400,6 +454,8 @@ final class ViewModel: ObservableObject {
                         formatID: formatID,
                         subtitleLangs: subtitleLangs,
                         autoSubtitleLangs: autoSubtitleLangs,
+                        subtitleTracks: subtitleTracks,
+                        primarySubtitleTrackID: primarySubtitleTrackID,
                         destinationDirectory: Self.destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
@@ -422,7 +478,7 @@ final class ViewModel: ObservableObject {
             self.batchStatusText = nil
             self.urlText = ""
             self.selectedFormatID = nil
-            self.selectedSubtitleIDs = []
+            self.primarySubtitleTrackID = nil
             self.chineseMode = .off
             self.stage = .idle
             var parts: [String] = [CoreL10n.t(L.Main.batchAdded, added)]
@@ -494,19 +550,27 @@ final class ViewModel: ObservableObject {
     /// ready 页「加入队列」：构造 DownloadRequest 入队，然后清空回可输入态以便继续添加下一条。
     func startDownload() async {
         guard case .ready(let info) = stage else { return }
+        hydrateCredentials()
         let startSession = session
         let mode = chineseMode
         let selectedFormatIDSnapshot = selectedFormatID
         let selectedSubtitleIDsSnapshot = selectedSubtitleIDs
+        let primarySubtitleTrackIDSnapshot = primarySubtitleTrackID
         let preferHDRSnapshot = preferHDR
         let outputFormatSnapshot = selectedOutputFormat
         let currentSettings = settings
         let selectedCandidate = chosenCandidate
 
+        if let primaryTrack = primarySubtitleTrack(in: info),
+           primaryTrack.sourceKind == .localASR,
+           !localASRReadyForDownload {
+            openLocalASRSettings()
+            return
+        }
         guard dependenciesReady(for: mode) else { return }
         if shouldRequireTranslationReadiness(for: mode, info: info) {
             let translationContext = currentSettings.makeTranslationContext(
-                sourceLanguage: translationSourceSubtitle(in: info)?.id
+                sourceLanguage: translationSourceSubtitle(in: info)?.languageCode
             )
             guard await blockIfTranslationNotReady(
                 for: mode,
@@ -519,26 +583,30 @@ final class ViewModel: ObservableObject {
                   currentInfo.videoID == info.videoID else { return }
         }
         guard let formatID = selectedFormatIDSnapshot ?? info.formats.first?.id else { return }
+        let selectedFormat = info.formats.first { $0.id == formatID }
+        let requestPreferHDR = preferHDRSnapshot && (selectedFormat?.hdrAvailable ?? false)
         // 去重：队列里已有同源未完成任务时不再起新任务，只给一行提示。
         if queue.hasOpenDuplicate(videoID: info.videoID, sourceURL: info.sourceURL, formatID: formatID) {
             enqueueNotice = CoreL10n.t(L.Main.videoAlreadyQueued)
             return
         }
-        let chosen = info.subtitles.filter { selectedSubtitleIDsSnapshot.contains($0.id) }
-        // 会产出多个文件（字幕 / 翻译 / 烧录件）时按视频建独立文件夹；单视频直接放 Downloads。
+        let chosen = availableSubtitleChoices(for: info).filter { selectedSubtitleIDsSnapshot.contains($0.id) }
+        // 会产出多个文件（字幕 / 翻译 / 烧录件）时在 App 下载目录下按视频建独立文件夹。
         let multiFile = !chosen.isEmpty || mode != .off
         let request = DownloadRequest(
             url: info.sourceURL,
             videoID: info.videoID,
             formatID: formatID,
-            subtitleLangs: chosen.filter { !$0.isAuto }.map(\.id),
-            autoSubtitleLangs: chosen.filter { $0.isAuto }.map(\.id),
+            subtitleLangs: chosen.filter { !$0.isAuto }.map(\.languageCode),
+            autoSubtitleLangs: chosen.filter { $0.isAuto }.map(\.languageCode),
+            subtitleTracks: chosen,
+            primarySubtitleTrackID: primarySubtitleTrackIDSnapshot,
             destinationDirectory: Self.destinationDirectory(forTitle: info.title, multiFile: multiFile),
             preferredTitle: {
                 guard let kind = selectedCandidate?.kind, kind == .pageMain || kind == .directFile else { return nil }
                 return info.title
             }(),
-            preferHDR: preferHDRSnapshot,
+            preferHDR: requestPreferHDR,
             outputFormat: outputFormatSnapshot
         )
         queue.enqueue(info: info, request: request, chineseMode: mode, settings: currentSettings)
@@ -551,7 +619,7 @@ final class ViewModel: ObservableObject {
         parseTask = nil
         urlText = ""
         selectedFormatID = nil
-        self.selectedSubtitleIDs = []
+        self.primarySubtitleTrackID = nil
         chineseMode = .off
         candidates = []
         chosenCandidate = nil
@@ -568,16 +636,21 @@ final class ViewModel: ObservableObject {
     /// 仅在 ready（用户正在选档）时记：恢复发生在 analyzing 阶段、入队后的清空发生在 idle 阶段，
     /// 都不会触发记忆，避免「恢复值/清空值」污染记忆。无变化时不落盘，避免每次切换都写磁盘。
     private func persistCurrentDownloadOptions() {
-        guard case .ready = stage else { return }
+        guard case .ready(let info) = stage else { return }
+        let selectedSubtitleLangs = availableSubtitleChoices(for: info)
+            .filter { selectedSubtitleIDs.contains($0.id) }
+            .map(\.languageCode)
         if settings.lastSubtitleMode == chineseMode.rawValue,
            settings.lastOutputFormat == selectedOutputFormat,
            settings.lastPreferHDR == preferHDR,
-           Set(settings.lastSubtitleLangs) == selectedSubtitleIDs {
+           settings.lastPrimarySubtitleTrackID == primarySubtitleTrackID,
+           Set(settings.lastSubtitleLangs) == Set(selectedSubtitleLangs) {
             return
         }
         var updated = settings
         updated.lastSubtitleMode = chineseMode.rawValue
-        updated.lastSubtitleLangs = Array(selectedSubtitleIDs)
+        updated.lastSubtitleLangs = selectedSubtitleLangs
+        updated.lastPrimarySubtitleTrackID = primarySubtitleTrackID
         updated.lastOutputFormat = selectedOutputFormat
         updated.lastPreferHDR = preferHDR
         settings = updated
@@ -587,11 +660,62 @@ final class ViewModel: ObservableObject {
     /// 字幕 id 归一成语言代码：小写、取首个 `-` 前的部分。
     /// 这样上次选「ja」能匹配下个视频的「ja」/「ja-JP」/「ja-orig」/自动生成的日语字幕。
     private func normalizedLang(_ id: String) -> String {
-        let lower = id.lowercased()
+        let lower = SubtitleTrackID(rawValue: id).languageCode.lowercased()
         if let dash = lower.firstIndex(of: "-") {
             return String(lower[..<dash])
         }
         return lower
+    }
+
+    func availableSubtitleChoices(for info: VideoInfo) -> [SubtitleChoice] {
+        var choices = info.subtitles
+
+        var seenIDs = Set(choices.map(\.id))
+        if info.subtitles.isEmpty {
+            let localASR = SubtitleChoice(
+                languageCode: "auto",
+                label: CoreL10n.t(L.Ready.localASRAutoDetectLabel),
+                sourceKind: .localASR,
+                provider: "whisper.cpp",
+                variant: "local"
+            )
+            if seenIDs.insert(localASR.id).inserted {
+                choices.append(localASR)
+            }
+            return choices
+        }
+
+        var seenLanguages: Set<String> = []
+        for subtitle in info.subtitles {
+            let languageCode = normalizedLang(subtitle.languageCode)
+            guard !languageCode.isEmpty, seenLanguages.insert(languageCode).inserted else { continue }
+
+            let localASR = SubtitleChoice(
+                languageCode: languageCode,
+                label: subtitle.label,
+                sourceKind: .localASR,
+                provider: "whisper.cpp",
+                variant: "local"
+            )
+            if seenIDs.insert(localASR.id).inserted {
+                choices.append(localASR)
+            }
+        }
+        return choices
+    }
+
+    var localASRReadyForDownload: Bool {
+        queue.hasLocalASRGenerator
+    }
+
+    func openSettings(paneID: String? = nil) {
+        pendingSettingsPaneID = paneID
+        showSettings = true
+    }
+
+    func openLocalASRSettings() {
+        settingsNotice = CoreL10n.t(L.Ready.localASRSetupRequired)
+        openSettings(paneID: "localSpeech")
     }
 
     /// 选档页恢复上次的下载选项：输出格式 / HDR 直接套用；字幕按语言代码在本视频可用字幕里匹配
@@ -601,18 +725,29 @@ final class ViewModel: ObservableObject {
         preferHDR = settings.lastPreferHDR
         selectedOutputFormat = settings.lastOutputFormat ?? .original
 
-        let wantedLangs = Set(settings.lastSubtitleLangs.map { normalizedLang($0) })
-        var matchedIDs: Set<String> = []
-        for lang in wantedLangs {
-            let group = info.subtitles.filter { normalizedLang($0.id) == lang }
-            if let best = group.first(where: { !$0.isAuto }) ?? group.first {
-                matchedIDs.insert(best.id)
+        let available = availableSubtitleChoices(for: info)
+        var matchedPrimaryID: String?
+        if let lastPrimarySubtitleTrackID = settings.lastPrimarySubtitleTrackID,
+           let exact = available.first(where: { $0.id == lastPrimarySubtitleTrackID }),
+           exact.sourceKind != .localASR || localASRReadyForDownload {
+            matchedPrimaryID = exact.id
+        } else {
+            let wantedLangs = Set(settings.lastSubtitleLangs.map { normalizedLang($0) })
+            for lang in wantedLangs {
+                let group = available.filter {
+                    normalizedLang($0.languageCode) == lang && $0.sourceKind != .localASR
+                }
+                if let best = group.first(where: { !$0.isAuto }) ?? group.first,
+                   best.sourceKind != .localASR {
+                    matchedPrimaryID = best.id
+                    break
+                }
             }
         }
-        selectedSubtitleIDs = matchedIDs
+        primarySubtitleTrackID = matchedPrimaryID
 
         // 仅当字幕成功恢复、且记录的处理方式不是「不需要」时才恢复 mode（否则保持 didSet 设好的 .off）。
-        if !matchedIDs.isEmpty,
+        if matchedPrimaryID != nil,
            let raw = settings.lastSubtitleMode,
            let mode = ChineseSubtitleMode(rawValue: raw),
            mode != .off {
@@ -620,17 +755,21 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    func primarySubtitleTrack(in info: VideoInfo) -> SubtitleChoice? {
+        guard let primarySubtitleTrackID else { return nil }
+        return availableSubtitleChoices(for: info).first { $0.id == primarySubtitleTrackID }
+    }
+
     /// ready 页提示用：勾选多条字幕时实际作为翻译源的那条（真实字幕优先、按解析顺序取第一条）。
     func translationSourceSubtitle(in info: VideoInfo) -> SubtitleChoice? {
-        let chosen = info.subtitles.filter { selectedSubtitleIDs.contains($0.id) }
-        return chosen.first(where: { !$0.isAuto }) ?? chosen.first
+        primarySubtitleTrack(in: info)
     }
 
     /// 实际翻译源字幕是否已与翻译目标语言同一脚本（同则跳过翻译、直接使用/烧录）。
     /// 例：目标=简中且源=zh-Hans → 跳过；目标=繁中且源=zh-Hans → 不跳过（仍要简转繁翻译）。
     func translationSourceMatchesTarget(in info: VideoInfo) -> Bool {
         guard let source = translationSourceSubtitle(in: info) else { return false }
-        return TranslationLanguage.matches(source: source.id, target: settings.translationTargetLanguage)
+        return TranslationLanguage.matches(source: source.languageCode, target: settings.translationTargetLanguage)
     }
 
     func shouldRequireTranslationReadiness(for mode: ChineseSubtitleMode, info: VideoInfo) -> Bool {
@@ -658,7 +797,7 @@ final class ViewModel: ObservableObject {
     ) -> Bool {
         let sourceID = subtitleLangs.first ?? autoSubtitleLangs.first
         guard let sourceID else { return false }
-        guard info.subtitles.contains(where: { $0.id == sourceID }) else { return false }
+        guard info.subtitles.contains(where: { $0.languageCode == sourceID }) else { return false }
         return TranslationLanguage.matches(source: sourceID, target: settings.translationTargetLanguage)
     }
 
@@ -692,7 +831,7 @@ final class ViewModel: ObservableObject {
         stage = .idle
         queueExpanded = true
         selectedFormatID = nil
-        selectedSubtitleIDs = []
+        primarySubtitleTrackID = nil
         chineseMode = .off
         candidates = []
         chosenCandidate = nil
@@ -743,7 +882,7 @@ final class ViewModel: ObservableObject {
         let readiness = translationReadinessForCurrentSettings()
         guard readiness.isReady else {
             settingsNotice = translationReadinessMessageForCurrentSettings()
-            showSettings = true
+            openSettings(paneID: "aiServices")
             return false
         }
         return true
@@ -761,7 +900,7 @@ final class ViewModel: ObservableObject {
         )
         guard readiness.isReady else {
             settingsNotice = translationReadinessMessage(for: readiness)
-            showSettings = true
+            openSettings(paneID: "aiServices")
             return false
         }
         return true
@@ -804,7 +943,7 @@ final class ViewModel: ObservableObject {
     private func currentTranslationContext() -> TranslationContext {
         let sourceLanguage: String?
         if case .ready(let info) = stage {
-            sourceLanguage = translationSourceSubtitle(in: info)?.id
+            sourceLanguage = translationSourceSubtitle(in: info)?.languageCode
         } else {
             sourceLanguage = nil
         }
@@ -848,6 +987,7 @@ final class ViewModel: ObservableObject {
     /// 对当前 Ready 的视频做 AI 总结：优先现拉字幕文本，拿不到回退视频简介。
     func summarizeCurrentVideo() {
         guard case .ready(let info) = stage else { return }
+        hydrateCredentials()
         if let reason = summaryUnavailableReason {
             summaryState = .failed(reason)
             return
@@ -856,7 +996,7 @@ final class ViewModel: ObservableObject {
         summaryState = .running
         let settings = settings
         let config = settings.effectiveSummaryConfig
-        let preferredLangs = info.subtitles.map(\.id)
+        let preferredLangs = info.subtitles.map(\.languageCode)
         summaryTask = Task { [engine] in
             do {
                 // 优先字幕文本；最佳努力，失败/无字幕回退简介。
@@ -914,15 +1054,41 @@ final class ViewModel: ObservableObject {
     func completeOnboarding(
         appLanguage: AppLanguage,
         translationTargetLanguage: String,
-        useLocalTranslation: Bool
+        useLocalTranslation: Bool,
+        translationProvider: TranslationProvider,
+        preferLocalSpeechRecognition: Bool,
+        apiBaseURL: String = "",
+        apiModel: String = "",
+        apiAuthToken: String = ""
     ) -> Bool {
         var draft = settings
         draft.appLanguage = appLanguage.rawValue
         draft.translationTargetLanguage = translationTargetLanguage
         draft.onboardingCompleted = true
+        draft.localASREnabled = preferLocalSpeechRecognition
+        let engine = TranslationEngine.compatible(with: translationProvider)
+        draft.translationProvider = translationProvider
+        draft.aiEngine = engine
+        draft.aiBaseURL = translationProvider.defaultBaseURL
+        draft.translationBaseURL = translationProvider.defaultBaseURL
         if useLocalTranslation {
             draft.translationEngine = .appleTranslationLowLatency
             draft.translationFollowsDefault = false
+        } else {
+            draft.translationEngine = engine
+            draft.translationFollowsDefault = true
+            let normalizedModel = apiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft.aiModel = normalizedModel
+            draft.translationModel = normalizedModel
+            // Apply user-entered API credentials from onboarding
+            if !apiBaseURL.isEmpty {
+                draft.aiBaseURL = apiBaseURL
+                draft.translationBaseURL = apiBaseURL
+            }
+            if !apiAuthToken.isEmpty {
+                draft.aiAuthToken = apiAuthToken
+                draft.translationAuthToken = apiAuthToken
+            }
         }
         do {
             try draft.save()

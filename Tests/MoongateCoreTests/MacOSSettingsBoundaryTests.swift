@@ -1,6 +1,314 @@
 import XCTest
 
 final class MacOSSettingsBoundaryTests: XCTestCase {
+    func testSettingsViewUsesSplitNavigationHubWithLocalASRAndNotifications() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+        let keys = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("LocalizationKeys.swift"))
+        let en = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("Strings.en.swift"))
+        let zhHans = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("Strings.zhHans.swift"))
+        let zhHant = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("Strings.zhHant.swift"))
+
+        XCTAssertTrue(source.contains("enum SettingsPane: String, CaseIterable, Identifiable"))
+        XCTAssertTrue(source.contains("case general"))
+        XCTAssertTrue(source.contains("case subtitles"))
+        XCTAssertTrue(source.contains("case localSpeech"))
+        XCTAssertTrue(source.contains("case aiServices"))
+        XCTAssertTrue(source.contains("case videoOutput"))
+        XCTAssertTrue(source.contains("case siteLogin"))
+        XCTAssertTrue(source.contains("case components"))
+        XCTAssertTrue(source.contains("case updates"))
+        XCTAssertTrue(en.contains("L.Settings.paneComponents: \"Components & Storage\""))
+        XCTAssertTrue(en.contains("L.Settings.paneUpdates: \"Updates & About\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneComponents: \"组件与存储\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneUpdates: \"更新与关于\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneComponents: \"元件與儲存\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneUpdates: \"更新與關於\""))
+        XCTAssertTrue(source.contains("@State private var selectedPane: SettingsPane? = .general"))
+        XCTAssertTrue(source.contains("NavigationSplitView"))
+        XCTAssertTrue(source.contains("List(SettingsPane.allCases, selection: $selectedPane)"))
+        XCTAssertTrue(source.contains("settingsPaneDetail"))
+        // 11c：设置改为独立窗口 + 实时保存，不再有底部「完成/取消」按钮，改为 persistDraftLive 自动落盘。
+        XCTAssertFalse(source.contains("private var bottomBar"))
+        XCTAssertTrue(source.contains("private func persistDraftLive"))
+        XCTAssertTrue(source.contains(".onChange(of: draft) { _, newValue in"))
+        XCTAssertTrue(source.contains("applyPendingSettingsPane()"))
+        XCTAssertTrue(source.contains(".onChange(of: model.pendingSettingsPaneID)"))
+        XCTAssertTrue(source.contains(".frame(minWidth: 760"))
+        XCTAssertFalse(source.contains(".frame(width: 480, height: 560)"))
+
+        XCTAssertTrue(source.contains("localSpeechSection"))
+        XCTAssertTrue(source.contains("$draft.localASREnabled"))
+        XCTAssertTrue(source.contains("localizer.t(L.Settings.localASRSetupRepair)"))
+        XCTAssertTrue(source.contains("importLocalASRModel()"))
+        XCTAssertTrue(source.contains("draft.localASRRuntimePath = runtime.executableURL.path"))
+        XCTAssertTrue(source.contains("draft.localASRModelPath = destinationURL.path"))
+        XCTAssertTrue(source.contains("draft.localASRModelID = importedLocalASRModelID"))
+        XCTAssertTrue(source.contains("localizer.t(L.Settings.localASRHelp)"))
+
+        XCTAssertTrue(source.contains("notificationsSection"))
+        XCTAssertTrue(source.contains("$draft.completionNotificationsEnabled"))
+        XCTAssertTrue(source.contains("$draft.completionSoundEnabled"))
+
+        let detailBody = try XCTUnwrap(functionBody(named: "settingsPaneDetail", in: source))
+        XCTAssertTrue(detailBody.contains("case .components:"))
+        XCTAssertTrue(detailBody.contains("dependencySection"))
+        XCTAssertTrue(detailBody.contains("storageSection"))
+        XCTAssertTrue(detailBody.contains("case .updates:"))
+        XCTAssertTrue(detailBody.contains("updateSection"))
+        XCTAssertTrue(detailBody.contains("aboutSection"))
+
+        let generalCase = try XCTUnwrap(caseBody(named: ".general", before: ".subtitles", in: detailBody))
+        XCTAssertTrue(generalCase.contains("languageSection"))
+        XCTAssertTrue(generalCase.contains("notificationsSection"))
+        XCTAssertFalse(generalCase.contains("performanceSection"))
+
+        let videoOutputCase = try XCTUnwrap(caseBody(named: ".videoOutput", before: ".siteLogin", in: detailBody))
+        XCTAssertTrue(videoOutputCase.contains("burnQualitySection"))
+        XCTAssertTrue(videoOutputCase.contains("performanceSection"))
+
+        let storageBody = try XCTUnwrap(functionBody(named: "storageSection", in: source))
+        // 11i：存储管理页面 — macOS Storage 风格总览条 + 分类行 + 行内清理入口。
+        XCTAssertTrue(storageBody.contains("Section(localizer.t(L.Settings.storageSection))"))
+        XCTAssertTrue(storageBody.contains("storageOverview"))
+        XCTAssertTrue(storageBody.contains("supportDataURL"))
+        XCTAssertTrue(storageBody.contains("localASRModelStoreURL"))
+        XCTAssertTrue(storageBody.contains("appDownloadsDirectoryURL"))
+        XCTAssertTrue(storageBody.contains("storageRow("))
+        XCTAssertTrue(storageBody.contains("L.Settings.storageDeleteModels"))
+        XCTAssertTrue(storageBody.contains("L.Settings.storageDeleteDownloads"))
+        XCTAssertTrue(source.contains("private var storageUsageBar"))
+        XCTAssertTrue(source.contains("private var storageTotalBytes"))
+        XCTAssertTrue(source.contains("private func storageBarSegment"))
+        XCTAssertTrue(source.contains("NSWorkspace.shared.open"))
+        XCTAssertTrue(source.contains("ByteCountFormatter"))
+        XCTAssertTrue(source.contains("private static nonisolated func directorySize"))
+        XCTAssertTrue(source.contains("private var appDownloadsDirectoryURL: URL { ViewModel.appDownloadsDirectory }"))
+        XCTAssertTrue(source.contains("max(Self.directorySize(supportDir) - modelsSize, 0)"))
+        XCTAssertFalse(source.contains("contentsOfDirectory(atPath: downloadsDir.path)"))
+
+        let deleteDownloadsBody = try XCTUnwrap(functionBody(named: "deleteAllDownloads", in: source))
+        XCTAssertTrue(deleteDownloadsBody.contains("appDownloadsDirectoryURL"))
+        XCTAssertTrue(deleteDownloadsBody.contains("trashItem(at: downloadsDir"))
+        XCTAssertFalse(deleteDownloadsBody.contains("contentsOfDirectory"))
+
+        let aboutBody = try XCTUnwrap(functionBody(named: "aboutSection", in: source))
+        XCTAssertTrue(aboutBody.contains("Section(localizer.t(L.Settings.aboutSection))"))
+        XCTAssertTrue(aboutBody.contains("localizer.t(L.Settings.aboutAppName)"))
+        XCTAssertFalse(aboutBody.contains("updater.currentVersion"))
+        XCTAssertTrue(aboutBody.contains("localizer.t(L.Settings.aboutSource)"))
+        // 11g：关于页提供 GitHub 仓库跳转按钮。
+        XCTAssertTrue(aboutBody.contains("localizer.t(L.Settings.openGitHubRepo)"))
+        XCTAssertTrue(aboutBody.contains("updater.openRepoPage()"))
+
+        for key in ["storageSection", "storageStatus", "storageUsed", "aboutSection", "aboutAppName", "aboutSource"] {
+            XCTAssertTrue(keys.contains(key))
+        }
+        for strings in [en, zhHans, zhHant] {
+            XCTAssertTrue(strings.contains("L.Settings.storageSection"))
+            XCTAssertTrue(strings.contains("L.Settings.storageStatus"))
+            XCTAssertTrue(strings.contains("L.Settings.storageUsed"))
+            XCTAssertTrue(strings.contains("L.Settings.aboutSection"))
+            XCTAssertTrue(strings.contains("L.Settings.aboutAppName"))
+            XCTAssertTrue(strings.contains("L.Settings.aboutSource"))
+        }
+    }
+
+    func testLocalSpeechSettingsShowsRecommendedModelCatalogWithExplicitDownloadAction() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+        let keys = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("LocalizationKeys.swift"))
+
+        let body = try XCTUnwrap(functionBody(named: "localSpeechSection", in: source))
+        // v0.8：本地语音识别保留 Form/Section 原生结构；导入入口放标题动作区，
+        // 模型列表不再使用彩色卡片，状态行负责告诉用户下一步。
+        XCTAssertTrue(body.contains("localASRModelCatalogEntries"))
+        XCTAssertTrue(body.contains("ForEach(localASRModelCatalogEntries"))
+        XCTAssertTrue(body.contains("localizer.t(L.Settings.localASRRecommendedModels)"))
+        XCTAssertTrue(body.contains("LocalASRSetupStatusView(state: localASRSetupState)"))
+        XCTAssertTrue(body.contains("LocalASRModelListHeader("))
+        XCTAssertTrue(body.contains("importAction: importLocalASRModel"))
+        XCTAssertTrue(body.contains("localASRModelRow(entry, isRecommended: entry.id == recommended?.id)"))
+        XCTAssertTrue(body.contains("recommendedModelForDevice()"))
+        XCTAssertTrue(body.contains("localizer.t(L.Settings.localASRImportModel)"))
+        XCTAssertTrue(body.contains("importedLocalASRModelRow()"))
+        XCTAssertFalse(body.contains("Button {\n                        importLocalASRModel()"))
+        XCTAssertFalse(body.contains("L.Settings.localASRRecommendedForDevice"))
+        XCTAssertFalse(body.contains("DisclosureGroup(localizer.t(L.Settings.localASRAdvancedSettings))"))
+        XCTAssertFalse(body.contains("TextField("))
+
+        let statusBody = try XCTUnwrap(functionBody(named: "LocalASRSetupStatusView", in: source))
+        XCTAssertTrue(statusBody.contains("localASRSetupAction(for: state)"))
+        XCTAssertTrue(statusBody.contains(".accessibilityLabel(localASRSetupTitle(for: state))"))
+        XCTAssertTrue(source.contains("private var localASRSetupState"))
+        XCTAssertTrue(source.contains("case ready(runtimePath: String)"))
+        XCTAssertTrue(source.contains("case missingRuntime"))
+        XCTAssertTrue(source.contains("case missingModel"))
+        XCTAssertTrue(source.contains("case badHash"))
+        XCTAssertTrue(source.contains("case downloading(modelName: String)"))
+        XCTAssertTrue(source.contains("requestDependencySetup()"))
+        XCTAssertTrue(source.contains("installRecommendedLocalASRModel()"))
+
+        let headerBody = try XCTUnwrap(functionBody(named: "LocalASRModelListHeader", in: source))
+        XCTAssertTrue(headerBody.contains("Image(systemName: \"square.and.arrow.down\")"))
+        XCTAssertTrue(headerBody.contains(".help(importTitle)"))
+        XCTAssertTrue(headerBody.contains(".accessibilityLabel(importTitle)"))
+
+        // 模型行本体：原生列表行图标、能力文案、下载/删除/进度。
+        let rowBody = try XCTUnwrap(functionBody(named: "LocalASRModelRow", in: source))
+        XCTAssertTrue(rowBody.contains("modelIcon(entry)"))
+        XCTAssertTrue(rowBody.contains("modelTint(entry)"))
+        XCTAssertTrue(rowBody.contains("modelCapabilityText(entry)"))
+        XCTAssertTrue(rowBody.contains("localizer.t(L.Settings.localASRModelSizeMemory"))
+        XCTAssertTrue(rowBody.contains("isRecommended"))
+        XCTAssertTrue(rowBody.contains("localizer.t(L.Settings.localASRRecommendedBadge)"))
+        XCTAssertTrue(rowBody.contains("localASRModelAccessibilityLabel(entry)"))
+        XCTAssertTrue(rowBody.contains("localASRInstallingModelID"))
+        XCTAssertTrue(rowBody.contains("ProgressView(value: localASRModelInstallProgress)"))
+        XCTAssertTrue(rowBody.contains("installLocalASRModel(entry)"))
+        XCTAssertTrue(rowBody.contains("deleteLocalASRModel(entry)"))
+        XCTAssertTrue(rowBody.contains("useLocalASRModel(entry)"))
+        XCTAssertTrue(rowBody.contains("localizer.t(L.Settings.localASRUseModel)"))
+        XCTAssertTrue(rowBody.contains("localizer.t(L.Settings.localASRModelInUse)"))
+        XCTAssertTrue(rowBody.contains("arrow.down.circle"))
+        XCTAssertTrue(rowBody.contains("\"trash\""))
+        XCTAssertTrue(rowBody.contains("role: .destructive"))
+        XCTAssertFalse(rowBody.contains("RoundedRectangle(cornerRadius: 8"))
+        XCTAssertFalse(source.contains("\"textformat\""))
+        XCTAssertTrue(source.contains("\"text.bubble.fill\""))
+
+        let importedRowBody = try XCTUnwrap(functionBody(named: "importedLocalASRModelRow", in: source))
+        XCTAssertTrue(importedRowBody.contains("localizer.t(L.Settings.localASRImportedModelBadge)"))
+        XCTAssertTrue(importedRowBody.contains("deleteImportedLocalASRModel()"))
+        XCTAssertTrue(importedRowBody.contains("localizer.t(L.Settings.localASRImportedModelAccessibility"))
+        XCTAssertFalse(importedRowBody.contains("RoundedRectangle(cornerRadius: 8"))
+
+        let capabilityBody = try XCTUnwrap(functionBody(named: "modelCapabilityLabel", in: source))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityFast)"))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityBalanced)"))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityAccurate)"))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityEnglish)"))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityLongVideo)"))
+        XCTAssertTrue(capabilityBody.contains("localizer.t(L.Settings.localASRModelCapabilityTurbo)"))
+        XCTAssertFalse(source.contains("实时快速"))
+        XCTAssertFalse(source.contains("日常平衡"))
+        XCTAssertFalse(source.contains("高精度"))
+
+        let recommendationBody = try XCTUnwrap(functionBody(named: "recommendedModelForDevice", in: source))
+        XCTAssertTrue(source.contains("private var unsortedLocalASRModelCatalogEntries"))
+        XCTAssertTrue(source.contains("let recommendedEntry = sorted.remove(at: recommendedIndex)"))
+        XCTAssertTrue(source.contains("sorted.insert(recommendedEntry, at: 0)"))
+        XCTAssertTrue(recommendationBody.contains("\"whisper.cpp:small-q5_1\""))
+        XCTAssertTrue(recommendationBody.contains("\"whisper.cpp:large-v3-turbo-q5_0\""))
+        XCTAssertFalse(recommendationBody.contains("!$0.isInstalled"))
+
+        XCTAssertTrue(source.contains("manifest: .recommendedWhisperCpp"))
+        XCTAssertTrue(source.contains("ASRModelCatalog"))
+        XCTAssertTrue(source.contains("ASRModelInstaller"))
+        XCTAssertTrue(source.contains("NSOpenPanel"))
+        XCTAssertTrue(source.contains("private func importLocalASRModel()"))
+        XCTAssertTrue(source.contains("private func importLocalASRModel(from sourceURL: URL)"))
+        XCTAssertTrue(source.contains("ASRRuntimeLocator(extraSearchURLs: localASRRuntimeSearchURLs).locate()"))
+        XCTAssertTrue(source.contains("private func adoptLocalASRRuntime()"))
+        XCTAssertTrue(source.contains("needsUserDownloadConsent"))
+        XCTAssertTrue(source.contains("private func installLocalASRModel(_ entry: ASRModelCatalogEntry)"))
+        XCTAssertFalse(source.contains("downloadLocalASRModel"))
+        XCTAssertFalse(source.contains("URLSession.shared.download"))
+
+        XCTAssertTrue(keys.contains("localASRRecommendedModels"))
+        XCTAssertTrue(keys.contains("localASRFindRuntime"))
+        XCTAssertTrue(keys.contains("localASRRepairSetup"))
+        XCTAssertTrue(keys.contains("localASRSetupReady"))
+        XCTAssertTrue(keys.contains("localASRSetupMissingRuntime"))
+        XCTAssertTrue(keys.contains("localASRSetupMissingModel"))
+        XCTAssertTrue(keys.contains("localASRSetupRepair"))
+        XCTAssertTrue(keys.contains("localASRSetupChooseModel"))
+        XCTAssertTrue(keys.contains("localASRSetupBadModel"))
+        XCTAssertTrue(keys.contains("localASRSetupDownloadRecommended"))
+        XCTAssertTrue(keys.contains("localASROptionalNotConfigured"))
+        XCTAssertTrue(keys.contains("localASRRuntimeFound"))
+        XCTAssertTrue(keys.contains("localASRRuntimeNotFound"))
+        XCTAssertTrue(keys.contains("localASRDownloadModel"))
+        XCTAssertTrue(keys.contains("localASRInstallingModel"))
+        XCTAssertTrue(keys.contains("localASRModelInstallComplete"))
+        XCTAssertTrue(keys.contains("localASRImportModel"))
+        XCTAssertTrue(keys.contains("localASRImportedModelBadge"))
+        XCTAssertTrue(keys.contains("localASRImportedModelDetail"))
+        XCTAssertTrue(keys.contains("localASRModelImportComplete"))
+        XCTAssertTrue(keys.contains("localASRDeleteModel"))
+        XCTAssertTrue(keys.contains("localASRDeleteImportedModel"))
+        XCTAssertTrue(keys.contains("localASRRecommendedBadge"))
+        XCTAssertTrue(keys.contains("localASRModelCapability"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityFast"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityBalanced"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityAccurate"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityRecommended"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityDetailed"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityEnglish"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityLongVideo"))
+        XCTAssertTrue(keys.contains("localASRModelCapabilityTurbo"))
+        XCTAssertTrue(keys.contains("localASRUseModel"))
+        XCTAssertTrue(keys.contains("localASRModelInUse"))
+    }
+
+    func testLocalASRRuntimeFinderSearchesBundledRuntimeAndSupportDirectory() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+        let searchBody = try XCTUnwrap(functionBody(named: "localASRRuntimeSearchURLs", in: source))
+
+        XCTAssertTrue(searchBody.contains("Bundle.main.resourceURL"))
+        XCTAssertTrue(searchBody.contains("appendingPathComponent(\"asr\", isDirectory: true)"))
+        XCTAssertTrue(searchBody.contains("appendingPathComponent(\"runtime\", isDirectory: true)"))
+        XCTAssertTrue(searchBody.contains("AppSettings.supportDirectory"))
+        XCTAssertTrue(searchBody.contains("runtimeURL.appendingPathComponent(\"bin\", isDirectory: true)"))
+        XCTAssertTrue(searchBody.contains("bundledRuntimeURL.appendingPathComponent(\"bin\", isDirectory: true)"))
+        XCTAssertTrue(source.contains("ASRRuntimeLocator(extraSearchURLs: localASRRuntimeSearchURLs).locate()"))
+    }
+
+    func testSettingsSidebarShowsUpdateBadgeWhenUpdateIsAvailable() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+        let rowBody = try XCTUnwrap(functionBody(named: "settingsPaneRow", in: source))
+        let badgeBody = try XCTUnwrap(functionBody(named: "settingsUpdateBadge", in: source))
+
+        XCTAssertTrue(rowBody.contains("if pane == .updates && updater.updateAvailable"))
+        XCTAssertTrue(rowBody.contains("settingsUpdateBadge"))
+        XCTAssertTrue(rowBody.contains("localizer.t(L.Update.updateAvailableStatus)"))
+        XCTAssertTrue(rowBody.contains(".accessibilityValue"))
+        XCTAssertFalse(badgeBody.contains("Text(\"1\")"))
+        XCTAssertTrue(badgeBody.contains("Circle()"))
+        XCTAssertTrue(badgeBody.contains(".fill(.red)"))
+        XCTAssertTrue(badgeBody.contains(".accessibilityHidden(true)"))
+    }
+
     func testSettingsExposeAppAndTargetLanguagePickersAndPersistThem() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -17,7 +325,8 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("$draft.appLanguage"))
         XCTAssertTrue(source.contains("$draft.translationTargetLanguage"))
         XCTAssertTrue(source.contains("localizer.setLanguage("))
-        XCTAssertTrue(source.contains("model.settings = draft"))
+        // 11c：实时保存把草稿写回 model.settings（persistDraftLive 里 model.settings = newValue）。
+        XCTAssertTrue(source.contains("model.settings = newValue"))
     }
 
     func testPrimaryAIConfigurationSectionsUseLocalizer() throws {
@@ -146,9 +455,9 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(loginBody.contains("localizer.t(L.Settings.clearLoginDialogTitle)"))
         XCTAssertTrue(loginBody.contains("Button(localizer.t(L.Settings.clearLoginAction), role: .destructive)"))
 
-        let bottomBody = try XCTUnwrap(functionBody(named: "bottomBar", in: source))
-        XCTAssertTrue(bottomBody.contains("Button(localizer.t(L.Common.cancel))"))
-        XCTAssertTrue(bottomBody.contains("Button(localizer.t(L.Common.done))"))
+        // 11c：底部「完成/取消」按钮已移除，改为实时保存；通知改用 safeAreaInset 横幅展示。
+        XCTAssertFalse(source.contains("private var bottomBar"))
+        XCTAssertTrue(source.contains("model.settingsNotice"))
 
         let loginStatusBody = try XCTUnwrap(functionBody(named: "loginStatusText", in: source))
         XCTAssertTrue(loginStatusBody.contains("localizer.t(L.Settings.loginNone)"))
@@ -424,12 +733,18 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(componentRowsBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(componentRowsBody.contains(".accessibilityLabel(componentAccessibilityLabel(component))"))
         XCTAssertTrue(componentRowsBody.contains(".accessibilityValue(componentReadyText(component))"))
+        XCTAssertTrue(componentRowsBody.contains("!component.isRequired"))
+        XCTAssertTrue(componentRowsBody.contains("localizer.t(L.Dependency.optionalBadge)"))
         XCTAssertFalse(componentRowsBody.contains(".accessibilityHint("))
 
         let helperBody = try XCTUnwrap(functionBody(named: "componentAccessibilityLabel", in: source))
         XCTAssertTrue(helperBody.contains("component.id"))
         XCTAssertTrue(helperBody.contains("componentPurposeText(component)"))
         XCTAssertTrue(helperBody.contains("localizer.t(L.Dependency.componentAccessibilityLabel"))
+
+        let readyBody = try XCTUnwrap(functionBody(named: "componentReadyText", in: source))
+        XCTAssertTrue(readyBody.contains("component.isRequired"))
+        XCTAssertTrue(readyBody.contains("localizer.t(L.Dependency.statusOptionalMissing)"))
     }
 
     func testAppleSetupActionButtonsExposeSideEffectHelp() throws {
@@ -508,6 +823,14 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             cursor = source.index(after: cursor)
         }
         return nil
+    }
+
+    private func caseBody(named caseName: String, before nextCaseName: String, in source: String) -> String? {
+        guard let start = source.range(of: "case \(caseName):") else { return nil }
+        guard let end = source.range(of: "case \(nextCaseName):", range: start.upperBound..<source.endIndex) else {
+            return nil
+        }
+        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func compactWhitespace(_ source: String) -> String {

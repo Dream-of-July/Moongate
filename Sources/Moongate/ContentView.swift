@@ -9,6 +9,8 @@ struct ContentView: View {
     @ObservedObject private var updater: UpdateService
     @EnvironmentObject private var localizer: Localizer
     @FocusState private var urlFieldFocused: Bool
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     init(model: ViewModel) {
         self.model = model
@@ -26,7 +28,11 @@ struct ContentView: View {
             ZStack(alignment: .bottom) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                QueueOverlayView(queue: model.queue, expanded: $model.queueExpanded)
+                QueueOverlayView(
+                    queue: model.queue,
+                    expanded: $model.queueExpanded,
+                    onConfigureLocalASR: { model.openLocalASRSettings() }
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
@@ -40,8 +46,14 @@ struct ContentView: View {
             model.prefillFromClipboardIfAppropriate()
         }
         .onChange(of: model.requestUrlFocus) { urlFieldFocused = true }
-        .sheet(isPresented: $model.showSettings, onDismiss: { model.consumePendingSettingsActions() }) {
-            SettingsView(model: model)
+        .onChange(of: model.showSettings) { _, show in
+            // 设置改为独立窗口：showSettings 驱动窗口的打开/关闭，
+            // 挂起动作（登录 / 依赖）在设置窗口 onDisappear 时消费。
+            if show {
+                openWindow(id: "settings")
+            } else {
+                dismissWindow(id: "settings")
+            }
         }
         .sheet(isPresented: $model.showOnboarding) {
             OnboardingView(model: model)
@@ -110,6 +122,14 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .frame(height: 34)
+                .overlay(alignment: .topTrailing) {
+                    if updater.updateAvailable {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 10, height: 10)
+                            .offset(x: 4, y: -4)
+                    }
+                }
                 .help(localizer.t(L.Main.settingsHelp))
                 .accessibilityLabel(localizer.t(L.Main.settingsAccessibility))
             }
@@ -303,11 +323,11 @@ struct ContentView: View {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
-                    section(localizer.t(L.Ready.subtitlesSection)) {
-                        subtitleRows(info)
+                    section(localizer.t(L.Ready.subtitleSourceSection)) {
+                        primarySubtitleSourceRows(model.availableSubtitleChoices(for: info))
                     }
-                    section(localizer.t(L.Ready.subtitleProcessingSection)) {
-                        chineseSubtitleRows(info)
+                    section(localizer.t(L.Ready.subtitleOutputSection)) {
+                        subtitleOutputRows(info)
                     }
                 }
                 .frame(maxWidth: 500)
@@ -354,8 +374,7 @@ struct ContentView: View {
     }
 
     private func readyFooterUsesVideoFolder(for info: VideoInfo) -> Bool {
-        let chosen = info.subtitles.filter { model.selectedSubtitleIDs.contains($0.id) }
-        return !chosen.isEmpty || model.chineseMode != .off
+        return model.primarySubtitleTrackID != nil || model.chineseMode != .off
     }
 
     private func formatRow(_ format: FormatChoice) -> some View {
@@ -482,21 +501,63 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func subtitleRows(_ info: VideoInfo) -> some View {
-        if info.subtitles.isEmpty {
-            Text(localizer.t(L.Ready.noSubtitles))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            ForEach(Array(info.subtitles.enumerated()), id: \.element.id) { index, subtitle in
-                Toggle(isOn: subtitleBinding(subtitle.id)) {
+    private func primarySubtitleSourceRows(_ subtitles: [SubtitleChoice]) -> some View {
+        let noneBinding = primarySubtitleTrackBinding(nil)
+        primarySubtitleSourceRow(
+            title: localizer.t(L.Ready.noSubtitleSource),
+            detail: subtitles.isEmpty || subtitles.allSatisfy { $0.sourceKind == .localASR }
+                ? localizer.t(L.Ready.noSubtitles) : nil,
+            badge: nil,
+            isSelected: model.primarySubtitleTrackID == nil,
+            action: { noneBinding.wrappedValue = true }
+        )
+        if !subtitles.isEmpty {
+            Divider().padding(.leading, 12)
+        }
+        ForEach(Array(subtitles.enumerated()), id: \.element.id) { index, subtitle in
+            let binding = primarySubtitleTrackBinding(subtitle.id)
+            let isLocalASRUnavailable = subtitle.sourceKind == .localASR && !model.localASRReadyForDownload
+            primarySubtitleSourceRow(
+                title: subtitle.label,
+                detail: subtitle.sourceKind == .localASR
+                    ? localizer.t(isLocalASRUnavailable ? L.Ready.localASRSetupRequired : L.Ready.localASRHint)
+                    : nil,
+                badge: subtitleSourceBadge(subtitle),
+                isSelected: model.primarySubtitleTrackID == subtitle.id,
+                trailingActionLabel: isLocalASRUnavailable ? localizer.t(L.Ready.localASRConfigure) : nil,
+                action: {
+                    if isLocalASRUnavailable {
+                        model.openLocalASRSettings()
+                    } else {
+                        binding.wrappedValue = true
+                    }
+                }
+            )
+            .accessibilityLabel(subtitleAccessibilityLabel(subtitle))
+            if index < subtitles.count - 1 {
+                Divider().padding(.leading, 12)
+            }
+        }
+    }
+
+    private func primarySubtitleSourceRow(
+        title: String,
+        detail: String?,
+        badge: String?,
+        isSelected: Bool,
+        trailingActionLabel: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(subtitle.label)
-                        if subtitle.isAuto {
-                            Text(localizer.t(L.Ready.autoGenerated))
+                        Text(title)
+                        if let badge {
+                            Text(badge)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)
@@ -504,47 +565,73 @@ struct ContentView: View {
                                 .background(Capsule().fill(.quaternary))
                         }
                     }
+                    if let detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .toggleStyle(.checkbox)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel(subtitleAccessibilityLabel(subtitle))
-                .accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))
-                .accessibilityValue(model.selectedSubtitleIDs.contains(subtitle.id) ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
-                if index < info.subtitles.count - 1 {
-                    Divider().padding(.leading, 12)
+                Spacer(minLength: 0)
+                if let trailingActionLabel {
+                    Text(trailingActionLabel)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))
+        .accessibilityValue(isSelected ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
+    }
+
+    private func subtitleSourceBadge(_ subtitle: SubtitleChoice) -> String? {
+        if subtitle.sourceKind == .localASR {
+            return localizer.t(L.Ready.localASR)
+        }
+        if subtitle.isAuto {
+            return localizer.t(L.Ready.autoGenerated)
+        }
+        return nil
     }
 
     private func subtitleAccessibilityLabel(_ subtitle: SubtitleChoice) -> String {
+        if subtitle.sourceKind == .localASR {
+            return localizer.t(L.Ready.localASRSubtitleLabel, subtitle.label)
+        }
         if subtitle.isAuto {
             return localizer.t(L.Ready.autoGeneratedSubtitleLabel, subtitle.label)
         }
         return subtitle.label
     }
 
-    private func subtitleBinding(_ id: String) -> Binding<Bool> {
+    private func primarySubtitleTrackBinding(_ id: String?) -> Binding<Bool> {
         Binding(
-            get: { model.selectedSubtitleIDs.contains(id) },
-            set: { isOn in
-                if isOn {
-                    model.selectedSubtitleIDs.insert(id)
-                } else {
-                    model.selectedSubtitleIDs.remove(id)
+            get: {
+                if let id {
+                    return model.primarySubtitleTrackID == id
                 }
+                return model.primarySubtitleTrackID == nil
+            },
+            set: { isOn in
+                guard isOn else { return }
+                model.primarySubtitleTrackID = id
             }
         )
     }
 
-    /// 「字幕处理」分组：依赖上方至少勾选一条字幕；只有翻译类模式需要翻译服务。
-    private func chineseSubtitleRows(_ info: VideoInfo) -> some View {
-        let hasSubtitleSelected = !model.selectedSubtitleIDs.isEmpty
+    /// 「字幕输出」分组：依赖上方选择一个主字幕来源；只有翻译类模式需要翻译服务。
+    private func subtitleOutputRows(_ info: VideoInfo) -> some View {
+        let hasSubtitleSelected = model.primarySubtitleTrackID != nil
         let readiness = model.translationReadinessForCurrentSettings()
         return VStack(alignment: .leading, spacing: 8) {
-            Picker(localizer.t(L.Ready.subtitleProcessingSection), selection: $model.chineseMode) {
+            Picker(localizer.t(L.Ready.subtitleOutputSection), selection: $model.chineseMode) {
                 ForEach(ChineseSubtitleMode.allCases, id: \.self) { mode in
                     Text(localizer.t(mode.localizationKey)).tag(mode)
                 }
@@ -573,7 +660,7 @@ struct ContentView: View {
                 } else {
                     compactTranslationReadinessView()
                 }
-            } else if model.chineseMode != .off, model.selectedSubtitleIDs.count > 1,
+            } else if model.chineseMode != .off,
                       let source = model.translationSourceSubtitle(in: info) {
                 Text(model.chineseMode == .burnOriginal
                      ? localizer.t(L.Ready.willBurnSubtitle, source.label)
@@ -845,12 +932,38 @@ struct ContentView: View {
     }
 }
 
+private enum OnboardingStep: String, CaseIterable, Identifiable {
+    case language
+    case subtitleSource
+    case translationMethod
+    case readiness
+
+    var id: String { rawValue }
+
+    @MainActor
+    func title(_ localizer: Localizer) -> String {
+        switch self {
+        case .language: return localizer.t(L.Onboarding.languageStep)
+        case .subtitleSource: return localizer.t(L.Onboarding.subtitleSourceStep)
+        case .translationMethod: return localizer.t(L.Onboarding.translationMethodStep)
+        case .readiness: return localizer.t(L.Onboarding.readinessStep)
+        }
+    }
+}
+
 private struct OnboardingView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
     @State private var appLanguage: AppLanguage
     @State private var translationTargetLanguage: String
     @State private var useLocalTranslation = true
+    @State private var selectedTranslationProvider: TranslationProvider
+    @State private var preferLocalSpeechRecognition: Bool
+    @State private var selectedStep: OnboardingStep = .language
+    // Onboarding API key fields — shown when user opts out of local translation
+    @State private var onboardingBaseURL: String
+    @State private var onboardingModel: String
+    @State private var onboardingAuthToken: String
 
     private let targetLanguages = ["zh-Hans", "zh-Hant", "en"]
 
@@ -858,6 +971,11 @@ private struct OnboardingView: View {
         self.model = model
         _appLanguage = State(initialValue: AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
         _translationTargetLanguage = State(initialValue: model.settings.translationTargetLanguage)
+        _selectedTranslationProvider = State(initialValue: model.settings.aiEngine.legacyProvider ?? model.settings.translationProvider)
+        _preferLocalSpeechRecognition = State(initialValue: model.settings.localASREnabled)
+        _onboardingBaseURL = State(initialValue: model.settings.aiBaseURL)
+        _onboardingModel = State(initialValue: model.settings.aiModel)
+        _onboardingAuthToken = State(initialValue: model.settings.aiAuthToken)
     }
 
     var body: some View {
@@ -870,34 +988,8 @@ private struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Form {
-                Picker(localizer.t(L.Onboarding.appLanguage), selection: $appLanguage) {
-                    Text(localizer.t(L.Settings.followSystem)).tag(AppLanguage.auto)
-                    Text(localizer.t(L.Settings.langHans)).tag(AppLanguage.zhHans)
-                    Text(localizer.t(L.Settings.langHant)).tag(AppLanguage.zhHant)
-                    Text(localizer.t(L.Settings.langEn)).tag(AppLanguage.en)
-                }
-                .onChange(of: appLanguage) { _, next in
-                    localizer.setLanguage(next)
-                }
-
-                Picker(localizer.t(L.Onboarding.translationTarget), selection: $translationTargetLanguage) {
-                    ForEach(targetLanguages, id: \.self) { code in
-                        Text(TranslationLanguage.displayName(for: code)).tag(code)
-                    }
-                }
-
-                Toggle(localizer.t(L.Onboarding.useLocalTranslation), isOn: $useLocalTranslation)
-                Text(localizer.t(L.Onboarding.localTranslationHint))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .formStyle(.grouped)
-
-            Text(localizer.t(L.Onboarding.aiOptional))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            onboardingStepHeader
+            onboardingStepContent
 
             if let notice = model.settingsNotice {
                 Text(notice)
@@ -905,25 +997,265 @@ private struct OnboardingView: View {
                     .foregroundStyle(.red)
             }
 
-            HStack {
-                Spacer()
+            onboardingFooter
+        }
+        .padding(24)
+        .frame(width: 520)
+        .onDisappear {
+            localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+        }
+    }
+
+    private var onboardingStepHeader: some View {
+        HStack(spacing: 8) {
+            ForEach(OnboardingStep.allCases) { step in
+                Button {
+                    selectedStep = step
+                } label: {
+                    Text(step.title(localizer))
+                        .font(.caption.weight(step == selectedStep ? .semibold : .regular))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var onboardingStepContent: some View {
+        switch selectedStep {
+        case .language:
+            languageStepContent
+        case .subtitleSource:
+            subtitleSourceStepContent
+        case .translationMethod:
+            translationMethodStepContent
+        case .readiness:
+            readinessStepContent
+        }
+    }
+
+    private var languageStepContent: some View {
+        Form {
+            Picker(localizer.t(L.Onboarding.appLanguage), selection: $appLanguage) {
+                Text(localizer.t(L.Settings.followSystem)).tag(AppLanguage.auto)
+                Text(localizer.t(L.Settings.langHans)).tag(AppLanguage.zhHans)
+                Text(localizer.t(L.Settings.langHant)).tag(AppLanguage.zhHant)
+                Text(localizer.t(L.Settings.langEn)).tag(AppLanguage.en)
+            }
+            .onChange(of: appLanguage) { _, next in
+                localizer.setLanguage(next)
+            }
+
+            Picker(localizer.t(L.Onboarding.translationTarget), selection: $translationTargetLanguage) {
+                ForEach(targetLanguages, id: \.self) { code in
+                    Text(TranslationLanguage.displayName(for: code)).tag(code)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var subtitleSourceStepContent: some View {
+        Form {
+            LocalASROnboardingOptionView
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var LocalASROnboardingOptionView: some View {
+        Label {
+            Text(localizer.t(L.Onboarding.platformSubtitlePreference))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "captions.bubble")
+        }
+
+        Toggle(isOn: $preferLocalSpeechRecognition) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(localizer.t(L.Onboarding.preferLocalSpeechRecognition))
+                Text(localizer.t(L.Onboarding.localSpeechSetupLater))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+
+        HStack {
+            Button {
+                model.openLocalASRSettings()
+            } label: {
+                Label(localizer.t(L.Onboarding.configureLocalSpeechOptional), systemImage: "waveform")
+            }
+            .buttonStyle(.bordered)
+            Spacer()
+            Text(localizer.t(L.Onboarding.localSpeechOptionalDependencyHint))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var translationMethodStepContent: some View {
+        Form {
+            Toggle(localizer.t(L.Onboarding.useLocalTranslation), isOn: $useLocalTranslation)
+            Text(localizer.t(L.Onboarding.localTranslationHint))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(localizer.t(L.Onboarding.translationProvider), selection: $selectedTranslationProvider) {
+                ForEach(TranslationProvider.allCases, id: \.self) { provider in
+                    Text(translationProviderLabel(provider)).tag(provider)
+                }
+            }
+            .disabled(useLocalTranslation)
+            .onChange(of: selectedTranslationProvider) { _, provider in
+                let trimmed = onboardingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                let defaults = Set(TranslationProvider.allCases.map(\.defaultBaseURL))
+                if trimmed.isEmpty || defaults.contains(trimmed) {
+                    onboardingBaseURL = provider.defaultBaseURL
+                }
+                onboardingModel = ""
+            }
+            Text(localizer.t(L.Onboarding.aiOptional))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !useLocalTranslation {
+                Divider()
+                APIConfigEditor(
+                    baseURL: $onboardingBaseURL,
+                    model: $onboardingModel,
+                    authToken: $onboardingAuthToken,
+                    settingsForRequest: { onboardingSettingsForRequest() },
+                    baseURLPrompt: selectedTranslationProvider.defaultBaseURL,
+                    modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
+                )
+                Text(localizer.t(L.Settings.credentialSummary))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var readinessStepContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(localizer.t(L.Onboarding.readinessSummary))
+                .font(.headline)
+            readinessRow(localizer.t(L.Onboarding.appLanguage), appLanguageLabel(appLanguage))
+            readinessRow(
+                localizer.t(L.Onboarding.translationTarget),
+                TranslationLanguage.displayName(for: translationTargetLanguage)
+            )
+            readinessRow(
+                localizer.t(L.Onboarding.translationMethodStep),
+                useLocalTranslation
+                    ? localizer.t(L.Onboarding.localTranslationSummary)
+                    : translationProviderLabel(selectedTranslationProvider)
+            )
+            readinessRow(
+                localizer.t(L.Onboarding.subtitleSourceStep),
+                onboardingSubtitleSourceSummary
+            )
+        }
+        .padding(12)
+    }
+
+    private var onboardingSubtitleSourceSummary: String {
+        guard preferLocalSpeechRecognition else {
+            return localizer.t(L.Onboarding.platformSubtitleSummary)
+        }
+        return model.localASRReadyForDownload
+            ? localizer.t(L.Onboarding.localSpeechSummary)
+            : localizer.t(L.Settings.localASROptionalNotConfigured)
+    }
+
+    private func readinessRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+        .font(.callout)
+    }
+
+    private func appLanguageLabel(_ language: AppLanguage) -> String {
+        switch language {
+        case .auto: return localizer.t(L.Settings.followSystem)
+        case .zhHans: return localizer.t(L.Settings.langHans)
+        case .zhHant: return localizer.t(L.Settings.langHant)
+        case .en: return localizer.t(L.Settings.langEn)
+        }
+    }
+
+    private func translationProviderLabel(_ provider: TranslationProvider) -> String {
+        TranslationEngine.compatible(with: provider).displayName
+    }
+
+    private var onboardingFooter: some View {
+        HStack {
+            if selectedStep != .language {
+                Button(localizer.t(L.Onboarding.back)) {
+                    moveStep(by: -1)
+                }
+                .buttonStyle(.bordered)
+            }
+            Spacer()
+            if selectedStep == .readiness {
                 Button(localizer.t(L.Onboarding.start)) {
                     if model.completeOnboarding(
                         appLanguage: appLanguage,
                         translationTargetLanguage: translationTargetLanguage,
-                        useLocalTranslation: useLocalTranslation
+                        useLocalTranslation: useLocalTranslation,
+                        translationProvider: selectedTranslationProvider,
+                        preferLocalSpeechRecognition: preferLocalSpeechRecognition,
+                        apiBaseURL: useLocalTranslation ? selectedTranslationProvider.defaultBaseURL : onboardingBaseURL.trimmingCharacters(in: .whitespaces),
+                        apiModel: useLocalTranslation ? "" : onboardingModel.trimmingCharacters(in: .whitespaces),
+                        apiAuthToken: useLocalTranslation ? "" : onboardingAuthToken.trimmingCharacters(in: .whitespaces)
                     ) {
                         localizer.setLanguage(appLanguage)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+            } else {
+                Button(localizer.t(L.Onboarding.next)) {
+                    moveStep(by: 1)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24)
-        .frame(width: 440)
-        .onDisappear {
-            localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
-        }
+    }
+
+    private func moveStep(by offset: Int) {
+        let steps = OnboardingStep.allCases
+        guard let index = steps.firstIndex(of: selectedStep) else { return }
+        let nextIndex = min(max(index + offset, 0), steps.count - 1)
+        selectedStep = steps[nextIndex]
+    }
+
+    private func onboardingSettingsForRequest() -> AppSettings {
+        let engine = TranslationEngine.compatible(with: selectedTranslationProvider)
+        let baseURL = onboardingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let config = LLMEndpointConfig(
+            engine: engine,
+            baseURL: baseURL.isEmpty ? selectedTranslationProvider.defaultBaseURL : baseURL,
+            model: onboardingModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            authToken: onboardingAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        var draft = model.settings
+        draft.translationProvider = selectedTranslationProvider
+        draft.aiEngine = engine
+        draft.aiBaseURL = config.baseURL
+        draft.aiModel = config.model
+        draft.aiAuthToken = config.authToken
+        draft.translationFollowsDefault = true
+        return draft.applyingTranslationConfig(config)
     }
 }

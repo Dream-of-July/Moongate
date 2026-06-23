@@ -33,10 +33,11 @@ final class DependencyInstaller: ObservableObject {
 
     var brewAvailable: Bool { DependencySetup.brewPath() != nil }
     var missing: [DependencySetup.Component] { DependencySetup.missing(from: components) }
+    var missingRequired: [DependencySetup.Component] { DependencySetup.missingRequired(from: components) }
     var installed: [DependencySetup.Component] { components.filter(\.isInstalled) }
-    var allInstalled: Bool { missing.isEmpty }
+    var allInstalled: Bool { missingRequired.isEmpty }
     var hasInstalled: Bool { !installed.isEmpty }
-    var missingFormulaList: String { missing.map(\.formula).joined(separator: ", ") }
+    var missingFormulaList: String { missingRequired.map(\.formula).joined(separator: ", ") }
     var installedFormulaList: String { installed.map(\.formula).joined(separator: ", ") }
 
     /// 异步体检：阻塞的子进程探测放到后台线程，结果回主线程发布。
@@ -53,7 +54,13 @@ final class DependencyInstaller: ObservableObject {
     }
 
     func install() {
-        let formulas = missing.map(\.formula)
+        let formulas = missingRequired.map(\.formula)
+        runBrew(subcommand: "install", formulas: formulas)
+    }
+
+    func installOptional(_ component: DependencySetup.Component) {
+        guard !component.isRequired else { return }
+        let formulas = [component.formula]
         runBrew(subcommand: "install", formulas: formulas)
     }
 
@@ -112,10 +119,14 @@ final class DependencyInstaller: ObservableObject {
     }
 
     private func refreshAfterBrew(subcommand: String, status: Int32) async {
+        let attemptedFormulas = inFlightFormulas
         await refresh()
         inFlightFormulas = []
-        if !allInstalled {
-            error = status == 0 ? .installCompletedButMissing : .installIncomplete(status)
+        let attemptedComponents = components.filter { attemptedFormulas.contains($0.formula) }
+        if status != 0 {
+            error = .installIncomplete(status)
+        } else if attemptedComponents.contains(where: { !$0.isInstalled }) || !allInstalled {
+            error = .installCompletedButMissing
         }
     }
 }
@@ -152,16 +163,53 @@ struct DependencySetupSheet: View {
                         HStack(spacing: 10) {
                             componentStatusIcon(component)
                                 .frame(width: 18, height: 18)
-                            Text(component.id)
-                                .font(.body.monospaced())
-                            Text(componentPurposeText(component))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(component.id)
+                                        .font(.body.monospaced())
+                                    if !component.isRequired {
+                                        Text(localizer.t(L.Dependency.optionalBadge))
+                                            .font(.caption2.weight(.semibold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .foregroundStyle(.secondary)
+                                            .background(Capsule().fill(.quaternary))
+                                    }
+                                }
+                                Text(componentPurposeText(component))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer()
-                            Text(componentStatusText(component))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .contentTransition(.opacity)
+                            if component.id == "whisper-cli" {
+                                HStack(spacing: 8) {
+                                    if !component.isInstalled {
+                                        Button(localizer.t(L.Dependency.installOptional)) {
+                                            installer.installOptional(component)
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help(localizer.t(L.Dependency.installOptional))
+                                        .accessibilityLabel(localizer.t(L.Dependency.installOptional))
+                                        .disabled(installer.isRunning || !installer.brewAvailable)
+                                    }
+                                    Button(localizer.t(L.Dependency.configureOptional)) {
+                                        model.closeDependencySetup()
+                                        model.openLocalASRSettings()
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help(localizer.t(L.Dependency.configureOptional))
+                                    .accessibilityLabel(localizer.t(L.Dependency.configureOptional))
+                                    Text(componentStatusText(component))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .contentTransition(.opacity)
+                                }
+                            } else {
+                                Text(componentStatusText(component))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .contentTransition(.opacity)
+                            }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -303,6 +351,7 @@ struct DependencySetupSheet: View {
         case "yt-dlp": return localizer.t(L.Dependency.purposeYtDlp)
         case "ffmpeg": return localizer.t(L.Dependency.purposeFfmpeg)
         case "deno": return localizer.t(L.Dependency.purposeDeno)
+        case "whisper-cli": return localizer.t(L.Dependency.purposeWhisperCpp)
         default: return component.purpose
         }
     }

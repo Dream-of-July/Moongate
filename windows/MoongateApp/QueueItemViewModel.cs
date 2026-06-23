@@ -20,6 +20,7 @@ public sealed class QueueItemViewModel : ObservableObject
     public RelayCommand ResumeCommand { get; }
     public RelayCommand CancelCommand { get; }
     public RelayCommand RetryCommand { get; }
+    public RelayCommand RetryWithLocalAsrCommand { get; }
     public RelayCommand RemoveCommand { get; }
     public RelayCommand RevealCommand { get; }
 
@@ -32,6 +33,7 @@ public sealed class QueueItemViewModel : ObservableObject
         ResumeCommand = new RelayCommand(() => _queue.Resume(Id));
         CancelCommand = new RelayCommand(() => _queue.Cancel(Id));
         RetryCommand = new RelayCommand(() => _queue.Retry(Id));
+        RetryWithLocalAsrCommand = new RelayCommand(() => _queue.RetryWithLocalAsr(Id));
         RemoveCommand = new RelayCommand(() => _queue.Remove(Id));
         RevealCommand = new RelayCommand(OpenInExplorer);
         Refresh(item);
@@ -74,6 +76,9 @@ public sealed class QueueItemViewModel : ObservableObject
     private bool _showRetrySubtitle;
     public bool ShowRetrySubtitle { get => _showRetrySubtitle; private set => SetProperty(ref _showRetrySubtitle, value); }
 
+    private bool _showRetryWithLocalAsr;
+    public bool ShowRetryWithLocalAsr { get => _showRetryWithLocalAsr; private set => SetProperty(ref _showRetryWithLocalAsr, value); }
+
     private bool _showReveal;
     public bool ShowReveal { get => _showReveal; private set => SetProperty(ref _showReveal, value); }
 
@@ -103,6 +108,7 @@ public sealed class QueueItemViewModel : ObservableObject
         ShowRetry = kind is ItemStageKind.Failed or ItemStageKind.Cancelled;
         // 部分成功（视频已下载、字幕处理失败）：只重跑字幕处理，不重新下载
         ShowRetrySubtitle = kind == ItemStageKind.Done && item.PartialFailure;
+        ShowRetryWithLocalAsr = kind == ItemStageKind.Done && _queue.CanRetryWithLocalAsr(item.Id);
         ShowReveal = kind is ItemStageKind.Done or ItemStageKind.Cancelled && item.ResultFiles.Count > 0;
         ShowRemove = !open;
         _resultFiles = item.ResultFiles;
@@ -121,6 +127,8 @@ public sealed class QueueItemViewModel : ObservableObject
         {
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             ItemStageKind.Queued => item.StatusText ?? Loc.S("L.Status.Queued"),
+            ItemStageKind.Downloading when LocalAsrProgressText(item) is { } asr =>
+                WithProgressDetails(asr, item, includeSpeed: false),
             ItemStageKind.Downloading when item.PostDownloadProcessingKind == PostDownloadProcessingKind.Transcoding =>
                 item.Progress is { } p
                     ? WithProgressDetails(Loc.F("L.Status.TranscodingFmt", (int)(p * 100)), item, includeSpeed: false)
@@ -141,6 +149,23 @@ public sealed class QueueItemViewModel : ObservableObject
             ItemStageKind.Cancelled => item.StatusText ?? Loc.S("L.Status.Cancelled"),
             ItemStageKind.Failed => Loc.F("L.Status.FailedFmt", item.Stage.FailureReason ?? Loc.S("L.Status.Unknown")),
             _ => item.StatusText ?? "",
+        };
+    }
+
+    private static string? LocalAsrProgressText(QueueManager.QueueItem item)
+    {
+        return item.ProgressPhase switch
+        {
+            QueueProgressPhase.AudioExtract => item.Progress is { } p
+                ? Loc.F("L.Status.AudioExtractingFmt", (int)(p * 100))
+                : Loc.S("L.Status.AudioExtracting"),
+            QueueProgressPhase.SpeechRecognition => item.Progress is { } p
+                ? Loc.F("L.Status.SpeechRecognizingFmt", (int)(p * 100))
+                : Loc.S("L.Status.SpeechRecognizing"),
+            QueueProgressPhase.SubtitleSegment => item.Progress is { } p
+                ? Loc.F("L.Status.SubtitleSegmentingFmt", (int)(p * 100))
+                : Loc.S("L.Status.SubtitleSegmenting"),
+            _ => null,
         };
     }
 

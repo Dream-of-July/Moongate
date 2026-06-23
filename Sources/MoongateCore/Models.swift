@@ -154,18 +154,124 @@ public struct FormatChoice: Identifiable, Hashable, Sendable {
     }
 }
 
+public enum SubtitleSourceKind: String, Codable, Hashable, Sendable {
+    case manual
+    case platformAuto
+    case hlsManifest
+    case localASR
+    case importedFile
+}
+
+public struct SubtitleTrackID: Codable, Hashable, Sendable {
+    public let languageCode: String
+    public let sourceKind: SubtitleSourceKind
+    public let provider: String
+    public let variant: String?
+
+    public var rawValue: String {
+        [
+            sourceKind.rawValue,
+            provider,
+            languageCode,
+            variant ?? ""
+        ].map(Self.encodeComponent).joined(separator: "|")
+    }
+
+    public init(
+        languageCode: String,
+        sourceKind: SubtitleSourceKind,
+        provider: String,
+        variant: String? = nil
+    ) {
+        self.languageCode = languageCode
+        self.sourceKind = sourceKind
+        self.provider = provider
+        self.variant = variant
+    }
+
+    /// Parses a v0.8 stable source id. Legacy language-only ids are interpreted as manual subtitles.
+    public init(rawValue: String) {
+        let parts = rawValue.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 4,
+           let kind = SubtitleSourceKind(rawValue: Self.decodeComponent(parts[0])) {
+            self.sourceKind = kind
+            self.provider = Self.decodeComponent(parts[1])
+            self.languageCode = Self.decodeComponent(parts[2])
+            let decodedVariant = Self.decodeComponent(parts[3])
+            self.variant = decodedVariant.isEmpty ? nil : decodedVariant
+        } else {
+            self.sourceKind = .manual
+            self.provider = "legacy"
+            self.languageCode = rawValue
+            self.variant = nil
+        }
+    }
+
+    private static func encodeComponent(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "%", with: "%25")
+            .replacingOccurrences(of: "|", with: "%7C")
+    }
+
+    private static func decodeComponent(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "%7C", with: "|")
+            .replacingOccurrences(of: "%25", with: "%")
+    }
+}
+
 public struct SubtitleChoice: Identifiable, Hashable, Sendable {
-    /// 语言代码，如 "en"、"zh-Hans"
+    /// Stable source identity. It includes language, source kind, provider, and variant.
     public let id: String
-    /// 中文展示名，如 "英文 (en)"
+    /// Language code passed to yt-dlp or translation readiness, such as "en" or "zh-Hans".
+    public let languageCode: String
+    /// Display label, such as "英文 (en)".
     public let label: String
-    /// 是否为自动生成字幕（YouTube 自动字幕等）
+    public let sourceKind: SubtitleSourceKind
+    public let provider: String
+    public let variant: String?
+    public let qualityHint: String?
+    public let metadata: [String: String]
+    /// Whether this is a platform auto-generated subtitle.
     public let isAuto: Bool
 
-    public init(id: String, label: String, isAuto: Bool) {
-        self.id = id
+    public init(
+        languageCode: String,
+        label: String,
+        sourceKind: SubtitleSourceKind,
+        provider: String = "yt-dlp",
+        variant: String? = nil,
+        qualityHint: String? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        let trackID = SubtitleTrackID(
+            languageCode: languageCode,
+            sourceKind: sourceKind,
+            provider: provider,
+            variant: variant
+        )
+        self.id = trackID.rawValue
+        self.languageCode = languageCode
         self.label = label
-        self.isAuto = isAuto
+        self.sourceKind = sourceKind
+        self.provider = provider
+        self.variant = variant
+        self.qualityHint = qualityHint
+        self.metadata = metadata
+        self.isAuto = sourceKind == .platformAuto
+    }
+
+    /// Legacy convenience initializer. `id` used to be a language code before v0.8.
+    public init(id legacyLanguageCode: String, label: String, isAuto: Bool) {
+        self.init(
+            languageCode: legacyLanguageCode,
+            label: label,
+            sourceKind: isAuto ? .platformAuto : .manual
+        )
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }
 
@@ -215,6 +321,10 @@ public struct DownloadRequest: Sendable {
     public let subtitleLangs: [String]
     /// 选中的自动字幕语言代码
     public let autoSubtitleLangs: [String]
+    /// v0.8 stable subtitle source identity. Legacy language arrays remain for compatibility.
+    public let subtitleTracks: [SubtitleChoice]
+    /// The single primary subtitle source selected on the ready page. Legacy arrays remain as yt-dlp inputs.
+    public let primarySubtitleTrackID: String?
     public let destinationDirectory: URL
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
     /// （如 "homepage_trailer"），此时用嗅探得到的页面标题命名更友好；nil 用 yt-dlp 默认标题。
@@ -227,6 +337,8 @@ public struct DownloadRequest: Sendable {
     public init(
         url: String, videoID: String, formatID: String,
         subtitleLangs: [String], autoSubtitleLangs: [String],
+        subtitleTracks: [SubtitleChoice] = [],
+        primarySubtitleTrackID: String? = nil,
         destinationDirectory: URL, preferredTitle: String? = nil,
         preferHDR: Bool = false, outputFormat: OutputFormat = .original
     ) {
@@ -235,10 +347,56 @@ public struct DownloadRequest: Sendable {
         self.formatID = formatID
         self.subtitleLangs = subtitleLangs
         self.autoSubtitleLangs = autoSubtitleLangs
+        self.subtitleTracks = subtitleTracks
+        self.primarySubtitleTrackID = primarySubtitleTrackID
         self.destinationDirectory = destinationDirectory
         self.preferredTitle = preferredTitle
         self.preferHDR = preferHDR
         self.outputFormat = outputFormat
+    }
+
+    public var requestedSubtitleTracks: [SubtitleChoice] {
+        if !subtitleTracks.isEmpty { return subtitleTracks }
+        return subtitleLangs.map {
+            SubtitleChoice(languageCode: $0, label: $0, sourceKind: .manual)
+        } + autoSubtitleLangs.map {
+            SubtitleChoice(languageCode: $0, label: $0, sourceKind: .platformAuto)
+        }
+    }
+
+    public var primarySubtitleTrack: SubtitleChoice? {
+        let requested = requestedSubtitleTracks
+        if let primarySubtitleTrackID,
+           let exact = requested.first(where: { $0.id == primarySubtitleTrackID }) {
+            return exact
+        }
+        return requested.first(where: { $0.sourceKind == .manual })
+            ?? requested.first(where: { $0.sourceKind == .platformAuto })
+            ?? requested.first
+    }
+
+    public var primarySubtitleLanguageCode: String? {
+        primarySubtitleTrack?.languageCode
+    }
+
+    public var ytDlpSubtitleLangs: [String] {
+        Self.uniqueForYtDlpSubLangs(requestedSubtitleTracks.filter { $0.sourceKind == .manual }.map(\.languageCode))
+    }
+
+    public var ytDlpAutoSubtitleLangs: [String] {
+        Self.uniqueForYtDlpSubLangs(requestedSubtitleTracks.filter { $0.sourceKind == .platformAuto }.map(\.languageCode))
+    }
+
+    public static func uniqueForYtDlpSubLangs(_ codes: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for code in codes {
+            let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+            seen.insert(normalized)
+            result.append(normalized)
+        }
+        return result
     }
 }
 

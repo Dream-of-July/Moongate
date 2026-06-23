@@ -5,8 +5,8 @@
         Width="420" SizeToContent="Height"
         ResizeMode="NoResize" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource CardBrush}"
-        Foreground="{StaticResource PrimaryTextBrush}"
+        Background="{DynamicResource CardBrush}"
+        Foreground="{DynamicResource PrimaryTextBrush}"
         FontSize="13"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
@@ -15,7 +15,7 @@
         <TextBlock x:Name="DetailText" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
             <Button x:Name="ConfirmButton" Style="{StaticResource SecondaryButton}"
-                    Foreground="{StaticResource ErrorBrush}" Click="OnConfirmClick"/>
+                    Foreground="{DynamicResource ErrorBrush}" Click="OnConfirmClick"/>
             <Button x:Name="CancelButton" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
                     IsDefault="True" IsCancel="True" Click="OnCancelClick"/>
         </StackPanel>

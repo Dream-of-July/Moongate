@@ -3,9 +3,52 @@ import WebKit
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 #if canImport(MoongateCore)
 import MoongateCore
 #endif
+
+private enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case subtitles
+    case localSpeech
+    case aiServices
+    case videoOutput
+    case siteLogin
+    case components
+    case updates
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .general: return "gearshape"
+        case .subtitles: return "captions.bubble"
+        case .localSpeech: return "waveform"
+        case .aiServices: return "sparkles"
+        case .videoOutput: return "film"
+        case .siteLogin: return "person.crop.circle.badge.checkmark"
+        case .components: return "externaldrive"
+        case .updates: return "arrow.down.circle"
+        }
+    }
+
+    @MainActor
+    func title(_ localizer: Localizer) -> String {
+        switch self {
+        case .general: return localizer.t(L.Settings.paneGeneral)
+        case .subtitles: return localizer.t(L.Settings.paneSubtitles)
+        case .localSpeech: return localizer.t(L.Settings.paneLocalSpeech)
+        case .aiServices: return localizer.t(L.Settings.paneAIServices)
+        case .videoOutput: return localizer.t(L.Settings.paneVideoOutput)
+        case .siteLogin: return localizer.t(L.Settings.paneSiteLogin)
+        case .components: return localizer.t(L.Settings.paneComponents)
+        case .updates: return localizer.t(L.Settings.paneUpdates)
+        }
+    }
+}
 
 /// 设置面板（sheet）：翻译服务、字幕样式、站点登录。
 /// 草稿模式：输入框绑定 draft，点「完成」才回写并保存；取消 / Esc 不落任何修改。
@@ -30,10 +73,13 @@ struct SettingsView: View {
     // 不能在 @State 默认值（视图构造阶段）同步跑，否则触发 AttributeGraph 重入崩溃。
     @State private var dependencyComponents: [DependencySetup.Component] = []
     @State private var dependencyChecked = false
-    @State private var dependencyExpanded = false
     @State private var draftRuntimeReadiness: TranslationReadiness?
     @State private var draftRuntimeReadinessTask: Task<Void, Never>?
     @State private var appleTranslationSourceLanguage = "en"
+    @State private var selectedPane: SettingsPane? = .general
+    @State private var localASRModelCatalogVersion = 0
+    @State private var localASRInstallingModelID: String?
+    @State private var localASRModelInstallProgress: Double?
 
     private let appleTranslationSourceLanguages = ["en", "ja", "ko", "zh-Hans", "zh-Hant"]
 
@@ -43,40 +89,56 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                languageSection
-                dependencySection
-                translationSection
-                translationConfigSection
-                summarySection
-                styleSection
-                burnQualitySection
-                performanceSection
-                loginSection
-                updateSection
+        NavigationSplitView {
+            List(SettingsPane.allCases, selection: $selectedPane) { pane in
+                settingsPaneRow(pane)
+                    .tag(pane)
             }
-            .formStyle(.grouped)
-            // 任一字段被改动：上一次的测试结果不再可信，回到初始态。
-            .onChange(of: draft.aiBaseURL) { resetTestState(); resetModelFetch() }
-            .onChange(of: draft.aiModel) { resetTestState() }
-            .onChange(of: draft.aiAuthToken) { resetTestState(); resetModelFetch() }
-            .onChange(of: draft.appLanguage) {
-                localizer.setLanguage(AppLanguage(rawValue: draft.appLanguage) ?? .auto)
-            }
-            .onChange(of: draft.translationTargetLanguage) {
-                refreshDraftRuntimeReadiness()
-            }
-            .onChange(of: appleTranslationSourceLanguage) { refreshDraftRuntimeReadiness() }
-            Divider()
-            bottomBar
+            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 240)
+        } detail: {
+            settingsPaneDetail
+                .safeAreaInset(edge: .bottom) {
+                    if let notice = model.settingsNotice {
+                        HStack(spacing: 8) {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.orange)
+                            Text(notice)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.bar)
+                    }
+                }
         }
-        .frame(width: 480, height: 560)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: 860, minHeight: 560, idealHeight: 640)
+        // 实时同步：草稿任何字段变化即写回 model.settings 并保存（不再需要「完成」按钮）。
+        .onChange(of: draft) { _, newValue in
+            persistDraftLive(newValue)
+        }
+        // 任一字段被改动：上一次的测试结果不再可信，回到初始态。
+        .onChange(of: draft.aiBaseURL) { resetTestState(); resetModelFetch() }
+        .onChange(of: draft.aiModel) { resetTestState() }
+        .onChange(of: draft.aiAuthToken) { resetTestState(); resetModelFetch() }
+        .onChange(of: draft.appLanguage) {
+            localizer.setLanguage(AppLanguage(rawValue: draft.appLanguage) ?? .auto)
+        }
+        .onChange(of: draft.translationTargetLanguage) {
+            refreshDraftRuntimeReadiness()
+        }
+        .onChange(of: appleTranslationSourceLanguage) { refreshDraftRuntimeReadiness() }
         .onAppear {
+            // 打开设置即补齐凭证，使 SecureField 显示已存 Token、连接测试/拉模型可用。
+            model.hydrateCredentials()
             draft = model.settings
+            applyPendingSettingsPane()
             refreshLoginStatus()
             refreshDraftRuntimeReadiness()
         }
+        .onChange(of: model.pendingSettingsPaneID) { applyPendingSettingsPane() }
         .task {
             await refreshDependencies()
         }
@@ -88,10 +150,76 @@ struct SettingsView: View {
             testTask?.cancel()
             modelFetchTask?.cancel()
             draftRuntimeReadinessTask?.cancel()
-            // 未点「完成」时回滚为磁盘值；已保存时 reload 等价于当前值，无副作用。
-            model.settings = AppSettings.load()
-            localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+            // 实时保存模式：关闭即同步（兜底再保存一次，确保最后一次编辑落盘）。
+            persistDraftLive(draft)
         }
+    }
+
+    /// 实时把草稿写回 model.settings 并持久化。语言变化已由 onChange(draft.appLanguage) 即时反映到 UI。
+    private func persistDraftLive(_ newValue: AppSettings) {
+        guard model.settings != newValue else { return }
+        model.settings = newValue
+        model.saveSettings()
+    }
+
+    private func applyPendingSettingsPane() {
+        guard let paneID = model.pendingSettingsPaneID,
+              let pane = SettingsPane(rawValue: paneID) else { return }
+        selectedPane = pane
+        model.pendingSettingsPaneID = nil
+    }
+
+    @ViewBuilder
+    private var settingsPaneDetail: some View {
+        Form {
+            switch selectedPane ?? .general {
+            case .general:
+                languageSection
+                notificationsSection
+            case .subtitles:
+                translationConfigSection
+                styleSection
+            case .localSpeech:
+                localSpeechSection
+            case .aiServices:
+                translationSection
+                summarySection
+            case .videoOutput:
+                burnQualitySection
+                performanceSection
+            case .siteLogin:
+                loginSection
+            case .components:
+                dependencySection
+                storageSection
+            case .updates:
+                updateSection
+                aboutSection
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle((selectedPane ?? .general).title(localizer))
+    }
+
+    private func settingsPaneRow(_ pane: SettingsPane) -> some View {
+        HStack(spacing: 8) {
+            Label(pane.title(localizer), systemImage: pane.systemImage)
+            Spacer()
+            if pane == .updates && updater.updateAvailable {
+                settingsUpdateBadge
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(pane.title(localizer))
+        .accessibilityValue(pane == .updates && updater.updateAvailable ? localizer.t(L.Update.updateAvailableStatus) : "")
+    }
+
+    // 有更新可用的提示：布尔状态用无数字红点，而非数字角标（永远是 "1" 语义不对），与 Windows 更新页角标一致。
+    private var settingsUpdateBadge: some View {
+        Circle()
+            .fill(.red)
+            .frame(width: 8, height: 8)
+            .accessibilityHidden(true)
     }
 
     // MARK: - 语言
@@ -115,79 +243,788 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 依赖组件
+    // MARK: - 本地语音识别
 
-    private var dependencyAllReady: Bool {
-        dependencyChecked && !DependencySetup.needsSetup(dependencyComponents)
+    private enum LocalASRSetupState: Equatable {
+        case disabled
+        case ready(runtimePath: String)
+        case missingRuntime
+        case missingModel
+        case badHash
+        case downloading(modelName: String)
     }
 
-    private var dependencySummaryText: String {
-        if !dependencyChecked { return localizer.t(L.Dependency.summaryChecking) }
-        return DependencySetup.needsSetup(dependencyComponents)
-            ? localizer.t(L.Dependency.summaryMissing)
-            : localizer.t(L.Dependency.summaryReady)
-    }
-
-    private var dependencySection: some View {
+    @ViewBuilder
+    private var localSpeechSection: some View {
         Section {
-            DisclosureGroup(isExpanded: $dependencyExpanded) {
-                if !dependencyChecked {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                            .accessibilityLabel(localizer.t(L.Dependency.checkingAccessibility))
-                        Text(localizer.t(L.Dependency.summaryChecking))
+            Toggle(localizer.t(L.Settings.localASREnabled), isOn: $draft.localASREnabled)
+            Text(localizer.t(L.Settings.localASRHelp))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            LocalASRSetupStatusView(state: localASRSetupState)
+        } header: {
+            Text(localizer.t(L.Settings.localASRSection))
+        }
+
+        // Recommended models.
+        Section {
+            let recommended = recommendedModelForDevice()
+
+            if importedLocalASRModelURL != nil {
+                importedLocalASRModelRow()
+                Divider()
+            }
+
+            ForEach(localASRModelCatalogEntries, id: \.id) { entry in
+                localASRModelRow(entry, isRecommended: entry.id == recommended?.id)
+            }
+        } header: {
+            LocalASRModelListHeader(
+                title: localizer.t(L.Settings.localASRRecommendedModels),
+                importTitle: localizer.t(L.Settings.localASRImportModel),
+                importAction: importLocalASRModel
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func LocalASRSetupStatusView(state: LocalASRSetupState) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: localASRSetupIcon(for: state))
+                .font(.body.weight(.semibold))
+                .foregroundStyle(localASRSetupTint(for: state))
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(localASRSetupTitle(for: state))
+                    .font(.callout.weight(.medium))
+                Text(localASRSetupDetail(for: state))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            localASRSetupAction(for: state)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(localASRSetupTitle(for: state))
+        .accessibilityValue(localASRSetupDetail(for: state))
+    }
+
+    @ViewBuilder
+    private func LocalASRModelListHeader(
+        title: String,
+        importTitle: String,
+        importAction: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Button(action: importAction) {
+                Image(systemName: "square.and.arrow.down")
+                    .imageScale(.medium)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help(importTitle)
+            .accessibilityLabel(importTitle)
+        }
+    }
+
+    @ViewBuilder
+    private func localASRModelRow(_ entry: ASRModelCatalogEntry, isRecommended: Bool = false) -> some View {
+        LocalASRModelRow(entry, isRecommended: isRecommended)
+    }
+
+    @ViewBuilder
+    private func LocalASRModelRow(_ entry: ASRModelCatalogEntry, isRecommended: Bool = false) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: modelIcon(entry))
+                .font(.title3.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(modelTint(entry))
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(entry.displayName)
+                        .font(.callout.weight(.medium))
+                    if isRecommended {
+                        Text(localizer.t(L.Settings.localASRRecommendedBadge))
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .foregroundStyle(Color.accentColor)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                            .accessibilityHidden(true)
+                    }
+                }
+                Text(modelCapabilityText(entry))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(localizer.t(L.Settings.localASRModelSizeMemory, localASRModelSizeText(entry.sizeBytes), entry.memoryRequiredMB))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            if entry.isInstalled {
+                HStack(spacing: 8) {
+                    if draft.localASRModelID == entry.id {
+                        Label(localizer.t(L.Settings.localASRModelInUse), systemImage: "checkmark.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                            .foregroundStyle(.green)
+                            .labelStyle(.titleAndIcon)
+                    } else {
+                        Button(localizer.t(L.Settings.localASRUseModel)) {
+                            useLocalASRModel(entry)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+
+                    Button(role: .destructive) {
+                        deleteLocalASRModel(entry)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(localizer.t(L.Settings.localASRDeleteModel))
+                }
+            } else if entry.installState == .badHash {
+                Button(localizer.t(L.Settings.localASRSetupRepair)) {
+                    deleteLocalASRModel(entry)
+                }
+                .buttonStyle(.borderless)
+                .help(localizer.t(L.Settings.localASRModelBadHash))
+            } else if entry.installState == .insufficientDiskSpace {
+                Label(localizer.t(L.Settings.localASRModelInsufficientDisk), systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if entry.needsUserDownloadConsent {
+                if localASRInstallingModelID == entry.id {
+                    VStack(spacing: 2) {
+                        ProgressView(value: localASRModelInstallProgress)
+                            .controlSize(.small)
+                            .frame(width: 60)
+                        if let p = localASRModelInstallProgress {
+                            Text("\(Int(p * 100))%")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } else {
-                    ForEach(dependencyComponents) { component in
-                        HStack(spacing: 8) {
-                            Image(systemName: component.isInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(component.isInstalled ? .green : .orange)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(component.id)
-                                    .font(.body.monospaced())
-                                Text(componentPurposeText(component))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(componentReadyText(component))
+                    Button {
+                        installLocalASRModel(entry)
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Color.accentColor)
+                    .help(localizer.t(L.Settings.localASRDownloadModel))
+                    .accessibilityLabel(localizer.t(L.Settings.localASRDownloadModel))
+                    .disabled(localASRInstallingModelID != nil)
+                }
+            }
+        }
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(localASRModelAccessibilityLabel(entry))
+        .accessibilityValue(localASRModelStatusText(entry))
+    }
+
+    @ViewBuilder
+    private func importedLocalASRModelRow() -> some View {
+        if let url = importedLocalASRModelURL {
+            HStack(spacing: 14) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.title3.weight(.semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(importedLocalASRModelName(url))
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Text(localizer.t(L.Settings.localASRImportedModelBadge))
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .foregroundStyle(Color.accentColor)
+                            .background(
+                                Capsule()
+                                    .fill(Color.accentColor.opacity(0.14))
+                            )
+                    }
+                    Text(importedLocalASRModelDetail(url))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(url.path)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Label(localizer.t(L.Settings.localASRModelInUse), systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .labelStyle(.titleAndIcon)
+
+                    Button(role: .destructive) {
+                        deleteImportedLocalASRModel()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(localizer.t(L.Settings.localASRDeleteImportedModel))
+                }
+            }
+            .padding(.vertical, 7)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(localizer.t(L.Settings.localASRImportedModelAccessibility, importedLocalASRModelName(url), importedLocalASRModelDetail(url)))
+            .accessibilityValue(localizer.t(L.Settings.localASRModelInUse))
+        }
+    }
+
+    private func modelIcon(_ entry: ASRModelCatalogEntry) -> String {
+        if entry.id.contains("large") || entry.id.contains("turbo") { return "gauge.with.dots.needle.67percent" }
+        if entry.id.contains(".en") { return "text.bubble.fill" }
+        if entry.id.contains("medium") { return "waveform.path.ecg" }
+        if entry.id.contains("tiny") { return "bolt.fill" }
+        if entry.id.contains("base") { return "circle.grid.2x2.fill" }
+        return "waveform"
+    }
+
+    private func modelTint(_ entry: ASRModelCatalogEntry) -> Color {
+        entry.isInstalled ? .green : .secondary
+    }
+
+    private func modelCapabilityText(_ entry: ASRModelCatalogEntry) -> String {
+        modelCapabilityLabel(entry)
+    }
+
+    private func modelCapabilityLabel(_ entry: ASRModelCatalogEntry) -> String {
+        if entry.id.contains("large") || entry.id.contains("turbo") { return localizer.t(L.Settings.localASRModelCapabilityTurbo) }
+        if entry.id.contains("medium") { return localizer.t(L.Settings.localASRModelCapabilityLongVideo) }
+        if entry.id.contains(".en") { return localizer.t(L.Settings.localASRModelCapabilityEnglish) }
+        if entry.id.contains("small-q8") { return localizer.t(L.Settings.localASRModelCapabilityDetailed) }
+        if entry.id.contains("small") { return localizer.t(L.Settings.localASRModelCapabilityRecommended) }
+        if entry.id.contains("base") { return localizer.t(L.Settings.localASRModelCapabilityBalanced) }
+        if entry.id.contains("tiny") { return localizer.t(L.Settings.localASRModelCapabilityFast) }
+        return localizer.t(L.Settings.localASRModelCapabilityAccurate)
+    }
+
+    private var localASRSetupState: LocalASRSetupState {
+        guard draft.localASREnabled else { return .disabled }
+        if let installingID = localASRInstallingModelID {
+            let modelName = unsortedLocalASRModelCatalogEntries
+                .first(where: { $0.id == installingID })?
+                .displayName ?? localizer.t(L.Settings.localASRInstallingModel)
+            return .downloading(modelName: modelName)
+        }
+        guard let runtimePath = availableLocalASRRuntimePath else {
+            return .missingRuntime
+        }
+        if let entry = selectedCatalogLocalASRModel {
+            switch entry.installState {
+            case .installed:
+                return .ready(runtimePath: runtimePath)
+            case .badHash:
+                return .badHash
+            case .notInstalled, .insufficientDiskSpace:
+                return .missingModel
+            }
+        }
+        if let imported = importedLocalASRModelURL {
+            return FileManager.default.fileExists(atPath: imported.path) ? .ready(runtimePath: runtimePath) : .missingModel
+        }
+        return .missingModel
+    }
+
+    private var availableLocalASRRuntimePath: String? {
+        let path = draft.localASRRuntimePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return path
+    }
+
+    private var selectedCatalogLocalASRModel: ASRModelCatalogEntry? {
+        let selectedID = draft.localASRModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedID.isEmpty else { return nil }
+        return unsortedLocalASRModelCatalogEntries.first { $0.id == selectedID }
+    }
+
+    private func localASRSetupIcon(for state: LocalASRSetupState) -> String {
+        switch state {
+        case .disabled:
+            return "circle"
+        case .ready:
+            return "checkmark.circle.fill"
+        case .missingRuntime, .missingModel:
+            return "wrench.and.screwdriver"
+        case .badHash:
+            return "exclamationmark.triangle.fill"
+        case .downloading:
+            return "arrow.down.circle"
+        }
+    }
+
+    private func localASRSetupTint(for state: LocalASRSetupState) -> Color {
+        switch state {
+        case .disabled:
+            return .secondary
+        case .ready:
+            return .green
+        case .missingRuntime, .missingModel, .downloading:
+            return .accentColor
+        case .badHash:
+            return .orange
+        }
+    }
+
+    private func localASRSetupTitle(for state: LocalASRSetupState) -> String {
+        switch state {
+        case .disabled:
+            return localizer.t(L.Settings.localASROptionalNotConfigured)
+        case .ready:
+            return localizer.t(L.Settings.localASRSetupReady)
+        case .missingRuntime:
+            return localizer.t(L.Settings.localASRSetupMissingRuntime)
+        case .missingModel:
+            return localizer.t(L.Settings.localASRSetupMissingModel)
+        case .badHash:
+            return localizer.t(L.Settings.localASRModelBadHash)
+        case .downloading:
+            return localizer.t(L.Settings.localASRInstallingModel)
+        }
+    }
+
+    private func localASRSetupDetail(for state: LocalASRSetupState) -> String {
+        switch state {
+        case .disabled:
+            return localizer.t(L.Settings.localASRHelp)
+        case .ready(let runtimePath):
+            return localizer.t(L.Settings.localASRRuntimeFound, runtimePath)
+        case .missingRuntime:
+            return localizer.t(L.Settings.localASRRuntimeNotFound)
+        case .missingModel:
+            return localizer.t(L.Settings.localASRSetupChooseModel)
+        case .badHash:
+            return localizer.t(L.Settings.localASRSetupBadModel)
+        case .downloading(let modelName):
+            return modelName
+        }
+    }
+
+    @ViewBuilder
+    private func localASRSetupAction(for state: LocalASRSetupState) -> some View {
+        switch state {
+        case .disabled, .ready:
+            EmptyView()
+        case .missingRuntime:
+            HStack(spacing: 8) {
+                Button(localizer.t(L.Settings.localASRFindRuntime)) {
+                    adoptLocalASRRuntime()
+                }
+                .buttonStyle(.borderless)
+                .disabled(localASRRuntimeSearchURLs.isEmpty)
+
+                Button(localizer.t(L.Settings.localASRSetupRepair)) {
+                    requestDependencySetup()
+                }
+                .buttonStyle(.borderless)
+            }
+        case .missingModel:
+            Button(localizer.t(L.Settings.localASRSetupDownloadRecommended)) {
+                installRecommendedLocalASRModel()
+            }
+            .buttonStyle(.borderless)
+            .disabled(recommendedModelForDevice() == nil || localASRInstallingModelID != nil)
+        case .badHash:
+            Button(localizer.t(L.Settings.localASRSetupRepair)) {
+                repairSelectedLocalASRModel()
+            }
+            .buttonStyle(.borderless)
+        case .downloading:
+            ProgressView(value: localASRModelInstallProgress)
+                .controlSize(.small)
+                .frame(width: 64)
+                .accessibilityLabel(localizer.t(L.Settings.localASRInstallingModel))
+        }
+    }
+
+    private func recommendedModelForDevice() -> ASRModelCatalogEntry? {
+        let entries = unsortedLocalASRModelCatalogEntries
+        guard !entries.isEmpty else { return nil }
+        let memoryGB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
+        let preferredID = if memoryGB >= 32 {
+            "whisper.cpp:large-v3-turbo-q5_0"
+        } else if memoryGB >= 8 {
+            "whisper.cpp:small-q5_1"
+        } else if memoryGB >= 4 {
+            "whisper.cpp:base-q5_1"
+        } else {
+            "whisper.cpp:tiny-q5_1"
+        }
+        return entries.first(where: { $0.id == preferredID }) ?? entries.first
+    }
+
+    private func installRecommendedLocalASRModel() {
+        guard let entry = recommendedModelForDevice() else { return }
+        if entry.isInstalled {
+            useLocalASRModel(entry)
+        } else {
+            installLocalASRModel(entry)
+        }
+    }
+
+    private func repairSelectedLocalASRModel() {
+        if let entry = selectedCatalogLocalASRModel {
+            deleteLocalASRModel(entry)
+        } else {
+            deleteImportedLocalASRModel()
+        }
+    }
+
+    private func installLocalASRModel(_ entry: ASRModelCatalogEntry) {
+        guard localASRInstallingModelID == nil else { return }
+        localASRInstallingModelID = entry.id
+        localASRModelInstallProgress = 0
+        Task {
+            do {
+                let store = ASRModelStore(directoryURL: localASRModelStoreURL)
+                let installer = ASRModelInstaller(manifest: .recommendedWhisperCpp, store: store)
+                let status = try await installer.installModel(id: entry.id) { progress in
+                    guard let fraction = progress.fraction else { return }
+                    Task { @MainActor in
+                        if localASRInstallingModelID == entry.id {
+                            localASRModelInstallProgress = fraction
+                        }
+                    }
+                }
+                await MainActor.run {
+                    draft.localASRModelID = entry.id
+                    draft.localASRModelPath = status.installedURL.path
+                    localASRModelCatalogVersion += 1
+                    storageSizes["asrModels"] = nil
+                    localASRModelInstallProgress = nil
+                    localASRInstallingModelID = nil
+                    model.settingsNotice = localizer.t(L.Settings.localASRModelInstallComplete, entry.displayName)
+                }
+            } catch {
+                await MainActor.run {
+                    model.settingsNotice = error.localizedDescription
+                    localASRModelInstallProgress = nil
+                    localASRInstallingModelID = nil
+                    localASRModelCatalogVersion += 1
+                }
+            }
+        }
+    }
+
+    private var localASRModelCatalogEntries: [ASRModelCatalogEntry] {
+        let entries = unsortedLocalASRModelCatalogEntries
+        guard let recommended = recommendedModelForDevice(),
+              let recommendedIndex = entries.firstIndex(where: { $0.id == recommended.id }) else {
+            return entries
+        }
+        var sorted = entries
+        let recommendedEntry = sorted.remove(at: recommendedIndex)
+        sorted.insert(recommendedEntry, at: 0)
+        return sorted
+    }
+
+    private var unsortedLocalASRModelCatalogEntries: [ASRModelCatalogEntry] {
+        _ = localASRModelCatalogVersion
+        let store = ASRModelStore(directoryURL: localASRModelStoreURL)
+        return (try? ASRModelCatalog(manifest: .recommendedWhisperCpp, store: store).entries) ?? []
+    }
+
+    private var localASRModelStoreURL: URL {
+        AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("models", isDirectory: true)
+    }
+
+    private var localASRRuntimeSearchURLs: [URL] {
+        let runtimeURL = AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+        var urls = [
+            runtimeURL,
+            runtimeURL.appendingPathComponent("bin", isDirectory: true),
+        ]
+        if let bundledRuntimeURL = Bundle.main.resourceURL?
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true) {
+            urls.append(bundledRuntimeURL)
+            urls.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
+        }
+        return urls
+    }
+
+    private func adoptLocalASRRuntime() {
+        guard let runtime = ASRRuntimeLocator(extraSearchURLs: localASRRuntimeSearchURLs).locate() else {
+            model.settingsNotice = localizer.t(L.Settings.localASRRuntimeNotFound)
+            return
+        }
+        draft.localASRRuntimePath = runtime.executableURL.path
+        model.settingsNotice = localizer.t(L.Settings.localASRRuntimeFound, runtime.executableURL.path)
+    }
+
+    private func deleteLocalASRModel(_ entry: ASRModelCatalogEntry) {
+        do {
+            let store = ASRModelStore(directoryURL: localASRModelStoreURL)
+            let catalog = try ASRModelCatalog(manifest: .recommendedWhisperCpp, store: store)
+            try catalog.deleteModel(id: entry.id)
+            if draft.localASRModelID == entry.id {
+                draft.localASRModelID = ""
+                if draft.localASRModelPath == entry.installedURL.path {
+                    draft.localASRModelPath = ""
+                }
+            }
+            localASRModelCatalogVersion += 1
+            storageSizes["asrModels"] = nil
+        } catch {
+            model.settingsNotice = error.localizedDescription
+        }
+    }
+
+    private func useLocalASRModel(_ entry: ASRModelCatalogEntry) {
+        draft.localASRModelID = entry.id
+        draft.localASRModelPath = entry.installedURL.path
+    }
+
+    private func localASRModelSizeText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private var importedLocalASRModelURL: URL? {
+        _ = localASRModelCatalogVersion
+        let path = draft.localASRModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        let isCatalogModel = ASRModelManifest.recommendedWhisperCpp.models.contains { $0.id == draft.localASRModelID }
+        guard !isCatalogModel else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func importedLocalASRModelName(_ url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        return name.isEmpty ? url.lastPathComponent : name
+    }
+
+    private func importedLocalASRModelDetail(_ url: URL) -> String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path),
+              let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else {
+            return localizer.t(L.Settings.localASRModelMissingFile)
+        }
+        return localizer.t(L.Settings.localASRImportedModelDetail, localASRModelSizeText(Int64(fileSize)))
+    }
+
+    private func importLocalASRModel() {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = localizer.t(L.Settings.localASRImportModel)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        #if canImport(UniformTypeIdentifiers)
+        if let binType = UTType(filenameExtension: "bin") {
+            panel.allowedContentTypes = [binType]
+        }
+        #endif
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        importLocalASRModel(from: sourceURL)
+        #else
+        model.settingsNotice = localizer.t(L.Settings.localASRImportUnavailable)
+        #endif
+    }
+
+    private func importLocalASRModel(from sourceURL: URL) {
+        let accessed = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let fm = FileManager.default
+            let importedDirectoryURL = localASRModelStoreURL.appendingPathComponent("imported", isDirectory: true)
+            try fm.createDirectory(at: importedDirectoryURL, withIntermediateDirectories: true)
+            let destinationURL = uniqueImportedModelDestination(
+                directoryURL: importedDirectoryURL,
+                fileName: sanitizedImportedModelFileName(sourceURL.lastPathComponent)
+            )
+            try fm.copyItem(at: sourceURL, to: destinationURL)
+            draft.localASREnabled = true
+            draft.localASRModelID = importedLocalASRModelID(for: destinationURL)
+            draft.localASRModelPath = destinationURL.path
+            localASRModelCatalogVersion += 1
+            storageSizes["asrModels"] = nil
+            model.settingsNotice = localizer.t(L.Settings.localASRModelImportComplete, importedLocalASRModelName(destinationURL))
+        } catch {
+            model.settingsNotice = localizer.t(L.Settings.localASRModelImportFailed, error.localizedDescription)
+        }
+    }
+
+    private func deleteImportedLocalASRModel() {
+        guard let url = importedLocalASRModelURL else { return }
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: url.path), isManagedLocalASRModelURL(url) {
+                try fm.removeItem(at: url)
+            }
+            draft.localASRModelID = ""
+            draft.localASRModelPath = ""
+            localASRModelCatalogVersion += 1
+            storageSizes["asrModels"] = nil
+        } catch {
+            model.settingsNotice = error.localizedDescription
+        }
+    }
+
+    private func sanitizedImportedModelFileName(_ fileName: String) -> String {
+        let lastPathComponent = URL(fileURLWithPath: fileName).lastPathComponent
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let sanitized = String(lastPathComponent.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        })
+        let fallback = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: ".-")).isEmpty
+            ? "imported-whisper-model.bin"
+            : sanitized
+        return fallback.lowercased().hasSuffix(".bin") ? fallback : "\(fallback).bin"
+    }
+
+    private func uniqueImportedModelDestination(directoryURL: URL, fileName: String) -> URL {
+        let fm = FileManager.default
+        let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        let ext = URL(fileURLWithPath: fileName).pathExtension
+        var candidate = directoryURL.appendingPathComponent(fileName, isDirectory: false)
+        var index = 2
+        while fm.fileExists(atPath: candidate.path) {
+            let nextName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
+            candidate = directoryURL.appendingPathComponent(nextName, isDirectory: false)
+            index += 1
+        }
+        return candidate
+    }
+
+    private func importedLocalASRModelID(for url: URL) -> String {
+        "custom:\(url.deletingPathExtension().lastPathComponent)"
+    }
+
+    private func isManagedLocalASRModelURL(_ url: URL) -> Bool {
+        let modelsPath = localASRModelStoreURL.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == modelsPath || path.hasPrefix(modelsPath + "/")
+    }
+
+    private func localASRModelStatusText(_ entry: ASRModelCatalogEntry) -> String {
+        let status = switch entry.installState {
+        case .installed:
+            localizer.t(L.Settings.localASRModelInstalled)
+        case .notInstalled:
+            localizer.t(L.Settings.localASRModelNotInstalled)
+        case .badHash:
+            localizer.t(L.Settings.localASRModelBadHash)
+        case .insufficientDiskSpace:
+            localizer.t(L.Settings.localASRModelInsufficientDisk)
+        }
+        return localizer.t(L.Settings.localASRModelStatus, status)
+    }
+
+    private func localASRModelAccessibilityLabel(_ entry: ASRModelCatalogEntry) -> String {
+        [
+            entry.displayName,
+            modelCapabilityText(entry),
+            localASRModelStatusText(entry)
+        ].joined(separator: ", ")
+    }
+
+    // MARK: - 完成提醒
+
+    private var notificationsSection: some View {
+        Section(localizer.t(L.Settings.notificationsSection)) {
+            Toggle(localizer.t(L.Settings.completionNotifications), isOn: $draft.completionNotificationsEnabled)
+            Toggle(localizer.t(L.Settings.completionSound), isOn: $draft.completionSoundEnabled)
+            Text(localizer.t(L.Settings.notificationsHelp))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - 依赖组件
+
+    private var dependencySection: some View {
+        Section(localizer.t(L.Dependency.sectionTitle)) {
+            if !dependencyChecked {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel(localizer.t(L.Dependency.checkingAccessibility))
+                    Text(localizer.t(L.Dependency.summaryChecking))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            } else {
+                ForEach(dependencyComponents) { component in
+                    HStack(spacing: 8) {
+                        Image(systemName: component.isInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(component.isInstalled ? .green : .orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(component.id)
+                                .font(.body.monospaced())
+                            Text(componentPurposeText(component))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel(componentAccessibilityLabel(component))
-                        .accessibilityValue(componentReadyText(component))
-                    }
-
-                    HStack(spacing: 10) {
-                        Button(localizer.t(L.Dependency.refresh)) {
-                            Task { await refreshDependencies() }
-                        }
-                        .buttonStyle(.bordered)
-                        Button(DependencySetup.needsSetup(dependencyComponents) ? localizer.t(L.Dependency.setupMissing) : localizer.t(L.Dependency.setupReady)) {
-                            requestDependencySetup()
-                        }
-                        .buttonStyle(.borderedProminent)
                         Spacer()
+                        if !component.isRequired {
+                            Text(localizer.t(L.Dependency.optionalBadge))
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .foregroundStyle(Color.accentColor)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.accentColor.opacity(0.14))
+                                )
+                        }
+                        Text(componentReadyText(component))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.top, 2)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(componentAccessibilityLabel(component))
+                    .accessibilityValue(componentReadyText(component))
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: dependencyAllReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                        .foregroundStyle(dependencyAllReady ? .green : (dependencyChecked ? .orange : .secondary))
-                    Text(localizer.t(L.Dependency.sectionTitle))
+
+                HStack(spacing: 10) {
+                    Button(localizer.t(L.Dependency.refresh)) {
+                        Task { await refreshDependencies() }
+                    }
+                    .buttonStyle(.bordered)
+                    Button(DependencySetup.needsSetup(dependencyComponents) ? localizer.t(L.Dependency.setupMissing) : localizer.t(L.Dependency.setupReady)) {
+                        requestDependencySetup()
+                    }
+                    .buttonStyle(.borderedProminent)
                     Spacer()
-                    Text(dependencySummaryText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(localizer.t(L.Dependency.sectionTitle))
-                .accessibilityValue(dependencySummaryText)
+                .padding(.top, 2)
             }
         }
     }
@@ -198,10 +1035,302 @@ struct SettingsView: View {
         }.value
         dependencyComponents = checked
         dependencyChecked = true
-        // 有缺失才自动展开；全就绪保持折叠，不占地方。
-        if DependencySetup.needsSetup(checked) {
-            dependencyExpanded = true
+    }
+
+    // MARK: - 存储
+
+    @State private var storageSizes: [String: Int64] = [:]
+    @State private var storageCalculating = false
+    @State private var showDeleteModelsConfirm = false
+    @State private var showDeleteDownloadsConfirm = false
+    @State private var storageFeedback: String?
+
+    private var supportDataURL: URL { AppSettings.supportDirectory }
+    private var appDownloadsDirectoryURL: URL { ViewModel.appDownloadsDirectory }
+
+    private func calculateStorageSizes() async {
+        storageCalculating = true
+        storageFeedback = nil
+        let supportDir = supportDataURL
+        let downloadsDir = appDownloadsDirectoryURL
+        let modelsDir = localASRModelStoreURL
+        let result: [String: Int64] = await Task.detached(priority: .userInitiated) {
+            var sizes: [String: Int64] = [:]
+            let modelsSize = Self.directorySize(modelsDir)
+            sizes["support"] = max(Self.directorySize(supportDir) - modelsSize, 0)
+            sizes["asrModels"] = modelsSize
+            sizes["downloads"] = Self.directorySize(downloadsDir)
+            return sizes
+        }.value
+        storageSizes = result
+        storageCalculating = false
+    }
+
+    private static nonisolated func directorySize(_ url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            do {
+                let values = try fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+                total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+            } catch {
+                // skip inaccessible files
+            }
         }
+        return total
+    }
+
+    private func formattedSize(_ bytes: Int64) -> String {
+        if bytes == 0 { return "0 KB" }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    private func deleteAllASRModels() {
+        do {
+            let modelsDir = localASRModelStoreURL
+            if FileManager.default.fileExists(atPath: modelsDir.path) {
+                try FileManager.default.removeItem(at: modelsDir)
+            }
+            storageFeedback = localizer.t(L.Settings.storageDeleted)
+            localASRModelCatalogVersion += 1
+            Task { await calculateStorageSizes() }
+        } catch {
+            storageFeedback = localizer.t(L.Settings.storageDeletionFailed, error.localizedDescription)
+        }
+    }
+
+    private func deleteAllDownloads() {
+        do {
+            let downloadsDir = appDownloadsDirectoryURL
+            guard FileManager.default.fileExists(atPath: downloadsDir.path) else {
+                storageFeedback = localizer.t(L.Settings.storageDeleted)
+                storageSizes["downloads"] = 0
+                return
+            }
+            var trashedURL: NSURL?
+            try FileManager.default.trashItem(at: downloadsDir, resultingItemURL: &trashedURL)
+            storageFeedback = localizer.t(L.Settings.storageDeleted)
+            Task { await calculateStorageSizes() }
+        } catch {
+            storageFeedback = localizer.t(L.Settings.storageDeletionFailed, error.localizedDescription)
+        }
+    }
+
+    private var storageSection: some View {
+        Section(localizer.t(L.Settings.storageSection)) {
+            VStack(alignment: .leading, spacing: 14) {
+                storageOverview
+                Divider()
+
+                storageRow(
+                    icon: "folder.fill.badge.gearshape",
+                    tint: .secondary,
+                    label: localizer.t(L.Settings.storageSupportData),
+                    path: supportDataURL.path,
+                    size: storageSizes["support"]
+                )
+                Divider()
+                storageRow(
+                    icon: "waveform",
+                    tint: .green,
+                    label: localizer.t(L.Settings.storageASRModels),
+                    path: localASRModelStoreURL.path,
+                    size: storageSizes["asrModels"],
+                    actionTitle: localizer.t(L.Settings.storageDeleteModels),
+                    actionSystemImage: "trash",
+                    actionRole: .destructive,
+                    action: { showDeleteModelsConfirm = true }
+                )
+                Divider()
+                storageRow(
+                    icon: "film.stack",
+                    tint: .orange,
+                    label: localizer.t(L.Settings.storageDownloadedVideos),
+                    path: appDownloadsDirectoryURL.path,
+                    size: storageSizes["downloads"],
+                    actionTitle: localizer.t(L.Settings.storageDeleteDownloads),
+                    actionSystemImage: "trash",
+                    actionRole: .destructive,
+                    action: { showDeleteDownloadsConfirm = true }
+                )
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    Button {
+                        calculateSizeTask()
+                    } label: {
+                        Label(localizer.t(L.Dependency.refresh), systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(storageCalculating)
+
+                    if storageCalculating {
+                        ProgressView().controlSize(.small)
+                    }
+
+                    Spacer()
+                }
+
+                if let feedback = storageFeedback {
+                    Text(feedback)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .confirmationDialog(
+                localizer.t(L.Settings.storageDeleteModelsConfirm),
+                isPresented: $showDeleteModelsConfirm
+            ) {
+                Button(localizer.t(L.Settings.storageDeleteModels), role: .destructive) {
+                    deleteAllASRModels()
+                }
+                Button(localizer.t(L.Common.cancel), role: .cancel) {}
+            }
+            .confirmationDialog(
+                localizer.t(L.Settings.storageDeleteDownloadsConfirm),
+                isPresented: $showDeleteDownloadsConfirm
+            ) {
+                Button(localizer.t(L.Settings.storageDeleteDownloads), role: .destructive) {
+                    deleteAllDownloads()
+                }
+                Button(localizer.t(L.Common.cancel), role: .cancel) {}
+            }
+        }
+        .onAppear {
+            if storageSizes.isEmpty { calculateSizeTask() }
+        }
+    }
+
+    private func calculateSizeTask() {
+        Task { await calculateStorageSizes() }
+    }
+
+    private var storageOverview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(localizer.t(L.Settings.aboutAppName))
+                    .font(.headline)
+                Spacer()
+                Text(localizer.t(L.Settings.storageUsed, formattedSize(storageTotalBytes)))
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            storageUsageBar
+            HStack(spacing: 12) {
+                storageLegendItem(color: .secondary, text: localizer.t(L.Settings.storageSupportData))
+                storageLegendItem(color: .green, text: localizer.t(L.Settings.storageASRModels))
+                storageLegendItem(color: .orange, text: localizer.t(L.Settings.storageDownloadedVideos))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var storageTotalBytes: Int64 {
+        (storageSizes["support"] ?? 0)
+            + (storageSizes["asrModels"] ?? 0)
+            + (storageSizes["downloads"] ?? 0)
+    }
+
+    private var storageUsageBar: some View {
+        GeometryReader { proxy in
+            let total = max(storageTotalBytes, 1)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.quaternary)
+                HStack(spacing: 2) {
+                    storageBarSegment(key: "support", color: .secondary, total: total, width: proxy.size.width)
+                    storageBarSegment(key: "asrModels", color: .green, total: total, width: proxy.size.width)
+                    storageBarSegment(key: "downloads", color: .orange, total: total, width: proxy.size.width)
+                    Spacer(minLength: 0)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .frame(height: 16)
+    }
+
+    private func storageBarSegment(key: String, color: Color, total: Int64, width: CGFloat) -> some View {
+        let size = storageSizes[key] ?? 0
+        let segmentWidth = size > 0 ? max(3, width * CGFloat(size) / CGFloat(total)) : 0
+        return Rectangle()
+            .fill(color)
+            .frame(width: segmentWidth)
+    }
+
+    private func storageLegendItem(color: Color, text: String) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(text)
+        }
+    }
+
+    @ViewBuilder
+    private func storageRow(
+        icon: String,
+        tint: Color,
+        label: String,
+        path: String,
+        size: Int64?,
+        actionTitle: String? = nil,
+        actionSystemImage: String? = nil,
+        actionRole: ButtonRole? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .frame(width: 28)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.callout)
+                Text(path)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if let size = size {
+                Text(formattedSize(size))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(localizer.t(L.Settings.storageCalculating))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.borderless)
+            .help(localizer.t(L.Queue.revealInFinder))
+            if let action, let actionTitle {
+                Button(role: actionRole, action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func componentAccessibilityLabel(_ component: DependencySetup.Component) -> String {
@@ -213,12 +1342,16 @@ struct SettingsView: View {
         case "yt-dlp": return localizer.t(L.Dependency.purposeYtDlp)
         case "ffmpeg": return localizer.t(L.Dependency.purposeFfmpeg)
         case "deno": return localizer.t(L.Dependency.purposeDeno)
+        case "whisper-cli": return localizer.t(L.Dependency.purposeWhisperCpp)
         default: return component.purpose
         }
     }
 
     private func componentReadyText(_ component: DependencySetup.Component) -> String {
-        component.isInstalled ? localizer.t(L.Dependency.statusReady) : localizer.t(L.Dependency.statusPending)
+        if component.isInstalled { return localizer.t(L.Dependency.statusReady) }
+        return component.isRequired
+            ? localizer.t(L.Dependency.statusPending)
+            : localizer.t(L.Dependency.statusOptionalMissing)
     }
 
     // MARK: - AI 设置（翻译/总结共享的默认配置 + 各自跟随/单独开关）
@@ -786,6 +1919,21 @@ struct SettingsView: View {
         }
     }
 
+    private var aboutSection: some View {
+        Section(localizer.t(L.Settings.aboutSection)) {
+            Text(localizer.t(L.Settings.aboutAppName))
+                .fontWeight(.semibold)
+            Text(localizer.t(L.Settings.aboutSource))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(localizer.t(L.Settings.openGitHubRepo)) {
+                updater.openRepoPage()
+            }
+                .buttonStyle(.bordered)
+        }
+    }
+
     private func startUpdateCheckFromSettings() {
         if model.queue.openTaskCount > 0 {
             updater.blockInstallDueToOpenTasks(count: model.queue.openTaskCount)
@@ -1038,17 +2186,16 @@ struct SettingsView: View {
         cookieDate = dates.max()
     }
 
-    /// 点「登录 ××」：先把草稿保存下来再走登录流程（设置窗即将收起）。
+    /// 点「登录 ××」：实时保存模式下草稿已即时回写，这里只需走登录流程。
     private func requestLogin(site: String) {
         clearFeedback = nil
-        model.settings = draft
+        persistDraftLive(draft)
         model.requestLogin(site: site)
     }
 
-    /// 点「配置依赖」：与登录一致，先回写草稿再走依赖流程。
-    /// 否则设置窗 onDisappear 会用磁盘值覆盖 model.settings，丢掉未保存的编辑。
+    /// 点「配置依赖」：实时保存模式下草稿已即时回写，这里只需走依赖流程。
     private func requestDependencySetup() {
-        model.settings = draft
+        persistDraftLive(draft)
         model.requestDependencySetup()
     }
 
@@ -1067,35 +2214,6 @@ struct SettingsView: View {
             clearFeedback = localizer.t(L.Settings.cleared)
             refreshLoginStatus()
         }
-    }
-
-    // MARK: - 底栏
-
-    private var bottomBar: some View {
-        HStack(spacing: 10) {
-            if let notice = model.settingsNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-            }
-            Spacer()
-            Button(localizer.t(L.Common.cancel)) {
-                model.showSettings = false
-            }
-            .buttonStyle(.bordered)
-            .keyboardShortcut(.cancelAction)
-            Button(localizer.t(L.Common.done)) {
-                model.settings = draft
-                if model.saveSettings() {
-                    model.showSettings = false
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
     }
 }
 

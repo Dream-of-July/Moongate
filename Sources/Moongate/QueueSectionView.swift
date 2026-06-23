@@ -10,6 +10,7 @@ struct QueueSectionView: View {
     @ObservedObject var queue: QueueManager
     /// 非 nil 时头部显示「收起」按钮（铺满态收回成底部小把手）。
     var onCollapse: (() -> Void)? = nil
+    var onConfigureLocalASR: () -> Void = {}
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
@@ -56,10 +57,19 @@ struct QueueSectionView: View {
                     ForEach(queue.items) { item in
                         QueueItemView(
                             item: item,
+                            canRetryWithLocalASR: queue.canRetryWithLocalASR(item.id),
+                            isLocalASRRetryReady: queue.hasLocalASRGenerator,
                             onPause: { queue.pause(item.id) },
                             onResume: { queue.resume(item.id) },
                             onCancel: { queue.cancel(item.id) },
                             onRetry: { queue.retry(item.id) },
+                            onRetryWithLocalASR: {
+                                if queue.hasLocalASRGenerator {
+                                    queue.retryWithLocalASR(item.id)
+                                } else {
+                                    onConfigureLocalASR()
+                                }
+                            },
                             onRemove: { queue.remove(item.id) },
                             onReveal: { queue.revealInFinder(item.id) }
                         )

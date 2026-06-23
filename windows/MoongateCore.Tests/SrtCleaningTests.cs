@@ -104,6 +104,41 @@ public class SrtParsingTests
     }
 
     [Fact]
+    public void ParseVtt_SkipsCueIdentifiersAndMetadataBlocks()
+    {
+        const string raw = """
+            WEBVTT
+
+            STYLE
+            ::cue { color: red; }
+
+            REGION
+            id:fred
+            width:40%
+
+            NOTE this block is not a cue
+            00:00:00.000 --> 00:00:01.000
+            Should not appear
+
+            cue-1
+            00:00:01.000 --> 00:00:03.000 align:start position:0%
+            Hello<00:00:02.000><c> world</c>
+
+            cue-2
+            00:00:03.500 --> 00:00:04.500
+            Next line
+            """;
+
+        var cues = SrtTools.ParseVtt(raw);
+
+        Assert.Equal(2, cues.Count);
+        Assert.Equal(["Hello world", "Next line"], cues.Select(cue => cue.Text).ToArray());
+        Assert.Equal(["Hello", "world"], cues[0].SourceFragments.Select(fragment => fragment.Text).ToArray());
+        Assert.DoesNotContain("cue-", string.Join(' ', cues.Select(cue => cue.Text)), StringComparison.Ordinal);
+        Assert.DoesNotContain("Should not appear", string.Join(' ', cues.Select(cue => cue.Text)), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ParseVtt_CapsTrailingInlineDisplayHold()
     {
         const string raw = """
@@ -1387,6 +1422,37 @@ public class CleanCuesTests
         Assert.True(
             SrtTools.SrtTimeToSeconds(cue.End)!.Value >= SrtTools.SrtTimeToSeconds("00:01:39,000")!.Value,
             "The merged French continuation cue should remain visible through the spoken phrase.");
+    }
+
+    [Fact]
+    public void CleanCues_KeepsDecimalPercentAndMergesEnglishOrphanTail()
+    {
+        var input = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:12,000",
+                "The The Sun is uh 99.8% of all mass in the solar system."),
+            new(2, "00:00:12,010", "00:00:15,000",
+                "And Jupiter is about 0.1% and Earth is in the miscellaneous category."),
+            new(3, "00:00:15,010", "00:00:19,500",
+                "hopefully at the solar system, and send spaceships to other star"),
+            new(4, "00:00:19,510", "00:00:20,800",
+                "systems."),
+            new(5, "00:00:20,900", "00:00:21,140",
+                "The Starship"),
+            new(6, "00:00:21,150", "00:00:25,400",
+                "V4 will make uh Starship V3 look kind of short."),
+        };
+
+        var texts = SrtTools.CleanCues(input).Select(c => c.Text).ToList();
+
+        Assert.Contains(texts, text => text.Contains("99.8%", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, text => text.Trim().EndsWith("99.", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, text => text.Trim().StartsWith("8%", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("0.1%", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("other star systems.", StringComparison.Ordinal));
+        Assert.DoesNotContain("systems.", texts);
+        Assert.Contains(texts, text => text.Contains("The Starship V4 will make", StringComparison.Ordinal));
+        Assert.DoesNotContain("The Starship", texts);
     }
 
     [Fact]

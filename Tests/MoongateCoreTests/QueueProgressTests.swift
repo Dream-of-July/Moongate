@@ -29,6 +29,39 @@ final class QueueProgressTests: XCTestCase {
         XCTAssertGreaterThan(translating, secondStreamRestart)
     }
 
+    func testTaskWorkPlanWeightsASRHeavyTasksByUnits() throws {
+        let plan = TaskWorkPlan(
+            shouldExtractAudio: true,
+            shouldRunASR: true,
+            shouldSegmentSubtitles: true,
+            shouldTranscode: false,
+            shouldTranslate: true,
+            shouldBurn: false,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: 12,
+            subtitleSegmentUnits: 1,
+            translateUnits: 2
+        )
+
+        let downloadDone = try XCTUnwrap(QueueProgressEstimator.taskOverallProgress(
+            workPlan: plan,
+            currentPhase: .download,
+            phaseProgress: 1,
+            previousOverallProgress: nil
+        ))
+        let halfASR = try XCTUnwrap(QueueProgressEstimator.taskOverallProgress(
+            workPlan: plan,
+            currentPhase: .speechRecognition,
+            phaseProgress: 0.5,
+            previousOverallProgress: downloadDone
+        ))
+
+        XCTAssertEqual(downloadDone, 2.0 / 18.0, accuracy: 0.0001)
+        XCTAssertEqual(halfASR, 9.0 / 18.0, accuracy: 0.0001)
+        XCTAssertLessThan(downloadDone, 0.25)
+    }
+
     func testEtaParsingAndSlopeRemaining() throws {
         XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds("00:45"), 45)
         XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds("01:02:03"), 3723)
@@ -111,5 +144,48 @@ final class QueueProgressTests: XCTestCase {
 
         XCTAssertNil(snapshot.remainingSeconds)
         XCTAssertTrue(snapshot.isEstimatingRemaining)
+    }
+
+    func testQueueSnapshotUsesWorkUnitsForQueuedASRPhases() throws {
+        let plan = TaskWorkPlan(
+            shouldExtractAudio: true,
+            shouldRunASR: true,
+            shouldSegmentSubtitles: true,
+            shouldTranscode: false,
+            shouldTranslate: true,
+            shouldBurn: false,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: 12,
+            subtitleSegmentUnits: 1,
+            translateUnits: 2
+        )
+        let snapshot = QueueProgressEstimator.queueSnapshot(
+            items: [
+                TaskProgressSnapshot(
+                    overallProgress: nil,
+                    remainingSeconds: nil,
+                    isEstimatingRemaining: false,
+                    isTerminal: false,
+                    currentPhase: nil,
+                    workPlan: plan
+                ),
+            ],
+            phaseMedianDurations: [
+                .download: 15,
+                .audioExtract: 8,
+                .speechRecognition: 30,
+                .subtitleSegment: 5,
+                .translate: 20,
+            ],
+            phaseCapacities: [
+                .download: 2,
+                .speechRecognition: 1,
+                .translate: 1,
+            ]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(snapshot.remainingSeconds), 443, accuracy: 0.0001)
+        XCTAssertFalse(snapshot.isEstimatingRemaining)
     }
 }

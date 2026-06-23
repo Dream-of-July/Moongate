@@ -190,21 +190,35 @@ public sealed class FFmpegBurner : ISubtitleBurner
         return null;
     }
 
-    /// <summary>硬件 H.264 编码参数（按编码器选合适的质量旋钮）。</summary>
-    internal static string[] HwH264VideoArgs(string encoder) =>
-        [.. HwEncoderArgs(encoder), "-pix_fmt", "yuv420p"];
+    /// <summary>硬件 H.264 编码参数（按编码器选合适的质量旋钮；有封顶时使用目标码率）。</summary>
+    internal static string[] HwH264VideoArgs(string encoder, int? maxrateK = null) =>
+        [.. HwEncoderArgs(encoder, maxrateK), "-pix_fmt", "yuv420p"];
 
     /// <summary>硬件 HEVC（SDR）编码参数。</summary>
-    internal static string[] HwHevcVideoArgs(string encoder) =>
-        [.. HwEncoderArgs(encoder), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"];
+    internal static string[] HwHevcVideoArgs(string encoder, int? maxrateK = null) =>
+        [.. HwEncoderArgs(encoder, maxrateK), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"];
 
     /// <summary>硬件 HEVC main10（HDR）编码参数：10-bit p010le，色彩元数据由 ColorArgs 单独透传。</summary>
-    internal static string[] HwHdrVideoArgs(string encoder) =>
-        [.. HwEncoderArgs(encoder), "-profile:v", "main10", "-pix_fmt", "p010le", "-tag:v", "hvc1"];
+    internal static string[] HwHdrVideoArgs(string encoder, int? maxrateK = null) =>
+        [.. HwEncoderArgs(encoder, maxrateK), "-profile:v", "main10", "-pix_fmt", "p010le", "-tag:v", "hvc1"];
 
     /// <summary>各硬件编码器的「恒定质量」旋钮（参数名不同：NVENC -cq、QSV -global_quality、AMF -rc cqp -qp_*）。</summary>
-    private static string[] HwEncoderArgs(string encoder)
+    private static string[] HwEncoderArgs(string encoder, int? maxrateK)
     {
+        if (maxrateK is { } cap)
+        {
+            string[] capArgs = ["-b:v", $"{cap}k", .. MaxrateFlags(cap)];
+            if (encoder.Contains("nvenc"))
+            {
+                return ["-c:v", encoder, "-rc", "vbr", "-cq", $"{HwCq}", .. capArgs];
+            }
+            if (encoder.Contains("qsv"))
+            {
+                return ["-c:v", encoder, "-global_quality", $"{HwCq}", .. capArgs];
+            }
+            // AMF 的 cqp 模式不接受码率封顶；有封顶时改用目标码率。
+            return ["-c:v", encoder, .. capArgs];
+        }
         if (encoder.Contains("nvenc"))
             return ["-c:v", encoder, "-rc", "vbr", "-cq", $"{HwCq}", "-b:v", "0"];
         if (encoder.Contains("qsv"))
@@ -232,7 +246,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
         {
             if (hwHevc is { } enc)
             {
-                return new VideoEncoderSelection(HwHdrVideoArgs(enc), "", ",format=p010le",
+                return new VideoEncoderSelection(HwHdrVideoArgs(enc, maxrateK), "", ",format=p010le",
                     HdrColorArgs(colorPrimaries, colorTransfer, colorSpace));
             }
             if (x265Available)
@@ -252,18 +266,18 @@ public sealed class FFmpegBurner : ISubtitleBurner
         // 3) SDR：跟随源（HEVC 保 HEVC）或强制 H.264。
         if (sourceIsHevc && !alwaysH264)
         {
-            if (hwHevc is { } enc) return new VideoEncoderSelection(HwHevcVideoArgs(enc), "", "", []);
+            if (hwHevc is { } enc) return new VideoEncoderSelection(HwHevcVideoArgs(enc, maxrateK), "", "", []);
             if (x265Available) return new VideoEncoderSelection(SdrHevcVideoArgs(maxrateK), "", "", []);
             // 无任何 HEVC 编码器：退回 H.264。
         }
-        if (hwH264 is { } h264) return new VideoEncoderSelection(HwH264VideoArgs(h264), "", "", []);
+        if (hwH264 is { } h264) return new VideoEncoderSelection(HwH264VideoArgs(h264, maxrateK), "", "", []);
         return new VideoEncoderSelection(SdrH264VideoArgs(maxrateK), "", "", []);
     }
 
     private static VideoEncoderSelection TonemappedSdrSelection(string? hwH264, int? maxrateK)
     {
         const string prefix = "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,";
-        var encoder = hwH264 is { } enc ? HwH264VideoArgs(enc) : SdrH264VideoArgs(maxrateK);
+        var encoder = hwH264 is { } enc ? HwH264VideoArgs(enc, maxrateK) : SdrH264VideoArgs(maxrateK);
         return new VideoEncoderSelection(encoder, prefix, "", []);
     }
 
@@ -312,9 +326,10 @@ public sealed class FFmpegBurner : ISubtitleBurner
         int? targetShortSide = maxHeight is { } mh && mh > 0 && sourceShortSide is { } shortSide && shortSide > mh
             ? mh
             : null;
-        // -maxrate 上限：仅在缩放（用户开启「缩放到 1080p」）时按目标档位封顶，压小体积。
-        // 不缩放（保持源分辨率）时为 null → 软件走纯 CRF、硬件走纯恒定质量，全分辨率输出画质/参数一致。
-        int? maxrateK = targetShortSide is { } target ? MaxrateK(probe.BitRateBps, sourceShortSide, target) : null;
+        // -maxrate 上限：缩放时按目标短边封顶；不缩放时按源短边封顶。
+        // 保持源分辨率仍保留 CRF/硬件质量兜底，但避免低码率源被字幕烧录重编码撑大太多。
+        var capShortSide = targetShortSide ?? sourceShortSide;
+        int? maxrateK = capShortSide is { } cap ? MaxrateK(probe.BitRateBps, sourceShortSide, cap) : null;
 
         // 2. 临时目录：字幕转成 subs.ass 并把 ffmpeg 工作目录设到这里，
         //    规避 subtitles 滤镜对路径里冒号/引号/中文的转义问题。
@@ -604,9 +619,8 @@ public sealed class FFmpegBurner : ISubtitleBurner
         targetShortSide is { } th ? (isPortrait ? $"scale={th}:-2" : $"scale=-2:{th}") : null;
 
     /// <summary>
-    /// 计算缩放场景的 -maxrate k 值（CRF/质量编码下仅作封顶）。仅在用户开启「缩放到 1080p」时使用：
+    /// 计算烧录场景的 -maxrate k 值（CRF/质量编码下仅作封顶）：
     /// 按目标分辨率档位封顶，并与源码率×1.5 取 min（源更小时不浪费）。
-    /// 不缩放场景不调用本函数（走纯 CRF / 恒定质量，无上限），保证全分辨率输出画质一致。
     /// 档位上限：2160p≈16000，1440p≈10000，1080p≈6000，720p≈3000，480p≈1500。
     /// </summary>
     internal static int MaxrateK(double? sourceBitRateBps, int? sourceHeight, int targetHeight)
@@ -616,7 +630,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
         return Math.Min(tier, sourceK ?? tier);
     }
 
-    /// <summary>-maxrate/-bufsize 参数：仅缩放场景（maxrateK 非 null）才封顶；null 时为空（纯 CRF）。</summary>
+    /// <summary>-maxrate/-bufsize 参数：maxrateK 非 null 时封顶；null 时为空（纯 CRF/恒定质量）。</summary>
     internal static string[] MaxrateFlags(int? maxrateK) =>
         maxrateK is { } k ? ["-maxrate", $"{k}k", "-bufsize", $"{k * 2}k"] : [];
 

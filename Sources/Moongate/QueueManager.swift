@@ -1,9 +1,80 @@
 import AppKit
 import Combine
 import Foundation
+import UserNotifications
 #if canImport(MoongateCore)
 import MoongateCore
 #endif
+
+struct QueueCompletionNotification: Equatable {
+    let completedCount: Int
+    let partialFailureCount: Int
+    let failedCount: Int
+    let cancelledCount: Int
+    let titles: [String]
+}
+
+@MainActor
+protocol QueueCompletionNotifying: AnyObject {
+    func queueDidComplete(_ notification: QueueCompletionNotification)
+}
+
+@MainActor
+final class SystemQueueCompletionNotifier: QueueCompletionNotifying {
+    private let settingsProvider: () -> AppSettings
+
+    init(settingsProvider: @escaping () -> AppSettings) {
+        self.settingsProvider = settingsProvider
+    }
+
+    func queueDidComplete(_ notification: QueueCompletionNotification) {
+        let settings = settingsProvider()
+        guard settings.completionNotificationsEnabled || settings.completionSoundEnabled else { return }
+
+        let active = NSApp.isActive
+        if settings.completionNotificationsEnabled, !active {
+            let content = UNMutableNotificationContent()
+            content.title = title(for: notification)
+            content.body = body(for: notification)
+            if settings.completionSoundEnabled {
+                content.sound = .default
+            }
+            let request = UNNotificationRequest(
+                identifier: "moongate.queue-complete.\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            UNUserNotificationCenter.current().add(request)
+        } else if settings.completionSoundEnabled {
+            NSSound.beep()
+        }
+    }
+
+    private func title(for notification: QueueCompletionNotification) -> String {
+        if notification.completedCount == 1 {
+            return CoreL10n.text(en: "Download complete", zhHans: "下载完成", zhHant: "下載完成")
+        }
+        return CoreL10n.text(
+            en: "\(notification.completedCount) downloads complete",
+            zhHans: "\(notification.completedCount) 个下载已完成",
+            zhHant: "\(notification.completedCount) 個下載已完成"
+        )
+    }
+
+    private func body(for notification: QueueCompletionNotification) -> String {
+        if notification.completedCount == 1, let title = notification.titles.first {
+            return title
+        }
+        if notification.partialFailureCount > 0 {
+            return CoreL10n.text(
+                en: "\(notification.partialFailureCount) item(s) need subtitle retry.",
+                zhHans: "\(notification.partialFailureCount) 个任务需要重试字幕处理。",
+                zhHant: "\(notification.partialFailureCount) 個任務需要重試字幕處理。"
+            )
+        }
+        return CoreL10n.text(en: "All selected tasks have finished.", zhHans: "本批任务已完成。", zhHant: "本批任務已完成。")
+    }
+}
 
 /// 阶段槽位池：限制同一阶段（下载 / 压制 / 翻译）的并发任务数。
 /// 全部在 MainActor 上运转，无锁；排队者被唤醒后重新竞争（队列规模小，开销可忽略）。
@@ -89,8 +160,8 @@ final class QueueManager: ObservableObject {
         let title: String
         let thumbnailURL: URL?
         let info: VideoInfo
-        let request: DownloadRequest
-        let chineseMode: ChineseSubtitleMode
+        var request: DownloadRequest
+        var chineseMode: ChineseSubtitleMode
         /// 本项使用的设置快照（字幕样式、烧录画质、翻译凭证）
         let settings: AppSettings
         var stage: ItemStage
@@ -103,7 +174,8 @@ final class QueueManager: ObservableObject {
         var remainingIsApproximate: Bool = false
         var isEstimatingRemaining: Bool = false
         var progressPhase: QueueProgressPhase?
-        let progressPlan: QueueProgressPlan
+        var progressPlan: QueueProgressPlan
+        var workPlan: TaskWorkPlan
         /// 暂停 / 部分成功 / 失败原因等附加说明
         var statusText: String?
         /// 已落盘的产物（下载文件、译文、烧录视频）
@@ -115,11 +187,21 @@ final class QueueManager: ObservableObject {
         var postDownloadProcessingKind: PostDownloadProcessingKind?
         /// 部分成功：视频已下载但字幕处理失败（done 态显示「重试字幕处理」按钮）。
         var partialFailure: Bool = false
+        /// 完成后检测到字幕时序可能不可靠（多为平台滚动字幕的 10ms 闪现），建议用本地 Whisper 重跑。
+        var timingWarning: Bool = false
         /// 本项流水线的控制令牌；retry 时换新的（旧的已 cancel）。
         var control: TaskControlToken
         /// 流水线代际：每次 enqueue/retry 递增；@MainActor 写回前校验，作废陈旧回调。
         var generation: Int = 0
         var task: Task<Void, Never>?
+
+        @MainActor
+        var canRetryWithLocalASR: Bool {
+            guard case .done = stage else { return false }
+            return resultFiles.contains {
+                QueueManager.videoExtensions.contains($0.pathExtension.lowercased())
+            }
+        }
 
         mutating func clearProgress(resetOverall: Bool = false) {
             progress = nil
@@ -165,18 +247,38 @@ final class QueueManager: ObservableObject {
     private var resumePool: [UUID: (generation: Int, pool: StageSlotPool)] = [:]
     private var progressPhaseStarts: [UUID: (generation: Int, phase: QueueProgressPhase, startedAt: Date)] = [:]
     private var phaseDurationSamples: [QueueProgressPhase: [Double]] = [:]
+    private var localASRGenerator: (any LocalASRSubtitleGenerator)?
+    private let completionNotifier: (any QueueCompletionNotifying)?
+    private var notifiedTerminalIDs = Set<UUID>()
 
     /// 视频文件后缀（用于在产物里识别可烧录的视频）
     private static let videoExtensions: Set<String> = [
         "mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts",
     ]
 
-    init(engine: any DownloadEngine = makeDefaultEngine()) {
+    init(
+        engine: any DownloadEngine = makeDefaultEngine(),
+        localASRGenerator: (any LocalASRSubtitleGenerator)? = nil,
+        completionNotifier: (any QueueCompletionNotifying)? = nil
+    ) {
         self.engine = engine
+        self.localASRGenerator = localASRGenerator
+        self.completionNotifier = completionNotifier
         let settings = AppSettings.load()
         self.maxConcurrentDownloads = settings.maxConcurrentDownloads
         self.maxConcurrentBurns = settings.maxConcurrentBurns
         self.effectiveBurnCapacity = settings.effectiveMaxConcurrentBurns
+    }
+
+    var hasLocalASRGenerator: Bool { localASRGenerator != nil }
+
+    func syncLocalASRGenerator(from settings: AppSettings) {
+        localASRGenerator = LocalASRGeneratorFactory.make(settings: settings)
+    }
+
+    func canRetryWithLocalASR(_ id: UUID) -> Bool {
+        guard let item = item(id) else { return false }
+        return item.canRetryWithLocalASR
     }
 
     /// 设置保存后同步并发上限（didSet 会唤醒排队者）。
@@ -262,10 +364,14 @@ final class QueueManager: ObservableObject {
                 isEstimatingRemaining: item.isEstimatingRemaining,
                 isTerminal: terminal,
                 plan: item.progressPlan,
-                currentPhase: item.progressPhase
+                currentPhase: item.progressPhase,
+                workPlan: item.workPlan
             )
         }, phaseMedianDurations: phaseMedianDurations, phaseCapacities: [
             .download: max(1, maxConcurrentDownloads),
+            .audioExtract: max(1, maxConcurrentDownloads),
+            .speechRecognition: 1,
+            .subtitleSegment: 2,
             .transcode: max(1, maxConcurrentDownloads),
             .translate: 2,
             .burn: max(1, effectiveBurnCapacity),
@@ -285,6 +391,30 @@ final class QueueManager: ObservableObject {
             shouldTranscode: Transcoder.needsProcessing(request.outputFormat),
             shouldTranslate: mode.requiresTranslation,
             shouldBurn: mode.requiresBurner
+        )
+    }
+
+    private static func workPlan(for request: DownloadRequest, mode: ChineseSubtitleMode) -> TaskWorkPlan {
+        let needsLocalASR = request.requestedSubtitleTracks.contains { $0.sourceKind == .localASR }
+        // Weights approximate real wall-clock so the bar tracks time: download, transcription,
+        // translation and burn are all multi-minute phases. (Previously speechRecognition=12 vs
+        // translate=1 made the bar hit ~87% during transcription, then crawl through the slow
+        // translation — looking like it had "reached the translating zone" before transcription
+        // finished.)
+        return TaskWorkPlan(
+            shouldExtractAudio: needsLocalASR,
+            shouldRunASR: needsLocalASR,
+            shouldSegmentSubtitles: needsLocalASR,
+            shouldTranscode: Transcoder.needsProcessing(request.outputFormat),
+            shouldTranslate: mode.requiresTranslation,
+            shouldBurn: mode.requiresBurner,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: needsLocalASR ? 6 : 1,
+            subtitleSegmentUnits: 1,
+            transcodeUnits: 2,
+            translateUnits: 6,
+            burnUnits: 4
         )
     }
 
@@ -328,6 +458,7 @@ final class QueueManager: ObservableObject {
             remainingSeconds: nil,
             progressPhase: nil,
             progressPlan: Self.progressPlan(for: request, mode: chineseMode),
+            workPlan: Self.workPlan(for: request, mode: chineseMode),
             statusText: nil,
             resultFiles: [],
             isPaused: false,
@@ -358,7 +489,7 @@ final class QueueManager: ObservableObject {
             downloadFiles = current.resultFiles
             update(id, generation: generation) {
                 $0.overallProgress = QueueProgressEstimator.taskOverallProgress(
-                    plan: $0.progressPlan,
+                    workPlan: $0.workPlan,
                     currentPhase: .download,
                     phaseProgress: 1,
                     previousOverallProgress: $0.overallProgress
@@ -486,15 +617,42 @@ final class QueueManager: ObservableObject {
             }
         }
 
-        // 下载完成，无需字幕处理：直接完成
+        do {
+            downloadFiles = try await prepareLocalASRSourceSubtitleIfNeeded(
+                files: downloadFiles,
+                request: current.request,
+                id: id,
+                generation: generation,
+                control: control
+            )
+        } catch {
+            guard item(id)?.generation == generation else { return }
+            settlePartial(
+                id,
+                generation: generation,
+                files: item(id)?.resultFiles ?? downloadFiles,
+                error: error,
+                phase: CoreL10n.text(en: "speech recognition", zhHans: "语音识别", zhHant: "語音識別")
+            )
+            return
+        }
+
+        // 下载完成，只保存主字幕来源：直接完成
         guard mode != .off else {
             finishDone(id, generation: generation, files: downloadFiles, statusText: nil)
             return
         }
 
         // 找翻译源字幕；没有就完成并提示已跳过
-        let preferredLang = current.request.subtitleLangs.first ?? current.request.autoSubtitleLangs.first
-        guard let sourceSubtitle = Self.pickSourceSubtitle(from: downloadFiles, preferredLang: preferredLang) else {
+        let primarySubtitleTrack = current.request.primarySubtitleTrack
+        let preferredLang = primarySubtitleTrack?.languageCode
+            ?? current.request.subtitleLangs.first
+            ?? current.request.autoSubtitleLangs.first
+        guard let sourceSubtitle = Self.pickSourceSubtitle(
+            from: downloadFiles,
+            preferredLang: preferredLang,
+            preferredTrack: primarySubtitleTrack
+        ) else {
             finishDone(
                 id, generation: generation, files: downloadFiles,
                 statusText: mode == .burnOriginal
@@ -502,6 +660,15 @@ final class QueueManager: ObservableObject {
                     : CoreL10n.t(L.Queue.noSubtitleFileSkippedTranslation)
             )
             return
+        }
+
+        // 平台字幕（非本地识别）若清洗后出现大量 ~10ms 闪现 cue（YouTube 滚动字幕常见），完成后
+        // 温和提示用户：可用本地 Whisper 重跑。不强制上来做选择，只在结果可能不准时给建议。
+        if primarySubtitleTrack?.sourceKind != .localASR {
+            let assessment = SubtitleTimingHealth.assess(subtitleFileURL: sourceSubtitle)
+            if assessment.looksUnreliable {
+                update(id, generation: generation) { $0.timingWarning = true }
+            }
         }
 
         // 直接烧录模式：跳过翻译，把所选源字幕原样压进视频（无论语言、无需配置翻译服务）。
@@ -563,7 +730,7 @@ final class QueueManager: ObservableObject {
 
         // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
         // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt/.vtt" 解析。
-        let sourceLang = preferredLang ?? Self.langCode(of: sourceSubtitle)
+        let sourceLang = primarySubtitleTrack?.languageCode ?? Self.langCode(of: sourceSubtitle)
         let sourceMatchesTarget = TranslationLanguage.matches(
             source: sourceLang,
             target: settings.translationTargetLanguage
@@ -659,7 +826,7 @@ final class QueueManager: ObservableObject {
             zhSrt = try await translator.translate(
                 srtFile: sourceSubtitle,
                 style: settings.subtitleStyle,
-                context: settings.makeTranslationContext(sourceLanguage: preferredLang),
+                context: settings.makeTranslationContext(sourceLanguage: primarySubtitleTrack?.languageCode),
                 control: control
             ) { [weak self] p in
                     Task { @MainActor in
@@ -746,12 +913,12 @@ final class QueueManager: ObservableObject {
     }
 
     /// 由当前显示态 + yt-dlp 上报百分比推导下一显示态（纯函数）。
-    /// 如实显示当前下载百分比：DASH 分流下载（视频 0→100% 后再下音频 0→100%），换流时百分比回落是真实情况，
-    /// 照实显示让进度条始终在动，好过卡在 100% 或藏成转圈「处理中」；仅过滤 < 0.5 个百分点的高频抖动。
+    /// Engine 层会把 DASH 分流下载聚合成一个整体百分比；这里再做防御，避免任何
+    /// 迟到/回落的子进程百分比让用户可见进度倒退。仅过滤 < 0.5 个百分点的高频抖动。
     /// 合并阶段由 [Merger] 行单独触发「处理中」。
     static func nextDownloadProgressState(_ current: DownloadProgressState, incoming: Double?) -> DownloadProgressState {
         guard let next = incoming else { return current }
-        if let old = current.progress, abs(next - old) < 0.005 { return current }
+        if let old = current.progress, next <= old || abs(next - old) < 0.005 { return current }
         return DownloadProgressState(progress: next, isProcessing: false)
     }
 
@@ -805,7 +972,7 @@ final class QueueManager: ObservableObject {
         item.progress = normalized
         item.progressPhase = phase
         item.overallProgress = QueueProgressEstimator.taskOverallProgress(
-            plan: item.progressPlan,
+            workPlan: item.workPlan,
             currentPhase: phase,
             phaseProgress: normalized,
             previousOverallProgress: item.overallProgress
@@ -919,9 +1086,10 @@ final class QueueManager: ObservableObject {
 
     // MARK: - 单项控制
 
-    func pause(_ id: UUID) {
-        guard let target = item(id), Self.isOpen(target.stage), !target.isPaused else { return }
-        target.control.pause()
+    @discardableResult
+    func pause(_ id: UUID) -> Bool {
+        guard let target = item(id), Self.isOpen(target.stage), !target.isPaused else { return false }
+        guard target.control.pause() else { return false }
         // 让出占用的下载/压制槽位给其它任务；恢复时重新排队领取。
         // 翻译请求不是本地可挂起进程，暂停后仍可能有分块请求在飞行中，不能释放翻译并发位。
         if let holding = holdingPool[id], holding.generation == target.generation {
@@ -932,20 +1100,24 @@ final class QueueManager: ObservableObject {
             }
         }
         update(id) { $0.isPaused = true }
+        return true
     }
 
-    func resume(_ id: UUID) {
-        guard let target = item(id), target.isPaused else { return }
-        update(id) { $0.isPaused = false }
+    @discardableResult
+    func resume(_ id: UUID) -> Bool {
+        guard let target = item(id), target.isPaused else { return false }
         guard let parked = resumePool.removeValue(forKey: id),
               parked.generation == target.generation else {
             // 没让过位（翻译阶段 / 排队中暂停）：直接恢复，acquire 循环或 gate 会接着走。
-            target.control.resume()
-            return
+            guard target.control.resume() else { return false }
+            update(id) { $0.isPaused = false }
+            return true
         }
         // 让过位的：先重新领到槽位再 SIGCONT，避免恢复瞬间超出并发上限。
+        guard target.control.isPaused else { return false }
         let control = target.control
         let generation = target.generation
+        update(id) { $0.isPaused = false }
         update(id, generation: generation) { $0.statusText = CoreL10n.t(L.Queue.waitingSlotResume) }
         Task { [weak self] in
             guard let self else { return }
@@ -964,6 +1136,7 @@ final class QueueManager: ObservableObject {
                 // 等槽期间被取消：流水线任务自会收敛，这里不动状态。
             }
         }
+        return true
     }
 
     func cancel(_ id: UUID) {
@@ -1020,6 +1193,73 @@ final class QueueManager: ObservableObject {
         update(id) { $0.task = task }
     }
 
+    func retryWithLocalASR(_ id: UUID) {
+        guard let old = item(id),
+              localASRGenerator != nil else { return }
+        let request = Self.localASRRetryRequest(for: old.request)
+        let retryMode: ChineseSubtitleMode = .burnIn
+        let hasVideo = old.resultFiles.contains {
+            Self.videoExtensions.contains($0.pathExtension.lowercased())
+        }
+        guard hasVideo else { return }
+
+        resumePool.removeValue(forKey: id)
+        clearProgressTracking(id)
+        old.control.cancel()
+        old.task?.cancel()
+        wakeFromAllPools(id)
+
+        let newControl = TaskControlToken()
+        update(id) {
+            $0.request = request
+            $0.chineseMode = retryMode
+            $0.progressPlan = Self.progressPlan(for: request, mode: retryMode)
+            $0.workPlan = Self.workPlan(for: request, mode: retryMode)
+            $0.control = newControl
+            $0.generation += 1
+            $0.stage = .queued
+            $0.isPaused = false
+            $0.clearProgress(resetOverall: true)
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+            $0.partialFailure = false
+            $0.timingWarning = false
+            $0.statusText = nil
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runPipeline(id: id, skipDownload: true)
+        }
+        update(id) { $0.task = task }
+    }
+
+    private static func localASRRetryRequest(for request: DownloadRequest) -> DownloadRequest {
+        let source = request.requestedSubtitleTracks.first(where: { $0.sourceKind != .localASR })
+            ?? request.primarySubtitleTrack
+            ?? request.requestedSubtitleTracks.first
+        let languageCode = source?.languageCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let localASRTrack = SubtitleChoice(
+            languageCode: languageCode.isEmpty ? "auto" : languageCode,
+            label: source?.label ?? CoreL10n.t(L.Ready.localASRAutoDetectLabel),
+            sourceKind: .localASR,
+            provider: "whisper.cpp",
+            variant: "local"
+        )
+        return DownloadRequest(
+            url: request.url,
+            videoID: request.videoID,
+            formatID: request.formatID,
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [localASRTrack],
+            primarySubtitleTrackID: localASRTrack.id,
+            destinationDirectory: request.destinationDirectory,
+            preferredTitle: request.preferredTitle,
+            preferHDR: request.preferHDR,
+            outputFormat: request.outputFormat
+        )
+    }
+
     /// 在访达中选中该项的产物（烧录视频排第一）。
     func revealInFinder(_ id: UUID) {
         guard let target = item(id), !target.resultFiles.isEmpty else { return }
@@ -1046,17 +1286,139 @@ final class QueueManager: ObservableObject {
     private func update(_ id: UUID, _ mutate: (inout QueueItem) -> Void) {
         guard let i = index(of: id) else { return }
         mutate(&items[i])
+        notifyQueueCompletionIfNeeded()
     }
 
     /// 代际校验版：仅当当前 generation 与捕获值一致时才写回，作废重试后的陈旧回调。
     private func update(_ id: UUID, generation: Int, _ mutate: (inout QueueItem) -> Void) {
         guard let i = index(of: id), items[i].generation == generation else { return }
         mutate(&items[i])
+        notifyQueueCompletionIfNeeded()
+    }
+
+    private func notifyQueueCompletionIfNeeded() {
+        guard let completionNotifier else { return }
+        let openItems = items.filter { Self.isOpen($0.stage) }
+        guard openItems.isEmpty else { return }
+        let terminalItems = items.filter { !Self.isOpen($0.stage) && !notifiedTerminalIDs.contains($0.id) }
+        guard !terminalItems.isEmpty else { return }
+
+        notifiedTerminalIDs.formUnion(terminalItems.map(\.id))
+        let completedItems = terminalItems.filter {
+            if case .done = $0.stage { return true }
+            return false
+        }
+        guard !completedItems.isEmpty else { return }
+
+        let failedCount = terminalItems.filter {
+            if case .failed = $0.stage { return true }
+            return false
+        }.count
+        let cancelledCount = terminalItems.filter { $0.stage == .cancelled }.count
+        completionNotifier.queueDidComplete(QueueCompletionNotification(
+            completedCount: completedItems.count,
+            partialFailureCount: completedItems.filter(\.partialFailure).count,
+            failedCount: failedCount,
+            cancelledCount: cancelledCount,
+            titles: completedItems.map(\.title)
+        ))
     }
 
     private func isCancellation(_ error: Error) -> Bool {
         if case MoongateError.cancelled = error { return true }
         return error is CancellationError
+    }
+
+    private func prepareLocalASRSourceSubtitleIfNeeded(
+        files: [URL],
+        request: DownloadRequest,
+        id: UUID,
+        generation: Int,
+        control: TaskControlToken
+    ) async throws -> [URL] {
+        guard let languageCode = Self.localASRLanguageCode(in: request) else {
+            return files
+        }
+        if let existing = Self.existingLocalASRSubtitle(in: files, languageCode: languageCode) {
+            var nextFiles = files
+            if !nextFiles.contains(existing) { nextFiles.append(existing) }
+            return nextFiles
+        }
+        guard let localASRGenerator,
+              let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
+            return files
+        }
+        update(id, generation: generation) {
+            $0.stage = .downloading
+            $0.clearProgress()
+            $0.statusText = nil
+            $0.isPostDownloadProcessing = true
+            $0.postDownloadProcessingKind = .generic
+            self.applyProgress(&$0, id: id, generation: generation, phase: .audioExtract, phaseProgress: nil)
+        }
+        let sourceSRT = try await localASRGenerator.generateSourceSubtitle(
+            videoFile: videoFile,
+            languageCode: languageCode,
+            control: control
+        ) { [weak self] progress in
+            Task { @MainActor in
+                guard let self, self.item(id)?.generation == generation else { return }
+                self.applyASRProgress(id: id, generation: generation, progress)
+            }
+        }
+        guard item(id)?.generation == generation else { return files }
+        completeProgressPhase(id, generation: generation, phase: .audioExtract)
+        completeProgressPhase(id, generation: generation, phase: .speechRecognition)
+        completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
+        var nextFiles = files
+        if !nextFiles.contains(sourceSRT) { nextFiles.append(sourceSRT) }
+        update(id, generation: generation) {
+            $0.resultFiles = nextFiles
+            $0.clearProgress()
+            $0.statusText = CoreL10n.t(L.Queue.localASRGeneratedSubtitleReady)
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+        }
+        return nextFiles
+    }
+
+    private func applyASRProgress(id: UUID, generation: Int, _ progress: ASRProgress) {
+        update(id, generation: generation) {
+            guard $0.stage == .downloading else { return }
+            self.applyProgress(
+                &$0,
+                id: id,
+                generation: generation,
+                phase: Self.queuePhase(for: progress.phase),
+                phaseProgress: progress.fraction
+            )
+        }
+    }
+
+    private static func queuePhase(for phase: ASRProgress.Phase) -> QueueProgressPhase {
+        switch phase {
+        case .modelDownload: return .modelDownload
+        case .audioExtract: return .audioExtract
+        case .speechRecognition: return .speechRecognition
+        case .subtitleSegment: return .subtitleSegment
+        }
+    }
+
+    private static func localASRLanguageCode(in request: DownloadRequest) -> String? {
+        if request.primarySubtitleTrack?.sourceKind == .localASR {
+            return request.primarySubtitleTrack?.languageCode
+        }
+        return request.requestedSubtitleTracks
+            .first(where: { $0.sourceKind == .localASR })?
+            .languageCode
+    }
+
+    private static func existingLocalASRSubtitle(in files: [URL], languageCode: String) -> URL? {
+        let normalized = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        return files.first { file in
+            isLocalASRSubtitle(file.lastPathComponent) && langCode(ofSubtitle: file) == normalized
+        }
     }
 
     private static func shortReason(of error: Error) -> String {
@@ -1075,19 +1437,37 @@ final class QueueManager: ObservableObject {
         return String(stem[stem.index(after: dotIndex)...]).lowercased()
     }
 
-    /// 按勾选语言挑翻译源字幕（与 ViewModel 旧逻辑一致）：大小写不敏感、允许前缀匹配。
-    /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文字幕，避免把上次译文当源二次翻译。
-    private static func pickSourceSubtitle(from files: [URL], preferredLang: String?) -> URL? {
+    private static func langCode(ofSubtitle file: URL) -> String? {
+        langCode(of: file)
+    }
+
+    /// 按主字幕来源挑翻译源字幕：大小写不敏感、允许前缀匹配。
+    /// preferredTrack 命中时先按来源类型筛选，同语言 local ASR 和平台字幕不再互相抢源；
+    /// 没有主来源时回退第一个非译文字幕，避免把上次译文当源二次翻译。
+    private static func pickSourceSubtitle(
+        from files: [URL],
+        preferredLang: String?,
+        preferredTrack: SubtitleChoice? = nil
+    ) -> URL? {
         let subtitleFiles = files
             .filter { ["srt", "vtt"].contains($0.pathExtension.lowercased()) }
             .sorted { subtitleSourceRank($0) < subtitleSourceRank($1) }
-        if let lang = preferredLang?.lowercased(), !lang.isEmpty,
-           let matched = subtitleFiles.first(where: { file in
-               guard let code = langCode(of: file) else { return false }
-               return code == lang || code.hasPrefix(lang + "-") || lang.hasPrefix(code + "-")
-           }) {
-            return matched
+        if let lang = preferredLang?.lowercased(), !lang.isEmpty {
+            let matches = subtitleFiles.filter { file in
+                guard let code = langCode(of: file) else { return false }
+                return code == lang || code.hasPrefix(lang + "-") || lang.hasPrefix(code + "-")
+            }
+            if preferredTrack?.sourceKind == .localASR,
+               let matched = matches.first(where: { isLocalASRSubtitle($0.lastPathComponent) }) {
+                return matched
+            }
+            if let preferredTrack, preferredTrack.sourceKind != .localASR,
+               let matched = matches.first(where: { !isLocalASRSubtitle($0.lastPathComponent) }) {
+                return matched
+            }
+            if let matched = matches.first {
+                return matched
+            }
         }
         let nonTranslated = subtitleFiles.filter { file in
             !TranslationLanguage.isTranslatedSubtitleFileName(file.lastPathComponent)
@@ -1096,11 +1476,16 @@ final class QueueManager: ObservableObject {
     }
 
     private static func subtitleSourceRank(_ file: URL) -> Int {
+        if isLocalASRSubtitle(file.lastPathComponent) { return -1 }
         switch file.pathExtension.lowercased() {
         case "vtt": return 0
         case "srt": return 1
         default: return 2
         }
+    }
+
+    private static func isLocalASRSubtitle(_ fileName: String) -> Bool {
+        fileName.lowercased().contains(".local-asr.")
     }
 
     private static func ensureSRTSubtitle(_ file: URL) throws -> URL {

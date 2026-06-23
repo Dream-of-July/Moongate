@@ -15,9 +15,23 @@
     <!-- 首啟引導 -->
     <sys:String x:Key="L.Onboarding.Title">歡迎使用月之門</sys:String>
     <sys:String x:Key="L.Onboarding.Subtitle">先選好介面和譯文語言。AI 設定可以之後再做，也可以只把它當作影片下載器使用。</sys:String>
+    <sys:String x:Key="L.Onboarding.LanguageStep">語言</sys:String>
+    <sys:String x:Key="L.Onboarding.SubtitleSourceStep">字幕來源</sys:String>
+    <sys:String x:Key="L.Onboarding.TranslationMethodStep">翻譯方式</sys:String>
+    <sys:String x:Key="L.Onboarding.ReadinessStep">準備狀態</sys:String>
     <sys:String x:Key="L.Onboarding.AppLanguage">介面語言</sys:String>
     <sys:String x:Key="L.Onboarding.TargetLanguage">翻譯目標語言</sys:String>
+    <sys:String x:Key="L.Onboarding.PlatformSubtitlePreference">有人工字幕或平台自動字幕時，Moongate 會優先使用這些現成字幕。</sys:String>
+    <sys:String x:Key="L.Onboarding.PreferLocalSpeechRecognition">之後可能用本機語音識別再跑一次</sys:String>
+    <sys:String x:Key="L.Onboarding.LocalSpeechSetupLater">本機 whisper.cpp 會重新識別音訊，速度更慢，但部分語言/專名可能更好；runtime 和模型仍需之後明確設定。</sys:String>
+    <sys:String x:Key="L.Onboarding.TranslationProvider">翻譯服務類型</sys:String>
     <sys:String x:Key="L.Onboarding.AIOptional">不填寫 API 也可以繼續下載影片；需要字幕翻譯或摘要時再到設定配置。</sys:String>
+    <sys:String x:Key="L.Onboarding.APILaterSummary">之後再設定 API 相容服務</sys:String>
+    <sys:String x:Key="L.Onboarding.ReadinessSummary">準備狀態摘要</sys:String>
+    <sys:String x:Key="L.Onboarding.LocalSpeechSummary">已允許本機語音識別，仍需之後設定模型</sys:String>
+    <sys:String x:Key="L.Onboarding.PlatformSubtitleSummary">優先使用平台字幕</sys:String>
+    <sys:String x:Key="L.Onboarding.Back">上一步</sys:String>
+    <sys:String x:Key="L.Onboarding.Next">下一步</sys:String>
     <sys:String x:Key="L.Onboarding.Start">開始使用</sys:String>
 
     <!-- 主視窗 -->
@@ -41,22 +55,28 @@
     <sys:String x:Key="L.Ready.BackToList">‹ 返回列表</sys:String>
     <sys:String x:Key="L.Ready.FormatSection">格式</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">字幕</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleSourceSection">字幕來源</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleOutputSection">字幕輸出</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">這個影片沒有字幕</sys:String>
+    <sys:String x:Key="L.Ready.NoSubtitleSource">不需要字幕</sys:String>
     <sys:String x:Key="L.Ready.AutoTag">自動產生</sys:String>
+    <sys:String x:Key="L.Ready.LocalASR">本地識別</sys:String>
+    <sys:String x:Key="L.Ready.LocalASRHint">重新識別音訊，速度更慢，但部分語言／專名可能更好</sys:String>
+    <sys:String x:Key="L.Ready.LocalASRAutoDetect">自動偵測音訊語言</sys:String>
     <sys:String x:Key="L.Ready.ProcessSection">字幕處理</sys:String>
     <sys:String x:Key="L.Mode.Off">不需要</sys:String>
     <sys:String x:Key="L.Mode.SrtOnly">只產生譯文字幕檔</sys:String>
     <sys:String x:Key="L.Mode.BurnIn">翻譯並燒錄進影片</sys:String>
     <sys:String x:Key="L.Mode.BurnOriginal">直接燒錄字幕（不翻譯）</sys:String>
     <sys:String x:Key="L.Ready.NotConfigured">未設定翻譯服務</sys:String>
-    <sys:String x:Key="L.Ready.GoSettings">前往設定</sys:String>
+    <sys:String x:Key="L.Ready.GoSettings">開啟設定</sys:String>
 
     <!-- AI 摘要 -->
     <sys:String x:Key="L.Summary.Section">AI 摘要</sys:String>
-    <sys:String x:Key="L.Summary.Button">✦ 摘要影片內容</sys:String>
+    <sys:String x:Key="L.Summary.Button">摘要影片內容</sys:String>
     <sys:String x:Key="L.Summary.Hint">下載前先用 AI 看一眼這是什麼影片。</sys:String>
     <sys:String x:Key="L.Summary.Running">正在理解影片內容…</sys:String>
-    <sys:String x:Key="L.Summary.Regenerate">↻ 重新摘要</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">重新摘要</sys:String>
     <sys:String x:Key="L.Summary.Unconfigured">摘要需要先在設定裡配置可用的 AI 服務：填寫服務位址、模型和憑證。</sys:String>
 
     <!-- 輸出選項 -->
@@ -89,6 +109,9 @@
     <sys:String x:Key="L.Notice.BatchDupFmt">{0} 個已在佇列</sys:String>
     <sys:String x:Key="L.Notice.BatchFailedFmt">{0} 個解析失敗：{1}</sys:String>
     <sys:String x:Key="L.Notice.BatchFailedEtc"> 等</sys:String>
+    <sys:String x:Key="L.Notice.DownloadCompletedTitleFmt">下載完成：{0}</sys:String>
+    <sys:String x:Key="L.Notice.DownloadCompletedCountFmt">{0} 個下載已完成</sys:String>
+    <sys:String x:Key="L.Notice.DownloadPartialFmt">{0} 個任務需要重試字幕處理</sys:String>
     <sys:String x:Key="L.Notice.JoinSep">；</sys:String>
     <sys:String x:Key="L.Notice.ListSep">、</sys:String>
 
@@ -106,6 +129,7 @@
     <sys:String x:Key="L.Row.Resume">繼續</sys:String>
     <sys:String x:Key="L.Row.Cancel">取消</sys:String>
     <sys:String x:Key="L.Row.RetrySubtitle">重試字幕處理</sys:String>
+    <sys:String x:Key="L.Row.RetryWithLocalASR">本地識別重跑</sys:String>
     <sys:String x:Key="L.Row.Retry">重試</sys:String>
     <sys:String x:Key="L.Row.Reveal">開啟資料夾</sys:String>
     <sys:String x:Key="L.Row.RevealTooltip">開啟所在資料夾</sys:String>
@@ -117,6 +141,12 @@
     <sys:String x:Key="L.Status.Transcoding">轉碼中…</sys:String>
     <sys:String x:Key="L.Status.DownloadingFmt">下載中 {0}%</sys:String>
     <sys:String x:Key="L.Status.Downloading">下載中…</sys:String>
+    <sys:String x:Key="L.Status.AudioExtractingFmt">提取音訊中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.AudioExtracting">提取音訊中…</sys:String>
+    <sys:String x:Key="L.Status.SpeechRecognizingFmt">本機識別音訊中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.SpeechRecognizing">本機識別音訊中…</sys:String>
+    <sys:String x:Key="L.Status.SubtitleSegmentingFmt">整理字幕分段中 {0}%</sys:String>
+    <sys:String x:Key="L.Status.SubtitleSegmenting">整理字幕分段中…</sys:String>
     <sys:String x:Key="L.Status.TranslatingFmt">翻譯字幕中 {0}%</sys:String>
     <sys:String x:Key="L.Status.Translating">翻譯字幕中…</sys:String>
     <sys:String x:Key="L.Status.BurningFmt">燒錄中 {0}%</sys:String>
@@ -127,7 +157,7 @@
     <sys:String x:Key="L.Status.Unknown">未知錯誤</sys:String>
     <sys:String x:Key="L.Status.RemainingExact">剩 {0}</sys:String>
     <sys:String x:Key="L.Status.RemainingApprox">剩約 {0}</sys:String>
-    <sys:String x:Key="L.Status.RemainingEstimating">正在估算…</sys:String>
+    <sys:String x:Key="L.Status.RemainingEstimating">正在估算時間</sys:String>
     <sys:String x:Key="L.Status.RemainingLessThanMinute">不到 1 分鐘</sys:String>
     <sys:String x:Key="L.Status.RemainingMinutes">{0} 分鐘</sys:String>
     <sys:String x:Key="L.Status.RemainingHoursMinutes">{0} 小時 {1} 分鐘</sys:String>
@@ -140,11 +170,37 @@
 
     <!-- 設定窗 -->
     <sys:String x:Key="L.Settings.Title">設定</sys:String>
+    <sys:String x:Key="L.SettingsNav.General">一般</sys:String>
+    <sys:String x:Key="L.SettingsNav.SubtitlesTranslation">字幕與翻譯</sys:String>
+    <sys:String x:Key="L.SettingsNav.LocalSpeech">本機語音識別</sys:String>
+    <sys:String x:Key="L.SettingsNav.AI">AI 服務</sys:String>
+    <sys:String x:Key="L.SettingsNav.VideoOutput">影片與輸出</sys:String>
+    <sys:String x:Key="L.SettingsNav.SiteLogin">站點登入</sys:String>
+    <sys:String x:Key="L.SettingsNav.ComponentsStorage">元件與儲存</sys:String>
+    <sys:String x:Key="L.SettingsNav.UpdatesAbout">更新與關於</sys:String>
     <sys:String x:Key="L.Settings.General">一般</sys:String>
     <sys:String x:Key="L.Settings.Language">介面語言</sys:String>
     <sys:String x:Key="L.Settings.TargetLanguage">翻譯目標語言</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">跟隨系統</sys:String>
     <sys:String x:Key="L.Settings.LangHint">切換語言會立即生效；進行中任務的狀態文案會在下次重新整理時切換。</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRSection">本機語音識別</sys:String>
+    <sys:String x:Key="L.Settings.LocalASREnabled">允許呼叫本機 whisper.cpp 識別</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRHelp">重新識別音訊，速度更慢，但部分語言/專名可能更好。Moongate 不會自動下載模型。</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimePath">whisper.cpp 可執行檔</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRFindRuntime">查找 whisper-cli</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimeFound">已找到 whisper-cli：{0}</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRuntimeNotFound">未找到 whisper-cli。請安裝 whisper.cpp，或手動填寫可執行檔路徑。</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelPath">模型檔案</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelID">模型 ID</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRRecommendedModels">推薦 whisper.cpp 模型</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSizeMemory">體積 / 記憶體</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSourceLicense">來源 / 授權</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelSHA256">SHA-256</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelStatus">狀態</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRDownloadModel">下載模型</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRInstallingModel">正在下載並校驗模型</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelInstallComplete">{0} 已可使用</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRDeleteModel">刪除模型</sys:String>
     <sys:String x:Key="L.Settings.AIService">AI 服務</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">預設 AI 服務會被翻譯和摘要共用；需要不同模型時可在下方單獨覆寫。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻譯服務</sys:String>
@@ -185,12 +241,16 @@
     <sys:String x:Key="L.Settings.EncodeBackendHint">自動會優先使用 NVENC / QSV / AMF；遇到相容性問題時，實際耗時可能比預期更長。</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264">始終輸出 H.264</sys:String>
     <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">開啟後相容性最好；關閉則盡量跟隨來源影片編碼，例如 HEVC 源繼續輸出 HEVC。</sys:String>
-    <sys:String x:Key="L.Settings.Limit1080">高清影片燒錄時縮放到 1080p（更快更省空間，推薦）</sys:String>
+    <sys:String x:Key="L.Settings.Limit1080">高清影片燒錄時縮放到 1080p（更快更省空間）</sys:String>
     <sys:String x:Key="L.Settings.Limit1080Hint">關閉則按來源解析度燒錄（4K 會明顯更慢、檔案更大）。此設定只影響燒錄字幕，不影響普通下載。</sys:String>
     <sys:String x:Key="L.Settings.Performance">效能</sys:String>
     <sys:String x:Key="L.Settings.MaxDownloads">同時下載數</sys:String>
     <sys:String x:Key="L.Settings.MaxBurns">同時壓制數</sys:String>
     <sys:String x:Key="L.Settings.PerfHint">超出上限的任務顯示「佇列中」並自動等待；暫停一個任務會把空位讓給下一個。遇到相容性問題時，實際耗時可能比預期更長。調整立即生效。</sys:String>
+    <sys:String x:Key="L.Settings.Notifications">完成提醒</sys:String>
+    <sys:String x:Key="L.Settings.CompletionNotifications">佇列完成時顯示完成提示</sys:String>
+    <sys:String x:Key="L.Settings.CompletionSound">佇列完成時播放提示音</sys:String>
+    <sys:String x:Key="L.Settings.NotificationsHelp">App 在前景時優先顯示應用程式內狀態；批次完成會合併成一則提醒。</sys:String>
     <sys:String x:Key="L.Settings.SiteLogin">站點登入</sys:String>
     <sys:String x:Key="L.Settings.LoginYouTube">登入 YouTube</sys:String>
     <sys:String x:Key="L.Settings.LoginBilibili">登入嗶哩嗶哩</sys:String>
@@ -214,6 +274,26 @@
     <sys:String x:Key="L.Settings.DepCorrupt">損壞</sys:String>
     <sys:String x:Key="L.Settings.DepNoCapability">缺能力</sys:String>
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp：{0} · ffmpeg：{1} · deno：{2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageSection">儲存</sys:String>
+    <sys:String x:Key="L.Settings.StorageStatusFmt">應用程式資料：{0}&#x0a;本機 ASR 模型：{1}&#x0a;內建元件：{2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageUsed">已用空間</sys:String>
+    <sys:String x:Key="L.Settings.StorageSupportData">應用程式資料</sys:String>
+    <sys:String x:Key="L.Settings.StorageASRModels">本機語音模型</sys:String>
+    <sys:String x:Key="L.Settings.StorageComponents">依賴元件</sys:String>
+    <sys:String x:Key="L.Settings.StorageUpdateCache">更新快取</sys:String>
+    <sys:String x:Key="L.Settings.StorageCalculating">計算中…</sys:String>
+    <sys:String x:Key="L.Settings.StorageOpenFolder">開啟所在資料夾</sys:String>
+    <sys:String x:Key="L.Settings.StorageDelete">刪除</sys:String>
+    <sys:String x:Key="L.Settings.StorageClear">清理</sys:String>
+    <sys:String x:Key="L.Settings.StorageRefresh">重新整理</sys:String>
+    <sys:String x:Key="L.Settings.StorageManageHint">這裡只清理應用程式自身產生的資料。下載的影片保存在系統下載資料夾，請到那裡管理。</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsConfirm">刪除全部本機語音模型？</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsDetail">刪除後需要重新下載模型才能使用本機語音辨識。</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheConfirm">清理更新快取？</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheDetail">刪除殘留的更新安裝包暫存檔，不影響已安裝的應用程式。</sys:String>
+    <sys:String x:Key="L.Settings.AboutSection">關於</sys:String>
+    <sys:String x:Key="L.Settings.AboutAppName">月之門</sys:String>
+    <sys:String x:Key="L.Settings.AboutSource">原始碼與發布：GitHub 上的 Dream-of-July/moongate。</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">設定儲存失敗：{0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">確定要清除所有登入嗎？</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsDetail">清除後需要重新登入才能下載會員/受限影片。</sys:String>
@@ -231,6 +311,7 @@
     <sys:String x:Key="L.Update.FoundPrefix">發現新版本 </sys:String>
     <sys:String x:Key="L.Update.DownloadInstall">下載並更新</sys:String>
     <sys:String x:Key="L.Update.OpenReleases">開啟發布頁</sys:String>
+    <sys:String x:Key="L.Update.AvailableBadge">有可用更新</sys:String>
     <sys:String x:Key="L.Update.Downloading">正在下載更新… </sys:String>
     <sys:String x:Key="L.Update.Installing">正在啟動安裝程式，應用程式將退出以完成更新…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">更新包位址不可信，已阻止。請到 GitHub 手動下載。</sys:String>

@@ -4,18 +4,18 @@
         Width="440" SizeToContent="Height"
         ResizeMode="NoResize" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource WindowBrush}"
-        Foreground="{StaticResource PrimaryTextBrush}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource PrimaryTextBrush}"
         FontSize="13"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     <StackPanel Margin="20,18">
         <TextBlock x:Name="CaptionText" TextWrapping="Wrap"/>
         <ProgressBar x:Name="Bar" Height="4" Margin="0,14,0,0" IsIndeterminate="True"
-                     Foreground="{StaticResource AccentBrush}"/>
+                     Foreground="{DynamicResource AccentBrush}"/>
         <TextBlock x:Name="StatusText" Margin="0,10,0,0" Style="{StaticResource Caption}"/>
         <TextBlock x:Name="ErrorText" FontSize="11.5" Margin="0,8,0,0"
-                   Foreground="{StaticResource ErrorBrush}" TextWrapping="Wrap"
+                   Foreground="{DynamicResource ErrorBrush}" TextWrapping="Wrap"
                    Visibility="Collapsed"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
             <Button x:Name="CancelButton" Content="{DynamicResource L.Dep.Cancel}" Style="{StaticResource SecondaryButton}"

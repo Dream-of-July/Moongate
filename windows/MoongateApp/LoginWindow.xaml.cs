@@ -19,6 +19,7 @@ public partial class LoginWindow : Window
     {
         _site = site;
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         HeadlineText.Text = Loc.F("L.Login.HeadlineFmt", SiteDisplayName(site));
         Loaded += OnLoadedAsync;
     }

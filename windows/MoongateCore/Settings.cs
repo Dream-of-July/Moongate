@@ -102,10 +102,10 @@ public sealed record AppSettings
     /// <summary>烧录字幕样式。</summary>
     public SubtitleStyle SubtitleStyle { get; init; } = SubtitleStyle.Bilingual;
     /// <summary>
-    /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小，避开 4K60 的 H.264 上限）。
-    /// null = 保持源分辨率。默认 1080。
+    /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小）。
+    /// null = 保持源分辨率。默认保持源分辨率，避免 4K 选择被静默压到 1080。
     /// </summary>
-    public int? MaxBurnHeight { get; init; } = 1080;
+    public int? MaxBurnHeight { get; init; }
     /// <summary>同时进行的下载任务数（1...5，默认 3）。</summary>
     public int MaxConcurrentDownloads { get; init; } = 3;
     /// <summary>同时进行的压制（烧录）任务数（1...3，默认 2）。兼容路径并行多了会互相拖慢。</summary>
@@ -122,6 +122,18 @@ public sealed record AppSettings
     public bool OnboardingCompleted { get; init; }
     /// <summary>开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。</summary>
     public bool SmartTranslationPromptsEnabled { get; init; }
+    /// <summary>是否允许下载流水线调用本地 whisper.cpp。默认关闭；不静默下载模型。</summary>
+    public bool LocalAsrEnabled { get; init; }
+    /// <summary>whisper.cpp 可执行文件路径（例如 whisper-cli.exe）。</summary>
+    public string LocalAsrRuntimePath { get; init; } = "";
+    /// <summary>本地 ASR 模型文件路径（ggml*.bin）。</summary>
+    public string LocalAsrModelPath { get; init; } = "";
+    /// <summary>用户选择/安装的模型标识，用于缓存与 UI 展示。</summary>
+    public string LocalAsrModelId { get; init; } = "";
+    /// <summary>队列完成时是否允许发完成提醒。默认开；前台 App 仍优先使用应用内状态。</summary>
+    public bool CompletionNotificationsEnabled { get; init; } = true;
+    /// <summary>队列完成时是否播放提示音。默认开，满足长任务完成后的可感知提醒。</summary>
+    public bool CompletionSoundEnabled { get; init; } = true;
     /// <summary>
     /// 是否接收测试版（预发布）更新。当前项目发布全部标记为 prerelease，默认 true 以免老用户收不到更新；
     /// 待首个正式版发布后应把默认改为 false，让稳定通道只收正式版。详见 UpdateChecker 的通道过滤。
@@ -141,6 +153,8 @@ public sealed record AppSettings
     public string? LastSubtitleMode { get; init; }
     /// <summary>上次选择的字幕语言 id 列表。</summary>
     public IReadOnlyList<string> LastSubtitleLangs { get; init; } = [];
+    /// <summary>上次选择的主字幕来源 stable id；旧设置缺省为 null。</summary>
+    public string? LastPrimarySubtitleTrackId { get; init; }
     /// <summary>上次输出格式的 rawValue（original/mp4H264/mp4H265/mkv）；null 表示无记录。</summary>
     public string? LastOutputFormat { get; init; }
     /// <summary>上次是否偏好 HDR。</summary>
@@ -324,9 +338,8 @@ public sealed record AppSettings
             "chineseOnly" => SubtitleStyle.ChineseOnly,
             _ => SubtitleStyle.Bilingual,
         };
-        // 旧版 settings.json 没有 maxBurnHeight 键：缺失时按默认 1080 处理，而非「保持源分辨率」；
-        // 显式 null 才表示保持源分辨率。
-        int? maxBurnHeight = 1080;
+        // 旧版 settings.json 没有 maxBurnHeight 键：缺失时保持源分辨率，避免 4K 选择被静默压到 1080。
+        int? maxBurnHeight = null;
         if (root.TryGetProperty("maxBurnHeight", out var heightValue))
         {
             maxBurnHeight = heightValue.ValueKind == JsonValueKind.Number && heightValue.TryGetInt32(out var h)
@@ -354,6 +367,15 @@ public sealed record AppSettings
             && obc.ValueKind == JsonValueKind.True;
         var smartTranslationPromptsEnabled = root.TryGetProperty("smartTranslationPromptsEnabled", out var stp)
             && stp.ValueKind == JsonValueKind.True;
+        var localAsrEnabled = root.TryGetProperty("localASREnabled", out var lasre)
+            && lasre.ValueKind == JsonValueKind.True;
+        var localAsrRuntimePath = SingleLineField(StringField(root, "localASRRuntimePath") ?? "");
+        var localAsrModelPath = SingleLineField(StringField(root, "localASRModelPath") ?? "");
+        var localAsrModelId = SingleLineField(StringField(root, "localASRModelID") ?? "");
+        var completionNotificationsEnabled = !root.TryGetProperty("completionNotificationsEnabled", out var cne)
+            || cne.ValueKind != JsonValueKind.False;
+        var completionSoundEnabled = !root.TryGetProperty("completionSoundEnabled", out var cse)
+            || cse.ValueKind != JsonValueKind.False;
         // 接收测试版更新：缺键默认 true（当前发布全是 prerelease）；仅显式 false 关闭。
         var receiveBetaUpdates = !root.TryGetProperty("receiveBetaUpdates", out var rbu)
             || rbu.ValueKind != JsonValueKind.False;
@@ -364,6 +386,7 @@ public sealed record AppSettings
 
         // 上次下载选项（PARITY-002）。
         var lastSubtitleMode = StringField(root, "lastSubtitleMode");
+        var lastPrimarySubtitleTrackId = SingleLineField(StringField(root, "lastPrimarySubtitleTrackID") ?? "");
         var lastOutputFormat = StringField(root, "lastOutputFormat");
         var lastPreferHdr = root.TryGetProperty("lastPreferHDR", out var lph)
             && lph.ValueKind == JsonValueKind.True;
@@ -409,11 +432,18 @@ public sealed record AppSettings
             TranslationTargetLanguage = translationTargetLanguage,
             OnboardingCompleted = onboardingCompleted,
             SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
+            LocalAsrEnabled = localAsrEnabled,
+            LocalAsrRuntimePath = localAsrRuntimePath,
+            LocalAsrModelPath = localAsrModelPath,
+            LocalAsrModelId = localAsrModelId,
+            CompletionNotificationsEnabled = completionNotificationsEnabled,
+            CompletionSoundEnabled = completionSoundEnabled,
             ReceiveBetaUpdates = receiveBetaUpdates,
             VideoProxyUrl = videoProxyUrl,
             IgnoreVideoCertificateErrors = ignoreVideoCertificateErrors,
             LastSubtitleMode = lastSubtitleMode,
             LastSubtitleLangs = lastSubtitleLangs,
+            LastPrimarySubtitleTrackId = lastPrimarySubtitleTrackId.Length == 0 ? null : lastPrimarySubtitleTrackId,
             LastOutputFormat = lastOutputFormat,
             LastPreferHdr = lastPreferHdr,
         };
@@ -449,11 +479,20 @@ public sealed record AppSettings
             ["translationTargetLanguage"] = TranslationTargetLanguage,
             ["onboardingCompleted"] = OnboardingCompleted,
             ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
+            ["localASREnabled"] = LocalAsrEnabled,
+            ["localASRRuntimePath"] = SingleLineField(LocalAsrRuntimePath),
+            ["localASRModelPath"] = SingleLineField(LocalAsrModelPath),
+            ["localASRModelID"] = SingleLineField(LocalAsrModelId),
+            ["completionNotificationsEnabled"] = CompletionNotificationsEnabled,
+            ["completionSoundEnabled"] = CompletionSoundEnabled,
             ["receiveBetaUpdates"] = ReceiveBetaUpdates,
             ["videoProxyURL"] = NormalizeVideoProxyUrl(VideoProxyUrl),
             ["ignoreVideoCertificateErrors"] = IgnoreVideoCertificateErrors,
             ["lastSubtitleMode"] = LastSubtitleMode,
             ["lastSubtitleLangs"] = LastSubtitleLangs,
+            ["lastPrimarySubtitleTrackID"] = LastPrimarySubtitleTrackId is { Length: > 0 }
+                ? SingleLineField(LastPrimarySubtitleTrackId)
+                : null,
             ["lastOutputFormat"] = LastOutputFormat,
             ["lastPreferHDR"] = LastPreferHdr,
         };

@@ -134,6 +134,20 @@ public enum PostDownloadProcessingKind
     Transcoding,
 }
 
+public sealed record QueueCompletionNotification
+{
+    public required int CompletedCount { get; init; }
+    public required int PartialFailureCount { get; init; }
+    public required int FailedCount { get; init; }
+    public required int CancelledCount { get; init; }
+    public required IReadOnlyList<string> Titles { get; init; }
+}
+
+public interface IQueueCompletionNotifier
+{
+    void QueueDidComplete(QueueCompletionNotification notification);
+}
+
 /// <summary>
 /// 下载队列。每个 QueueItem 是一条「下载 →[翻译]→[烧录]」完整流水线，
 /// 持有独立的 TaskControlToken，可随时独立暂停 / 恢复 / 取消，并发执行互不阻塞；
@@ -150,7 +164,7 @@ public sealed class QueueManager
         public required string Title { get; init; }
         public string? ThumbnailUrl { get; init; }
         public required VideoInfo Info { get; init; }
-        public required DownloadRequest Request { get; init; }
+        public DownloadRequest Request { get; internal set; } = null!;
         public required ChineseSubtitleMode ChineseMode { get; init; }
         /// <summary>本项使用的设置快照（字幕样式、烧录画质、翻译凭证）。</summary>
         public required AppSettings Settings { get; init; }
@@ -164,7 +178,8 @@ public sealed class QueueManager
         public bool RemainingIsApproximate { get; internal set; }
         public bool IsEstimatingRemaining { get; internal set; }
         public QueueProgressPhase? ProgressPhase { get; internal set; }
-        public required QueueProgressPlan ProgressPlan { get; init; }
+        public QueueProgressPlan ProgressPlan { get; internal set; } = null!;
+        public TaskWorkPlan WorkPlan { get; internal set; } = null!;
         /// <summary>暂停 / 部分成功 / 失败原因等附加说明。</summary>
         public string? StatusText { get; internal set; }
         /// <summary>已落盘的产物（下载文件、译文、烧录视频）。</summary>
@@ -185,6 +200,11 @@ public sealed class QueueManager
         public int Generation { get; internal set; }
         internal CancellationTokenSource Cts { get; set; } = new();
         internal Task? RunTask { get; set; }
+
+        public bool CanRetryWithLocalAsr =>
+            ChineseMode != ChineseSubtitleMode.Off
+            && LocalAsrRetryRequest(Request) is not null
+            && ResultFiles.Any(file => VideoExtensions.Contains(ExtensionOf(file)));
 
         internal void ClearProgress(bool resetOverall = false)
         {
@@ -209,6 +229,9 @@ public sealed class QueueManager
     private readonly IDownloadEngine _engine;
     private readonly Func<AppSettings, ISubtitleTranslator> _translatorFactory;
     private readonly Func<ISubtitleBurner> _burnerFactory;
+    private ILocalAsrSubtitleGenerator? _localAsrGenerator;
+    private readonly IQueueCompletionNotifier? _completionNotifier;
+    private readonly HashSet<Guid> _notifiedTerminalIds = [];
 
     /// <summary>列表增删时触发（任意线程）。</summary>
     public event Action? ItemsChanged;
@@ -273,11 +296,15 @@ public sealed class QueueManager
         IDownloadEngine engine,
         Func<AppSettings, ISubtitleTranslator>? translatorFactory = null,
         Func<ISubtitleBurner>? burnerFactory = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        ILocalAsrSubtitleGenerator? localAsrGenerator = null,
+        IQueueCompletionNotifier? completionNotifier = null)
     {
         _engine = engine;
         _translatorFactory = translatorFactory ?? (s => new ConfiguredTranslator(s));
         _burnerFactory = burnerFactory ?? (() => new FFmpegBurner());
+        _localAsrGenerator = localAsrGenerator;
+        _completionNotifier = completionNotifier;
         var loaded = settings ?? AppSettings.Load();
         _maxConcurrentDownloads = loaded.MaxConcurrentDownloads;
         _maxConcurrentBurns = loaded.MaxConcurrentBurns;
@@ -285,6 +312,23 @@ public sealed class QueueManager
         _downloadPool = new StageSlotPool(() => MaxConcurrentDownloads);
         _burnPool = new StageSlotPool(() => { lock (_lock) return _effectiveBurnCapacity; });
         _translatePool = new StageSlotPool(() => 2);
+    }
+
+    public bool HasLocalAsrGenerator => _localAsrGenerator is not null;
+
+    public void SyncLocalAsrGenerator(ILocalAsrSubtitleGenerator? generator)
+    {
+        _localAsrGenerator = generator;
+    }
+
+    public bool CanRetryWithLocalAsr(Guid id)
+    {
+        if (_localAsrGenerator is null) return false;
+        lock (_lock)
+        {
+            var item = _items.FirstOrDefault(i => i.Id == id);
+            return item?.CanRetryWithLocalAsr ?? false;
+        }
     }
 
     /// <summary>设置保存后同步并发上限（setter 会唤醒排队者）。</summary>
@@ -417,10 +461,14 @@ public sealed class QueueManager
                         IsEstimatingRemaining: item.IsEstimatingRemaining,
                         IsTerminal: terminal,
                         Plan: item.ProgressPlan,
-                        CurrentPhase: item.ProgressPhase);
+                        CurrentPhase: item.ProgressPhase,
+                        WorkPlan: item.WorkPlan);
                 }).ToList(), PhaseMedianDurationsLocked(), new Dictionary<QueueProgressPhase, int>
                 {
                     [QueueProgressPhase.Download] = Math.Max(1, _maxConcurrentDownloads),
+                    [QueueProgressPhase.AudioExtract] = Math.Max(1, _maxConcurrentDownloads),
+                    [QueueProgressPhase.SpeechRecognition] = 1,
+                    [QueueProgressPhase.SubtitleSegment] = 2,
                     [QueueProgressPhase.Transcode] = Math.Max(1, _maxConcurrentDownloads),
                     [QueueProgressPhase.Translate] = 2,
                     [QueueProgressPhase.Burn] = Math.Max(1, _effectiveBurnCapacity),
@@ -447,6 +495,27 @@ public sealed class QueueManager
         shouldTranscode: Transcoder.NeedsProcessing(request.OutputFormat),
         shouldTranslate: mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn,
         shouldBurn: mode is ChineseSubtitleMode.BurnIn or ChineseSubtitleMode.BurnOriginal);
+
+    private static TaskWorkPlan WorkPlanFor(DownloadRequest request, ChineseSubtitleMode mode)
+    {
+        var needsLocalAsr = request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+        // Weights approximate real wall-clock so the bar tracks time (download/transcription/
+        // translation/burn are all multi-minute). Mirrors the Swift QueueManager.workPlan.
+        return new TaskWorkPlan(
+            shouldExtractAudio: needsLocalAsr,
+            shouldRunASR: needsLocalAsr,
+            shouldSegmentSubtitles: needsLocalAsr,
+            shouldTranscode: Transcoder.NeedsProcessing(request.OutputFormat),
+            shouldTranslate: mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn,
+            shouldBurn: mode is ChineseSubtitleMode.BurnIn or ChineseSubtitleMode.BurnOriginal,
+            downloadUnits: 2,
+            audioExtractUnits: 1,
+            speechRecognitionUnits: needsLocalAsr ? 6 : 1,
+            subtitleSegmentUnits: 1,
+            transcodeUnits: 2,
+            translateUnits: 6,
+            burnUnits: 4);
+    }
 
     // MARK: - 入队
 
@@ -483,6 +552,7 @@ public sealed class QueueManager
             ChineseMode = chineseMode,
             Settings = settings,
             ProgressPlan = ProgressPlanFor(request, chineseMode),
+            WorkPlan = WorkPlanFor(request, chineseMode),
         };
         lock (_lock) _items.Add(item);
         ItemsChanged?.Invoke();
@@ -513,7 +583,7 @@ public sealed class QueueManager
             Update(id, generation, item =>
             {
                 item.OverallProgress = QueueProgressEstimator.TaskOverallProgress(
-                    item.ProgressPlan,
+                    item.WorkPlan,
                     QueueProgressPhase.Download,
                     1,
                     item.OverallProgress);
@@ -646,10 +716,30 @@ public sealed class QueueManager
             return;
         }
 
+        try
+        {
+            downloadFiles = await PrepareLocalAsrSourceSubtitleIfNeededAsync(
+                downloadFiles,
+                current.Request,
+                id,
+                generation,
+                control,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            if (GenerationOf(id) != generation) return;
+            SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
+                L10n.T("语音识别", "語音識別", "speech recognition"));
+            return;
+        }
+
         // 找翻译源字幕；没有就完成并提示已跳过
-        var preferredLang = current.Request.SubtitleLangs.FirstOrDefault()
+        var primarySubtitleTrack = current.Request.PrimarySubtitleTrack;
+        var preferredLang = primarySubtitleTrack?.LanguageCode
+            ?? current.Request.SubtitleLangs.FirstOrDefault()
             ?? current.Request.AutoSubtitleLangs.FirstOrDefault();
-        var sourceSubtitle = PickSourceSubtitle(downloadFiles, preferredLang);
+        var sourceSubtitle = PickSourceSubtitle(downloadFiles, preferredLang, primarySubtitleTrack);
         if (sourceSubtitle is null)
         {
             FinishDone(id, generation, downloadFiles, mode == ChineseSubtitleMode.BurnOriginal
@@ -723,8 +813,9 @@ public sealed class QueueManager
 
         // 成熟的同语言软字幕：源字幕已与翻译目标语言同一脚本时直接使用，跳过 LLM 翻译。
         // 判定优先用 request 里记录的 lang，回退按所选文件名 ".<lang>.srt/.vtt" 解析。
+        var sourceLang = primarySubtitleTrack?.LanguageCode ?? LangCode(sourceSubtitle);
         var sourceMatchesTarget = TranslationLanguage.Matches(
-            preferredLang ?? LangCode(sourceSubtitle), settings.TranslationTargetLanguage);
+            sourceLang, settings.TranslationTargetLanguage);
         if (sourceMatchesTarget)
         {
             // srtOnly：原目标语言字幕即结果；若源是 VTT，先转成 SRT，保持模式语义。
@@ -929,17 +1020,16 @@ public sealed class QueueManager
 
     /// <summary>
     /// 由当前显示态 + yt-dlp 上报的百分比（0..1，null 表示无百分比）推导下一显示态（纯函数，便于测试）。
-    /// 如实显示当前下载百分比：yt-dlp 分流下载（DASH 视频流 0→100% 后再下音频流 0→100%），
-    /// 换流时百分比会回落——这是真实情况，照实显示（进度条始终在动），好过卡在 100% 或藏成转圈「处理中」。
-    /// 仅过滤 &lt; 0.5 个百分点的高频抖动（HLS 因总大小未知靠估算会小幅上下跳），减少刷新churn。
+    /// Engine 层会把 DASH 分流下载聚合成整体百分比；这里再做防御，避免任何迟到/回落的
+    /// 子进程百分比让用户可见进度倒退。仅过滤 &lt; 0.5 个百分点的高频抖动，减少刷新 churn。
     /// 合并阶段由 yt-dlp 的 [Merger] 行单独触发「处理中」（见 Processing 分支）。
     /// </summary>
     internal static DownloadProgressState NextDownloadProgressState(DownloadProgressState current, double? incoming)
     {
         incoming = NormalizeProgressFraction(incoming);
         if (incoming is not { } next) return current;                                    // 无百分比 → 不变
-        if (current.Progress is { } old && Math.Abs(next - old) < 0.005) return current; // 过滤 <0.5pt 抖动
-        return new DownloadProgressState(next, false);                                    // 如实显示当前百分比
+        if (current.Progress is { } old && (next <= old || Math.Abs(next - old) < 0.005)) return current;
+        return new DownloadProgressState(next, false);
     }
 
     /// <summary>
@@ -1008,7 +1098,7 @@ public sealed class QueueManager
         item.Progress = normalized;
         item.ProgressPhase = phase;
         item.OverallProgress = QueueProgressEstimator.TaskOverallProgress(
-            item.ProgressPlan,
+            item.WorkPlan,
             phase,
             normalized,
             item.OverallProgress);
@@ -1143,15 +1233,14 @@ public sealed class QueueManager
 
     // MARK: - 单项控制
 
-    public void Pause(Guid id)
+    public bool Pause(Guid id)
     {
-        TaskControlToken control;
         StageSlotPool? releasePool = null;
         lock (_lock)
         {
             var target = _items.FirstOrDefault(i => i.Id == id);
-            if (target is null || !IsOpen(target.Stage.Kind) || target.IsPaused) return;
-            control = target.Control;
+            if (target is null || !IsOpen(target.Stage.Kind) || target.IsPaused) return false;
+            if (!target.Control.Pause()) return false;
             // 让出占用的下载/压制槽位给其它任务；恢复时重新排队领取。
             // 翻译请求不是本地可挂起进程，暂停后仍可能有分块请求在飞行中，不能释放翻译并发位。
             if (_holdingPool.TryGetValue(id, out var holding) && holding.Generation == target.Generation)
@@ -1165,12 +1254,12 @@ public sealed class QueueManager
             }
             target.IsPaused = true;
         }
-        control.Pause();
         releasePool?.Release();
         ItemUpdated?.Invoke(id);
+        return true;
     }
 
-    public void Resume(Guid id)
+    public bool Resume(Guid id)
     {
         TaskControlToken control;
         int generation;
@@ -1179,8 +1268,7 @@ public sealed class QueueManager
         lock (_lock)
         {
             var target = _items.FirstOrDefault(i => i.Id == id);
-            if (target is null || !target.IsPaused) return;
-            target.IsPaused = false;
+            if (target is null || !target.IsPaused) return false;
             control = target.Control;
             generation = target.Generation;
             ct = target.Cts.Token;
@@ -1188,13 +1276,22 @@ public sealed class QueueManager
             {
                 parked = entry;
             }
+            if (parked is null)
+            {
+                if (!control.Resume()) return false;
+                target.IsPaused = false;
+            }
+            else
+            {
+                if (!control.IsPaused) return false;
+                target.IsPaused = false;
+            }
         }
         if (parked is not { } parkedEntry)
         {
             // 没让过位（翻译阶段 / 排队中暂停）：直接恢复，acquire 循环或 gate 会接着走。
-            control.Resume();
             ItemUpdated?.Invoke(id);
-            return;
+            return true;
         }
         // 让过位的：先重新领到槽位再恢复进程，避免恢复瞬间超出并发上限。
         var resumeWaitingText = L10n.T("等待空位恢复…", "等待空位恢復…", "Waiting for a free slot to resume…");
@@ -1221,6 +1318,7 @@ public sealed class QueueManager
                 // 等槽期间被取消：流水线任务自会收敛，这里不动状态。
             }
         }, CancellationToken.None);
+        return true;
     }
 
     public void Cancel(Guid id)
@@ -1305,6 +1403,78 @@ public sealed class QueueManager
         }
     }
 
+    public void RetryWithLocalAsr(Guid id)
+    {
+        TaskControlToken oldControl;
+        CancellationTokenSource oldCts;
+        CancellationToken newCt;
+        lock (_lock)
+        {
+            var old = _items.FirstOrDefault(i => i.Id == id);
+            if (old is null) return;
+            var request = LocalAsrRetryRequest(old.Request);
+            var hasVideo = old.ResultFiles.Any(f => VideoExtensions.Contains(ExtensionOf(f)));
+            if (_localAsrGenerator is null || request is null || old.ChineseMode == ChineseSubtitleMode.Off || !hasVideo) return;
+
+            _resumePool.Remove(id);
+            _progressPhaseStarts.Remove(id);
+            oldControl = old.Control;
+            oldCts = old.Cts;
+            old.Request = request;
+            old.ProgressPlan = ProgressPlanFor(request, old.ChineseMode);
+            old.WorkPlan = WorkPlanFor(request, old.ChineseMode);
+            old.Control = new TaskControlToken();
+            old.Cts = new CancellationTokenSource();
+            old.Generation += 1;
+            old.Stage = ItemStage.Queued;
+            old.IsPaused = false;
+            old.ClearProgress(resetOverall: true);
+            old.IsPostDownloadProcessing = false;
+            old.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+            old.PartialFailure = false;
+            old.StatusText = null;
+            newCt = old.Cts.Token;
+        }
+        oldControl.Cancel();
+        oldCts.Cancel();
+        WakeFromAllPools(id);
+        ItemUpdated?.Invoke(id);
+        var task = Task.Run(() => RunPipelineAsync(id, skipDownload: true, newCt), CancellationToken.None);
+        lock (_lock)
+        {
+            var item = _items.FirstOrDefault(i => i.Id == id);
+            if (item is not null) item.RunTask = task;
+        }
+    }
+
+    private static DownloadRequest? LocalAsrRetryRequest(DownloadRequest request)
+    {
+        var source = request.RequestedSubtitleTracks.FirstOrDefault(track => track.SourceKind != SubtitleSourceKind.LocalAsr);
+        if (source is null) return null;
+        var languageCode = source.LanguageCode.Trim();
+        if (languageCode.Length == 0) return null;
+        var localAsrTrack = SubtitleChoice.Create(
+            languageCode,
+            source.Label,
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "local");
+        return new DownloadRequest
+        {
+            Url = request.Url,
+            VideoId = request.VideoId,
+            FormatId = request.FormatId,
+            SubtitleLangs = [],
+            AutoSubtitleLangs = [],
+            SubtitleTracks = [localAsrTrack],
+            PrimarySubtitleTrackId = localAsrTrack.Id,
+            DestinationDirectory = request.DestinationDirectory,
+            PreferredTitle = request.PreferredTitle,
+            PreferHdr = request.PreferHdr,
+            OutputFormat = request.OutputFormat,
+        };
+    }
+
     /// <summary>一次移除所有已到终态（done/failed/cancelled）的项。</summary>
     public void ClearFinished()
     {
@@ -1327,11 +1497,145 @@ public sealed class QueueManager
                 changed = true;
             }
         }
-        if (changed) ItemUpdated?.Invoke(id);
+        if (changed)
+        {
+            ItemUpdated?.Invoke(id);
+            NotifyQueueCompletionIfNeeded();
+        }
+    }
+
+    private void NotifyQueueCompletionIfNeeded()
+    {
+        if (_completionNotifier is null) return;
+        QueueCompletionNotification? notification = null;
+        lock (_lock)
+        {
+            var openItems = _items.Where(item => IsOpen(item.Stage.Kind)).ToList();
+            if (openItems.Count > 0) return;
+            var terminalItems = _items
+                .Where(item => !IsOpen(item.Stage.Kind) && !_notifiedTerminalIds.Contains(item.Id))
+                .ToList();
+            if (terminalItems.Count == 0) return;
+
+            foreach (var item in terminalItems)
+            {
+                _notifiedTerminalIds.Add(item.Id);
+            }
+            var completedItems = terminalItems.Where(item => item.Stage.Kind == ItemStageKind.Done).ToList();
+            if (completedItems.Count == 0) return;
+
+            notification = new QueueCompletionNotification
+            {
+                CompletedCount = completedItems.Count,
+                PartialFailureCount = completedItems.Count(item => item.PartialFailure),
+                FailedCount = terminalItems.Count(item => item.Stage.Kind == ItemStageKind.Failed),
+                CancelledCount = terminalItems.Count(item => item.Stage.Kind == ItemStageKind.Cancelled),
+                Titles = completedItems.Select(item => item.Title).ToList(),
+            };
+        }
+        if (notification is not null) _completionNotifier.QueueDidComplete(notification);
     }
 
     private static bool IsCancellation(Exception error) =>
         error is MoongateException { Kind: MoongateErrorKind.Cancelled } or OperationCanceledException;
+
+    private async Task<List<string>> PrepareLocalAsrSourceSubtitleIfNeededAsync(
+        List<string> files,
+        DownloadRequest request,
+        Guid id,
+        int generation,
+        TaskControlToken control,
+        CancellationToken ct)
+    {
+        var languageCode = LocalAsrLanguageCode(request);
+        if (languageCode is null) return files;
+        if (ExistingLocalAsrSubtitle(files, languageCode) is { } existing)
+        {
+            var reusedFiles = files.ToList();
+            if (!reusedFiles.Contains(existing)) reusedFiles.Add(existing);
+            return reusedFiles;
+        }
+        if (_localAsrGenerator is null) return files;
+        var videoFile = files.FirstOrDefault(file => VideoExtensions.Contains(ExtensionOf(file)));
+        if (videoFile is null) return files;
+
+        Update(id, generation, item =>
+        {
+            item.Stage = ItemStage.Downloading;
+            item.ClearProgress();
+            item.StatusText = null;
+            item.IsPostDownloadProcessing = true;
+            item.PostDownloadProcessingKind = PostDownloadProcessingKind.Generic;
+            ApplyProgress(item, id, generation, QueueProgressPhase.AudioExtract, null);
+        });
+        var sourceSrt = await _localAsrGenerator.GenerateSourceSubtitleAsync(
+            videoFile,
+            languageCode,
+            control,
+            progress => ApplyAsrProgress(id, generation, progress),
+            ct).ConfigureAwait(false);
+        if (GenerationOf(id) != generation) return files;
+
+        CompleteProgressPhase(id, generation, QueueProgressPhase.AudioExtract);
+        CompleteProgressPhase(id, generation, QueueProgressPhase.SpeechRecognition);
+        CompleteProgressPhase(id, generation, QueueProgressPhase.SubtitleSegment);
+        var nextFiles = files.ToList();
+        if (!nextFiles.Contains(sourceSrt)) nextFiles.Add(sourceSrt);
+        Update(id, generation, item =>
+        {
+            item.ResultFiles = nextFiles;
+            item.ClearProgress();
+            item.StatusText = null;
+            item.IsPostDownloadProcessing = false;
+            item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+        });
+        return nextFiles;
+    }
+
+    private void ApplyAsrProgress(Guid id, int generation, AsrProgress progress)
+    {
+        Update(id, generation, item =>
+        {
+            if (item.Stage.Kind != ItemStageKind.Downloading) return;
+            ApplyProgress(item, id, generation, QueuePhase(progress.Phase), progress.Fraction);
+        });
+    }
+
+    private static QueueProgressPhase QueuePhase(AsrProgressPhase phase) => phase switch
+    {
+        AsrProgressPhase.ModelDownload => QueueProgressPhase.ModelDownload,
+        AsrProgressPhase.AudioExtract => QueueProgressPhase.AudioExtract,
+        AsrProgressPhase.SpeechRecognition => QueueProgressPhase.SpeechRecognition,
+        AsrProgressPhase.SubtitleSegment => QueueProgressPhase.SubtitleSegment,
+        _ => QueueProgressPhase.SpeechRecognition,
+    };
+
+    private static string? LocalAsrLanguageCode(DownloadRequest request)
+    {
+        if (request.PrimarySubtitleTrack?.SourceKind == SubtitleSourceKind.LocalAsr)
+        {
+            return request.PrimarySubtitleTrack?.LanguageCode;
+        }
+        return request.RequestedSubtitleTracks
+            .FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.LocalAsr)?
+            .LanguageCode;
+    }
+
+    private static string? ExistingLocalAsrSubtitle(IEnumerable<string> files, string languageCode)
+    {
+        var normalized = languageCode.Trim().ToLowerInvariant();
+        if (normalized.Length == 0) return null;
+        return files.FirstOrDefault(file =>
+            IsLocalAsrSubtitle(file) && LangCodeOfSubtitle(file) == normalized);
+    }
+
+    private static string? LangCodeOfSubtitle(string file)
+    {
+        var stem = Path.GetFileNameWithoutExtension(file);
+        var dotIndex = stem.LastIndexOf('.');
+        if (dotIndex < 0 || dotIndex == stem.Length - 1) return null;
+        return stem[(dotIndex + 1)..].ToLowerInvariant();
+    }
 
     internal static string ShortReason(Exception error) => error switch
     {
@@ -1368,11 +1672,14 @@ public sealed class QueueManager
     }
 
     /// <summary>
-    /// 按勾选语言挑翻译源字幕：大小写不敏感、允许前缀匹配。
-    /// preferredLang 命中时直接返回该文件（含目标语言后缀，以支持视频自带目标语言字幕作为源）；
-    /// 没有 preferredLang 时回退第一个非译文字幕，避免把上次译文当源二次翻译。
+    /// 按主字幕来源挑翻译源字幕：大小写不敏感、允许前缀匹配。
+    /// preferredTrack 命中时先按来源类型筛选，同语言 local ASR 和平台字幕不再互相抢源；
+    /// 没有主来源时回退第一个非译文字幕，避免把上次译文当源二次翻译。
     /// </summary>
-    internal static string? PickSourceSubtitle(IReadOnlyList<string> files, string? preferredLang)
+    internal static string? PickSourceSubtitle(
+        IReadOnlyList<string> files,
+        string? preferredLang,
+        SubtitleChoice? preferredTrack = null)
     {
         var subtitleFiles = files
             .Where(f => ExtensionOf(f) is "srt" or "vtt")
@@ -1381,13 +1688,24 @@ public sealed class QueueManager
         if (preferredLang is { Length: > 0 })
         {
             var lang = preferredLang.ToLowerInvariant();
-            var matched = subtitleFiles.FirstOrDefault(file =>
+            var matches = subtitleFiles.Where(file =>
+                {
+                    var code = LangCode(file);
+                    if (code is null) return false;
+                    return code == lang || code.StartsWith(lang + "-") || lang.StartsWith(code + "-");
+                })
+                .ToList();
+            if (preferredTrack?.SourceKind == SubtitleSourceKind.LocalAsr)
             {
-                var code = LangCode(file);
-                if (code is null) return false;
-                return code == lang || code.StartsWith(lang + "-") || lang.StartsWith(code + "-");
-            });
-            if (matched is not null) return matched;
+                var matched = matches.FirstOrDefault(IsLocalAsrSubtitle);
+                if (matched is not null) return matched;
+            }
+            if (preferredTrack is not null && preferredTrack.SourceKind != SubtitleSourceKind.LocalAsr)
+            {
+                var matched = matches.FirstOrDefault(file => !IsLocalAsrSubtitle(file));
+                if (matched is not null) return matched;
+            }
+            if (matches.FirstOrDefault() is { } fallback) return fallback;
         }
         var nonTranslated = subtitleFiles
             .Where(f => !TranslationLanguage.IsTranslatedSubtitleFileName(f))
@@ -1397,10 +1715,14 @@ public sealed class QueueManager
 
     private static int SubtitleSourceRank(string file) => ExtensionOf(file) switch
     {
+        _ when IsLocalAsrSubtitle(file) => -1,
         "vtt" => 0,
         "srt" => 1,
         _ => 2,
     };
+
+    private static bool IsLocalAsrSubtitle(string file) =>
+        Path.GetFileName(file).Contains(".local-asr.", StringComparison.OrdinalIgnoreCase);
 
     private static string EnsureSrtSubtitle(string file)
     {

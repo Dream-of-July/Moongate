@@ -9,7 +9,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.7.6"
+  !define APPVERSION "0.8.0-rc.1"
 !endif
 !ifndef ICON_PATH
   !define ICON_PATH "windows/assets/app-nsis.ico"
@@ -19,6 +19,9 @@ Unicode true
 !define EXENAME "Moongate.exe"
 !define INSTALL_MARKER ".moongate-install-root"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Moongate"
+!define WAIT_OBJECT_0 0x00000000
+!define WAIT_TIMEOUT 0x00000102
+!define WAIT_FAILED 0xFFFFFFFF
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
@@ -57,6 +60,12 @@ LangString RunApp ${LANG_TRADCHINESE} "立即執行 ${APPNAME}"
 LangString DataPrompt ${LANG_SIMPCHINESE} "是否同时删除用户数据？$\r$\n包含：设置、API 凭证、登录 Cookie 与 WebView 登录态（%APPDATA%\Moongate），以及已下载的 yt-dlp/ffmpeg/deno（%LOCALAPPDATA%\Moongate）。$\r$\n选择「否」保留这些数据，便于以后重装。"
 LangString DataPrompt ${LANG_ENGLISH} "Also delete your user data?$\r$\nIncludes settings, API credentials, login cookies and WebView session (%APPDATA%\Moongate), plus the downloaded yt-dlp/ffmpeg/deno (%LOCALAPPDATA%\Moongate).$\r$\nChoose No to keep them for a future reinstall."
 LangString DataPrompt ${LANG_TRADCHINESE} "是否同時刪除使用者資料？$\r$\n包含：設定、API 憑證、登入 Cookie 與 WebView 登入狀態（%APPDATA%\Moongate），以及已下載的 yt-dlp/ffmpeg/deno（%LOCALAPPDATA%\Moongate）。$\r$\n選擇「否」保留這些資料，方便日後重裝。"
+LangString UpdateWaitTimeout ${LANG_SIMPCHINESE} "旧版 ${APPNAME} 仍在运行，暂时无法安全更新。请退出 ${APPNAME} 后重试。"
+LangString UpdateWaitTimeout ${LANG_ENGLISH} "The previous ${APPNAME} process is still running, so the update cannot continue safely. Quit ${APPNAME}, then try again."
+LangString UpdateWaitTimeout ${LANG_TRADCHINESE} "舊版 ${APPNAME} 仍在執行，暫時無法安全更新。請結束 ${APPNAME} 後重試。"
+LangString UpdateWaitFailed ${LANG_SIMPCHINESE} "等待旧版 ${APPNAME} 退出时发生系统错误。请关闭 ${APPNAME} 后重新运行安装器。"
+LangString UpdateWaitFailed ${LANG_ENGLISH} "A system error occurred while waiting for the previous ${APPNAME} process to exit. Close ${APPNAME}, then run the installer again."
+LangString UpdateWaitFailed ${LANG_TRADCHINESE} "等待舊版 ${APPNAME} 結束時發生系統錯誤。請關閉 ${APPNAME} 後重新執行安裝器。"
 
 Section "$(SecCore)" SecCoreId
   SectionIn RO
@@ -66,11 +75,25 @@ Section "$(SecCore)" SecCoreId
   ${GetOptions} $R0 "/UPDATEPID=" $R1
   ${If} $R1 != ""
     ; OpenProcess(SYNCHRONIZE=0x00100000, FALSE, pid)
+    ; If this fails, the launching app may already have exited. That is safe:
+    ; only abort when we successfully get a handle and the process does not exit.
     System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i $R1) i .R2'
-    ${If} $R2 <> 0
+    ${If} $R2 != 0
       ; 最多等 15s；旧进程已退出会立即返回。
-      System::Call 'kernel32::WaitForSingleObject(i $R2, i 15000)'
+      System::Call 'kernel32::WaitForSingleObject(i $R2, i 15000) i .R3'
       System::Call 'kernel32::CloseHandle(i $R2)'
+      ${If} $R3 == ${WAIT_OBJECT_0}
+        ; Safe to continue replacing files.
+      ${ElseIf} $R3 == ${WAIT_TIMEOUT}
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitTimeout)"
+        Abort
+      ${ElseIf} $R3 == ${WAIT_FAILED}
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)"
+        Abort
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)"
+        Abort
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 

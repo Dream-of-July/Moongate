@@ -35,8 +35,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     /// 烧录字幕样式
     public var subtitleStyle: SubtitleStyle
-    /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小，避开 4K60 的 H.264 上限）。
-    /// nil = 保持源分辨率。默认 1080。
+    /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小）。
+    /// nil = 保持源分辨率。默认保持源分辨率，避免 4K 选择被静默压到 1080。
     public var maxBurnHeight: Int?
     /// 同时进行的下载任务数（1...5，默认 3）。
     public var maxConcurrentDownloads: Int
@@ -46,7 +46,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // MARK: 编码后端
     /// 烧录 / 转码的视频编码后端：auto（硬件优先）/ hardware / software。默认 auto。
     public var encodeBackend: EncodeBackend
-    /// 烧录字幕时是否始终输出 H.264（兼容优先）。false=跟随源编码（HEVC 源保 HEVC）。默认 false。
+    /// 烧录字幕时是否始终输出 H.264（兼容优先）。false=自动保持画质（高效源默认输出 HEVC）。默认 false。
     public var burnAlwaysH264: Bool
 
     // MARK: 上次下载选项（记住用户最近一次在选档页的选择，下次下载沿用）
@@ -54,6 +54,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var lastSubtitleMode: String?
     /// 上次勾选的字幕语言代码（按语言记忆，下次在可用字幕里做匹配，而非死记 ID）。
     public var lastSubtitleLangs: [String]
+    /// 上次选择的主字幕来源 stable id；旧设置缺省为 nil，并由语言记录迁移匹配。
+    public var lastPrimarySubtitleTrackID: String?
     /// 上次的下载后输出格式。nil=无记录。
     public var lastOutputFormat: OutputFormat?
     /// 上次是否优先下载 HDR。
@@ -68,6 +70,22 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var onboardingCompleted: Bool
     /// 开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。
     public var smartTranslationPromptsEnabled: Bool
+
+    // MARK: 本地语音识别（v0.8）
+    /// 是否允许下载流水线调用本地 whisper.cpp。默认关闭；不静默下载模型。
+    public var localASREnabled: Bool
+    /// whisper.cpp 可执行文件路径（例如 whisper-cli）。
+    public var localASRRuntimePath: String
+    /// 本地 ASR 模型文件路径（ggml*.bin）。
+    public var localASRModelPath: String
+    /// 用户选择/安装的模型标识，用于缓存与 UI 展示。
+    public var localASRModelID: String
+
+    // MARK: 完成提醒（v0.8）
+    /// 队列完成时是否允许发完成提醒。默认开；前台 App 仍优先使用应用内状态。
+    public var completionNotificationsEnabled: Bool
+    /// 队列完成时是否播放提示音。默认开，满足长任务完成后的可感知提醒。
+    public var completionSoundEnabled: Bool
 
     private static func normalizedSingleLineField(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,19 +108,26 @@ public struct AppSettings: Codable, Sendable, Equatable {
         summaryModel: String? = nil,
         summaryAuthToken: String? = nil,
         subtitleStyle: SubtitleStyle = .bilingual,
-        maxBurnHeight: Int? = 1080,
+        maxBurnHeight: Int? = nil,
         maxConcurrentDownloads: Int = 3,
         maxConcurrentBurns: Int = 2,
         encodeBackend: EncodeBackend = .auto,
         burnAlwaysH264: Bool = false,
         lastSubtitleMode: String? = nil,
         lastSubtitleLangs: [String] = [],
+        lastPrimarySubtitleTrackID: String? = nil,
         lastOutputFormat: OutputFormat? = nil,
         lastPreferHDR: Bool = false,
         appLanguage: String = "auto",
         translationTargetLanguage: String = "zh-Hans",
         onboardingCompleted: Bool = false,
-        smartTranslationPromptsEnabled: Bool = false
+        smartTranslationPromptsEnabled: Bool = false,
+        localASREnabled: Bool = false,
+        localASRRuntimePath: String = "",
+        localASRModelPath: String = "",
+        localASRModelID: String = "",
+        completionNotificationsEnabled: Bool = true,
+        completionSoundEnabled: Bool = true
     ) {
         let resolvedEngine = translationEngine ?? TranslationEngine.compatible(with: translationProvider)
         let normalizedTranslationBaseURL = Self.normalizedSingleLineField(translationBaseURL)
@@ -133,12 +158,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.burnAlwaysH264 = burnAlwaysH264
         self.lastSubtitleMode = lastSubtitleMode
         self.lastSubtitleLangs = lastSubtitleLangs
+        self.lastPrimarySubtitleTrackID = lastPrimarySubtitleTrackID.map(Self.normalizedSingleLineField)
         self.lastOutputFormat = lastOutputFormat
         self.lastPreferHDR = lastPreferHDR
         self.appLanguage = appLanguage
         self.translationTargetLanguage = translationTargetLanguage
         self.onboardingCompleted = onboardingCompleted
         self.smartTranslationPromptsEnabled = smartTranslationPromptsEnabled
+        self.localASREnabled = localASREnabled
+        self.localASRRuntimePath = Self.normalizedSingleLineField(localASRRuntimePath)
+        self.localASRModelPath = Self.normalizedSingleLineField(localASRModelPath)
+        self.localASRModelID = Self.normalizedSingleLineField(localASRModelID)
+        self.completionNotificationsEnabled = completionNotificationsEnabled
+        self.completionSoundEnabled = completionSoundEnabled
     }
 
     // MARK: 存储位置
@@ -180,8 +212,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case aiEngine, aiBaseURL, aiModel, aiAuthToken, translationFollowsDefault
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
-        case lastSubtitleMode, lastSubtitleLangs, lastOutputFormat, lastPreferHDR
+        case lastSubtitleMode, lastSubtitleLangs, lastPrimarySubtitleTrackID, lastOutputFormat, lastPreferHDR
         case appLanguage, translationTargetLanguage, onboardingCompleted, smartTranslationPromptsEnabled
+        case localASREnabled, localASRRuntimePath, localASRModelPath, localASRModelID
+        case completionNotificationsEnabled, completionSoundEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,11 +261,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         summaryAuthToken = try c.decodeIfPresent(String.self, forKey: .summaryAuthToken) ?? aiAuthToken
 
         subtitleStyle = try c.decodeIfPresent(SubtitleStyle.self, forKey: .subtitleStyle) ?? .bilingual
-        // 旧版 settings.json 没有这个键：缺失时按默认 1080 处理，而非「保持源分辨率」
+        // 旧版 settings.json 没有这个键：缺失时保持源分辨率，避免 4K 选择被静默压到 1080。
         if c.contains(.maxBurnHeight) {
             maxBurnHeight = try c.decodeIfPresent(Int.self, forKey: .maxBurnHeight)
         } else {
-            maxBurnHeight = 1080
+            maxBurnHeight = nil
         }
         // 并发数：缺失按默认，读入时夹回合法区间
         let downloads = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloads) ?? 3
@@ -239,7 +273,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let burns = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentBurns) ?? 2
         maxConcurrentBurns = min(max(burns, 1), 3)
 
-        // 编码后端：旧版本缺键时默认 auto（硬件优先）；烧录始终 H.264 默认关（跟随源）。
+        // 编码后端：旧版本缺键时默认 auto（硬件优先）；烧录始终 H.264 默认关（自动保持画质）。
         let rawBackend = try c.decodeIfPresent(String.self, forKey: .encodeBackend)
         encodeBackend = rawBackend.flatMap { EncodeBackend(rawValue: $0) } ?? .auto
         burnAlwaysH264 = try c.decodeIfPresent(Bool.self, forKey: .burnAlwaysH264) ?? false
@@ -247,6 +281,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // 上次下载选项：旧版本无键时为空记录（首启动等同无记忆，沿用各自默认）。
         lastSubtitleMode = try c.decodeIfPresent(String.self, forKey: .lastSubtitleMode)
         lastSubtitleLangs = try c.decodeIfPresent([String].self, forKey: .lastSubtitleLangs) ?? []
+        lastPrimarySubtitleTrackID = try c.decodeIfPresent(String.self, forKey: .lastPrimarySubtitleTrackID)
+            .map(Self.normalizedSingleLineField)
         lastOutputFormat = try c.decodeIfPresent(OutputFormat.self, forKey: .lastOutputFormat)
         lastPreferHDR = try c.decodeIfPresent(Bool.self, forKey: .lastPreferHDR) ?? false
 
@@ -256,6 +292,21 @@ public struct AppSettings: Codable, Sendable, Equatable {
         translationTargetLanguage = try c.decodeIfPresent(String.self, forKey: .translationTargetLanguage) ?? "zh-Hans"
         onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
         smartTranslationPromptsEnabled = try c.decodeIfPresent(Bool.self, forKey: .smartTranslationPromptsEnabled) ?? false
+        localASREnabled = try c.decodeIfPresent(Bool.self, forKey: .localASREnabled) ?? false
+        localASRRuntimePath = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRRuntimePath) ?? ""
+        )
+        localASRModelPath = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRModelPath) ?? ""
+        )
+        localASRModelID = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRModelID) ?? ""
+        )
+        completionNotificationsEnabled = try c.decodeIfPresent(
+            Bool.self,
+            forKey: .completionNotificationsEnabled
+        ) ?? true
+        completionSoundEnabled = try c.decodeIfPresent(Bool.self, forKey: .completionSoundEnabled) ?? true
     }
 
     /// 自定义编码：必须显式写出 maxBurnHeight。
@@ -291,12 +342,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(burnAlwaysH264, forKey: .burnAlwaysH264)
         try c.encodeIfPresent(lastSubtitleMode, forKey: .lastSubtitleMode)
         try c.encode(lastSubtitleLangs, forKey: .lastSubtitleLangs)
+        try c.encodeIfPresent(lastPrimarySubtitleTrackID.map(Self.normalizedSingleLineField), forKey: .lastPrimarySubtitleTrackID)
         try c.encodeIfPresent(lastOutputFormat, forKey: .lastOutputFormat)
         try c.encode(lastPreferHDR, forKey: .lastPreferHDR)
         try c.encode(appLanguage, forKey: .appLanguage)
         try c.encode(translationTargetLanguage, forKey: .translationTargetLanguage)
         try c.encode(onboardingCompleted, forKey: .onboardingCompleted)
         try c.encode(smartTranslationPromptsEnabled, forKey: .smartTranslationPromptsEnabled)
+        try c.encode(localASREnabled, forKey: .localASREnabled)
+        try c.encode(Self.normalizedSingleLineField(localASRRuntimePath), forKey: .localASRRuntimePath)
+        try c.encode(Self.normalizedSingleLineField(localASRModelPath), forKey: .localASRModelPath)
+        try c.encode(Self.normalizedSingleLineField(localASRModelID), forKey: .localASRModelID)
+        try c.encode(completionNotificationsEnabled, forKey: .completionNotificationsEnabled)
+        try c.encode(completionSoundEnabled, forKey: .completionSoundEnabled)
     }
 
     // MARK: 翻译目标语言（0.7 — B 的单一漏斗）
@@ -319,10 +377,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     static let aiTokenKey = "aiAuthToken"
     static let summaryTokenKey = "summaryAuthToken"
 
-    public static func load() -> AppSettings {
+    /// 加载设置。`readCredentials` 为 false 时跳过 Keychain 凭证读取与明文迁移
+    /// （启动期用，避免首次启动还没真正用到 API 就弹 Keychain 授权；凭证在首次需要时由 App 显式 hydrate）。
+    public static func load(readCredentials: Bool = true) -> AppSettings {
         load(
             supportDirectory: supportDirectory,
-            legacySupportDirectory: legacySupportDirectory
+            legacySupportDirectory: legacySupportDirectory,
+            readCredentials: readCredentials
         )
     }
 
@@ -330,24 +391,28 @@ public struct AppSettings: Codable, Sendable, Equatable {
         supportDirectory: URL,
         legacySupportDirectory: URL,
         settingsFileName: String = "settings.json",
-        cookieFileName: String = "cookies.txt"
+        cookieFileName: String = "cookies.txt",
+        readCredentials: Bool = true
     ) -> AppSettings {
         let settingsURL = supportDirectory.appendingPathComponent(settingsFileName)
+        func applyCredentials(_ parsed: AppSettings) -> AppSettings {
+            readCredentials ? applyAndMigrateCredentials(parsed, settingsFileURL: settingsURL) : parsed
+        }
         guard let data = try? migratedData(
             supportDirectory: supportDirectory,
             legacySupportDirectory: legacySupportDirectory,
             settingsFileName: settingsFileName,
             cookieFileName: cookieFileName
         ) else {
-            return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
+            return applyCredentials(AppSettings())
         }
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            return applyAndMigrateCredentials(settings, settingsFileURL: settingsURL)
+            return applyCredentials(settings)
         }
         // 数据存在但解析失败：不静默回默认并在下次保存时覆盖，而是先把损坏文件改名备份、
         // 置位一次性提示，再返回默认。用户的旧凭证/配置仍有机会人工恢复（DATA-SETTINGS-002）。
         backupCorruptSettings(at: settingsURL)
-        return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
+        return applyCredentials(AppSettings())
     }
 
     /// 把损坏的 settings.json 改名为 settings.corrupt-<timestamp>.json。

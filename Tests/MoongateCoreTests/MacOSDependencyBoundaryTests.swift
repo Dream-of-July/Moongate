@@ -44,6 +44,11 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
             helpExpression: "localizer.t(L.Dependency.installHelp)",
             hintExpression: "localizer.t(L.Dependency.installHint)"
         )
+
+        XCTAssertTrue(sheetBody.contains("installer.installOptional(component)"))
+        XCTAssertTrue(sheetBody.contains("model.openLocalASRSettings()"))
+        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.installOptional)"))
+        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.configureOptional)"))
     }
 
     func testDependencySetupCloseButtonExplainsInstallCancellationScope() throws {
@@ -101,6 +106,8 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(componentRowBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(componentRowBody.contains(".accessibilityLabel(componentAccessibilityLabel(component))"))
         XCTAssertTrue(componentRowBody.contains(".accessibilityValue(componentStatusText(component))"))
+        XCTAssertTrue(componentRowBody.contains("localizer.t(L.Dependency.optionalBadge)"))
+        XCTAssertTrue(componentRowBody.contains("component.id == \"whisper-cli\""))
 
         let helperBody = try XCTUnwrap(
             functionBody(prefix: "private func componentAccessibilityLabel", in: source)
@@ -108,6 +115,9 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(helperBody.contains("component.id"))
         XCTAssertTrue(helperBody.contains("componentPurposeText(component)"))
         XCTAssertTrue(helperBody.contains("localizer.t(L.Dependency.componentAccessibilityLabel"))
+
+        let purposeBody = try XCTUnwrap(functionBody(prefix: "private func componentPurposeText", in: source))
+        XCTAssertTrue(purposeBody.contains("case \"whisper-cli\": return localizer.t(L.Dependency.purposeWhisperCpp)"))
 
         XCTAssertTrue(sheetBody.contains(".accessibilityLabel(localizer.t(L.Dependency.logAccessibility))"))
 

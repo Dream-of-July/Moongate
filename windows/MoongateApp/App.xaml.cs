@@ -87,6 +87,7 @@ public partial class App : Application
         // 部分机器（异常显卡驱动 / 远程桌面 / 虚拟机）WPF 硬件渲染初始化失败时只画窗口背景，
         // 表现为白屏。检测到无硬件加速（渲染层级 0）或用户用环境变量强制时，回退软件渲染。
         ApplyRenderModeFallback();
+        ThemeManager.ApplySystemTheme();
 
         try
         {
@@ -97,7 +98,13 @@ public partial class App : Application
             var main = new MainWindow();
             MainWindow = main;
             main.Show();
+            ThemeManager.ApplyWindowTheme(main);
             StartupDiagnostics.Mark("MainWindow shown");
+
+            // 启动后静默检查更新（6 小时节流），让主窗设置入口的红点能在不打开设置时也亮起。
+            // 只读观察：失败不改状态、不打扰用户；下载/安装仍由设置页显式触发。
+            try { WindowsUpdater.CheckAutomaticSilent(); }
+            catch (Exception updateError) { StartupDiagnostics.RecordException("startup update check", updateError); }
         }
         catch (Exception error)
         {

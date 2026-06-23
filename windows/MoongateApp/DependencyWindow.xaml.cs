@@ -19,6 +19,7 @@ public partial class DependencyWindow : Window
     {
         _work = work;
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         Title = title;
         CaptionText.Text = caption;
         Loaded += (_, _) => _ = RunAsync();

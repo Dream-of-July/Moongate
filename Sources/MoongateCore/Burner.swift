@@ -8,7 +8,7 @@ public func makeBurner() -> any SubtitleBurner {
 
 // MARK: - FFmpegBurner
 
-/// ffmpeg subtitles 滤镜硬烧录字幕：libx264 + CRF 恒定质量（体积不超源），
+/// ffmpeg subtitles 滤镜硬烧录字幕：按源编码选择 H.264/HEVC，默认优先画质。
 /// 可选 scale 缩放到 maxHeight（避开 4K60 的 H.264 编码上限、又快又小）。
 public struct FFmpegBurner: SubtitleBurner {
 
@@ -152,7 +152,7 @@ public struct FFmpegBurner: SubtitleBurner {
         }
         if control?.isCancelled == true { throw MoongateError.cancelled }
 
-        // 1. ffprobe 取时长、整体码率与源尺寸（取不到不阻塞烧录，只影响进度与缩放/码率）
+        // 1. ffprobe 取时长、码率、源尺寸与编码（取不到不阻塞烧录，只影响进度与缩放/码率）
         let probe = await Self.probe(video: video)
 
         // 「最大 1080p」语义按短边算：横屏限高、竖屏限宽。
@@ -172,11 +172,29 @@ public struct FFmpegBurner: SubtitleBurner {
                   short > maxHeight else { return nil }
             return maxHeight
         }()
-        // -maxrate 上限：仅在缩放（用户开启「缩放到 1080p」）时按目标档位封顶，压小体积。
-        // 不缩放（保持源分辨率）时返回 nil → 软件编码走纯 CRF、硬件走纯 -q:v，
-        // 所有全分辨率输出用完全一致的编码参数与画质档，不再因源码率不同而码率不一。
+        // 编码器选择需要在计算缩放码率上限前完成：AV1/VP9 这类高效源默认转 HEVC，
+        // 强制 H.264 时使用更高质量参数，不能照搬源码率封顶。
+        let x265Available = Self.encoderAvailable("libx265", ffmpeg: ffmpeg)
+        let hevcVTAvailable = Self.encoderAvailable("hevc_videotoolbox", ffmpeg: ffmpeg)
+        let h264VTAvailable = Self.encoderAvailable("h264_videotoolbox", ffmpeg: ffmpeg)
+        let sourceCodec = Self.normalizedVideoCodec(probe.codecName)
+        let outputCodec = Self.preferredBurnOutputCodec(
+            sourceCodec: sourceCodec,
+            isHDR: probe.isHDR,
+            alwaysH264: alwaysH264,
+            x265Available: x265Available,
+            hevcVTAvailable: hevcVTAvailable
+        )
+        // -maxrate 上限只用于缩放场景。不缩放时走纯 CRF / VideoToolbox -q:v，避免低码率 AV1
+        // 以近似码率转成 H.264 后严重糊掉。
         let maxrateK: Int? = targetShortSide.map {
-            Self.maxrateK(sourceBitRateBPS: probe.bitRateBPS, sourceHeight: sourceShortSide, targetHeight: $0)
+            Self.maxrateK(
+                sourceBitRateBPS: probe.bitRateBPS,
+                sourceHeight: sourceShortSide,
+                targetHeight: $0,
+                sourceCodec: sourceCodec,
+                outputCodec: outputCodec
+            )
         }
 
         // 2. 临时目录：字幕转成 subs.ass 并把 ffmpeg 工作目录设到这里，
@@ -236,19 +254,12 @@ public struct FFmpegBurner: SubtitleBurner {
 
         // 编码器选择：按 后端 / 源编码 / HDR / 是否强制 H.264 决定用硬件还是软件、何种编码。
         // 硬件（VideoToolbox）通常更快、更省电；兼容路径同体积画质更稳但更慢。
-        let x265Available = Self.encoderAvailable("libx265", ffmpeg: ffmpeg)
-        let hevcVTAvailable = Self.encoderAvailable("hevc_videotoolbox", ffmpeg: ffmpeg)
-        let h264VTAvailable = Self.encoderAvailable("h264_videotoolbox", ffmpeg: ffmpeg)
-        let sourceIsHEVC: Bool = {
-            let codec = (probe.codecName ?? "").lowercased()
-            return codec == "hevc" || codec == "h265"
-        }()
         // 候选链：主选（按后端）+ 同编码的软件回退。硬件编码失败时退到软件**同一种编码**，
         // 保证「选了 HEVC 就输出 HEVC」，绝不降级成 H.264。
         let candidates = Self.selectVideoEncoderChain(
             backend: backend,
             alwaysH264: alwaysH264,
-            sourceIsHEVC: sourceIsHEVC,
+            sourceCodec: sourceCodec,
             isHDR: probe.isHDR,
             colorPrimaries: probe.colorPrimaries,
             colorTransfer: probe.colorTransfer,
@@ -490,14 +501,70 @@ public struct FFmpegBurner: SubtitleBurner {
     /// VideoToolbox 恒定质量模式的 q 值（0...100，越高画质越好/文件越大）。
     /// 选高画质档（视觉接近无损）：实测同源下体积与 libx265 medium 相当或略大，4K 快数倍且不发热。
     static let videoToolboxQuality = 65
+    static let videoToolboxHighQuality = 75
+
+    static func normalizedVideoCodec(_ raw: String?) -> String? {
+        let token = (raw ?? "")
+            .lowercased()
+            .split { $0 == "." || $0 == " " || $0 == "_" || $0 == "-" }
+            .first
+            .map(String.init) ?? ""
+        switch token {
+        case "hevc", "h265", "hev1", "hvc1":
+            return "hevc"
+        case "avc", "avc1", "h264":
+            return "h264"
+        case "av01", "av1":
+            return "av1"
+        case "vp09", "vp9":
+            return "vp9"
+        case "":
+            return nil
+        default:
+            return token
+        }
+    }
+
+    private static func codecPrefersHEVCBurn(_ codec: String?) -> Bool {
+        switch normalizedVideoCodec(codec) {
+        case "hevc", "av1", "vp9":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isEfficientSourceCodec(_ codec: String?) -> Bool {
+        switch normalizedVideoCodec(codec) {
+        case "hevc", "av1", "vp9":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func preferredBurnOutputCodec(
+        sourceCodec: String?,
+        isHDR: Bool,
+        alwaysH264: Bool,
+        x265Available: Bool,
+        hevcVTAvailable: Bool
+    ) -> String {
+        if alwaysH264 { return "h264" }
+        if isHDR { return (hevcVTAvailable || x265Available) ? "hevc" : "h264" }
+        if codecPrefersHEVCBurn(sourceCodec), hevcVTAvailable || x265Available {
+            return "hevc"
+        }
+        return "h264"
+    }
 
     /// 选择视频编码参数。纯函数，便于单测覆盖整个矩阵。
-    /// 决策顺序：HDR → 强制 H.264（路线 A）→ 跟随源（HEVC 保 HEVC，否则 H.264）。
+    /// 决策顺序：HDR → 强制 H.264（兼容）→ 自动质量（HEVC/AV1/VP9 走 HEVC，H.264 走 H.264）。
     /// 每一类再按 backend + 硬件可用性在 VideoToolbox / libx 间选择。
     static func selectVideoEncoder(
         backend: EncodeBackend,
         alwaysH264: Bool,
-        sourceIsHEVC: Bool,
+        sourceCodec: String?,
         isHDR: Bool,
         colorPrimaries: String?,
         colorTransfer: String?,
@@ -508,13 +575,14 @@ public struct FFmpegBurner: SubtitleBurner {
         h264VTAvailable: Bool
     ) -> VideoEncoderSelection {
         let wantHardware = backend.prefersHardware
+        let normalizedSourceCodec = normalizedVideoCodec(sourceCodec)
 
         // 1) HDR：保 HDR 时输出 HEVC 10-bit；强制 H.264 时只能 tonemap→SDR。
         if isHDR && !alwaysH264 {
             if wantHardware && hevcVTAvailable {
                 // 硬件 HEVC main10 + 显式色彩元数据透传（实测 mastering-display / max-cll 会被保留）。
                 return VideoEncoderSelection(
-                    encoderArgs: hwHDRVideoArgs(),
+                    encoderArgs: hwHDRVideoArgs(maxrateK: maxrateK),
                     filterPrefix: "",
                     filterSuffix: ",format=p010le",
                     colorArgs: hdrColorArgs(colorPrimaries: colorPrimaries, colorTransfer: colorTransfer, colorSpace: colorSpace)
@@ -541,11 +609,11 @@ public struct FFmpegBurner: SubtitleBurner {
             )
         }
 
-        // 3) SDR：跟随源（HEVC 保 HEVC）或强制 H.264。
-        let keepHEVC = sourceIsHEVC && !alwaysH264
+        // 3) SDR：自动质量优先。HEVC/AV1/VP9 统一输出 HEVC；兼容模式强制 H.264。
+        let keepHEVC = codecPrefersHEVCBurn(normalizedSourceCodec) && !alwaysH264
         if keepHEVC {
             if wantHardware && hevcVTAvailable {
-                return VideoEncoderSelection(encoderArgs: hwHEVCVideoArgs(), filterPrefix: "", filterSuffix: "", colorArgs: [])
+                return VideoEncoderSelection(encoderArgs: hwHEVCVideoArgs(maxrateK: maxrateK), filterPrefix: "", filterSuffix: "", colorArgs: [])
             }
             if x265Available {
                 return VideoEncoderSelection(encoderArgs: sdrHEVCVideoArgs(maxrateK: maxrateK), filterPrefix: "", filterSuffix: "", colorArgs: [])
@@ -553,10 +621,21 @@ public struct FFmpegBurner: SubtitleBurner {
             // 没有任何 HEVC 编码器：退回 H.264。
         }
         // H.264（强制、或源非 HEVC、或无 HEVC 编码器可用）。
+        let highQualityH264 = isEfficientSourceCodec(normalizedSourceCodec)
         if wantHardware && h264VTAvailable {
-            return VideoEncoderSelection(encoderArgs: hwH264VideoArgs(), filterPrefix: "", filterSuffix: "", colorArgs: [])
+            return VideoEncoderSelection(
+                encoderArgs: hwH264VideoArgs(maxrateK: maxrateK, highQuality: highQualityH264),
+                filterPrefix: "",
+                filterSuffix: "",
+                colorArgs: []
+            )
         }
-        return VideoEncoderSelection(encoderArgs: sdrH264VideoArgs(maxrateK: maxrateK), filterPrefix: "", filterSuffix: "", colorArgs: [])
+        return VideoEncoderSelection(
+            encoderArgs: sdrH264VideoArgs(maxrateK: maxrateK, highQuality: highQualityH264),
+            filterPrefix: "",
+            filterSuffix: "",
+            colorArgs: []
+        )
     }
 
     /// 选择编码候选链：主选 + 同编码的软件回退。保证「用户/源决定的编码」最终一定能产出——
@@ -566,7 +645,7 @@ public struct FFmpegBurner: SubtitleBurner {
     static func selectVideoEncoderChain(
         backend: EncodeBackend,
         alwaysH264: Bool,
-        sourceIsHEVC: Bool,
+        sourceCodec: String?,
         isHDR: Bool,
         colorPrimaries: String?,
         colorTransfer: String?,
@@ -577,7 +656,7 @@ public struct FFmpegBurner: SubtitleBurner {
         h264VTAvailable: Bool
     ) -> [VideoEncoderSelection] {
         let primary = selectVideoEncoder(
-            backend: backend, alwaysH264: alwaysH264, sourceIsHEVC: sourceIsHEVC, isHDR: isHDR,
+            backend: backend, alwaysH264: alwaysH264, sourceCodec: sourceCodec, isHDR: isHDR,
             colorPrimaries: colorPrimaries, colorTransfer: colorTransfer, colorSpace: colorSpace,
             maxrateK: maxrateK, x265Available: x265Available,
             hevcVTAvailable: hevcVTAvailable, h264VTAvailable: h264VTAvailable
@@ -586,7 +665,7 @@ public struct FFmpegBurner: SubtitleBurner {
         // 软件回退：同样的输入但强制 software 后端——选出的编码与主选同种（HEVC↔libx265、H.264↔libx264），
         // 仅当它与主选真正不同（即主选确实走了硬件）时才追加，避免硬件不可用时的重复重编码。
         let softwareFallback = selectVideoEncoder(
-            backend: .software, alwaysH264: alwaysH264, sourceIsHEVC: sourceIsHEVC, isHDR: isHDR,
+            backend: .software, alwaysH264: alwaysH264, sourceCodec: sourceCodec, isHDR: isHDR,
             colorPrimaries: colorPrimaries, colorTransfer: colorTransfer, colorSpace: colorSpace,
             maxrateK: maxrateK, x265Available: x265Available,
             hevcVTAvailable: hevcVTAvailable, h264VTAvailable: h264VTAvailable
@@ -599,30 +678,36 @@ public struct FFmpegBurner: SubtitleBurner {
         wantHardware: Bool, h264VTAvailable: Bool, maxrateK: Int?
     ) -> VideoEncoderSelection {
         let prefix = "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
-        let encoder = (wantHardware && h264VTAvailable) ? hwH264VideoArgs() : sdrH264VideoArgs(maxrateK: maxrateK)
+        let encoder = (wantHardware && h264VTAvailable) ? hwH264VideoArgs(maxrateK: maxrateK) : sdrH264VideoArgs(maxrateK: maxrateK)
         return VideoEncoderSelection(encoderArgs: encoder, filterPrefix: prefix, filterSuffix: "", colorArgs: [])
     }
 
     /// 软件 SDR H.264：libx264 + CRF 恒定质量 + maxrate 封顶（体积不超源）。
-    static func sdrH264VideoArgs(maxrateK: Int?) -> [String] {
-        ["-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    static func sdrH264VideoArgs(maxrateK: Int?, highQuality: Bool = false) -> [String] {
+        ["-c:v", "libx264", "-crf", highQuality ? "18" : "20", "-preset", "medium", "-pix_fmt", "yuv420p"]
             + maxrateFlags(maxrateK)
     }
 
     /// 硬件 H.264（VideoToolbox 恒定质量）。
-    static func hwH264VideoArgs() -> [String] {
-        ["-c:v", "h264_videotoolbox", "-q:v", "\(videoToolboxQuality)", "-pix_fmt", "yuv420p"]
+    static func hwH264VideoArgs(maxrateK: Int?, highQuality: Bool = false) -> [String] {
+        let quality = highQuality ? videoToolboxHighQuality : videoToolboxQuality
+        return ["-c:v", "h264_videotoolbox"] + hardwareQualityOrBitrateArgs(maxrateK: maxrateK, quality: quality) + ["-pix_fmt", "yuv420p"]
     }
 
     /// 硬件 HEVC（VideoToolbox 恒定质量）SDR。
-    static func hwHEVCVideoArgs() -> [String] {
-        ["-c:v", "hevc_videotoolbox", "-q:v", "\(videoToolboxQuality)", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
+    static func hwHEVCVideoArgs(maxrateK: Int?) -> [String] {
+        ["-c:v", "hevc_videotoolbox"] + hardwareQualityOrBitrateArgs(maxrateK: maxrateK) + ["-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
     }
 
     /// 硬件 HEVC main10（VideoToolbox）HDR：10-bit p010le，色彩元数据由 colorArgs 单独透传。
-    static func hwHDRVideoArgs() -> [String] {
-        ["-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-q:v", "\(videoToolboxQuality)",
+    static func hwHDRVideoArgs(maxrateK: Int?) -> [String] {
+        ["-c:v", "hevc_videotoolbox", "-profile:v", "main10"] + hardwareQualityOrBitrateArgs(maxrateK: maxrateK) + [
          "-pix_fmt", "p010le", "-tag:v", "hvc1"]
+    }
+
+    private static func hardwareQualityOrBitrateArgs(maxrateK: Int?, quality: Int = videoToolboxQuality) -> [String] {
+        guard let maxrateK else { return ["-q:v", "\(quality)"] }
+        return ["-b:v", "\(maxrateK)k"] + maxrateFlags(maxrateK)
     }
 
     /// HDR10 色彩元数据参数（硬件路径需显式带上，否则输出 trc/prim 为 unknown）。
@@ -648,20 +733,42 @@ public struct FFmpegBurner: SubtitleBurner {
     // MARK: 进度与参数
 
     /// 计算缩放场景的 -maxrate k 值（CRF/质量编码下仅作封顶，防高复杂度片段码率失控、体积膨胀）。
-    /// 仅在用户开启「缩放到 1080p」时使用：按目标分辨率档位封顶，并与源码率×1.5 取 min（源更小时不浪费）。
+    /// 仅在用户开启「缩放到 1080p」时使用：按目标分辨率档位封顶，并按源/目标编码效率给低码率源补地板。
     /// 不缩放场景不调用本函数（走纯 CRF / -q:v，无上限）。
     /// 档位上限：2160p≈16000，1440p≈10000，1080p≈6000，720p≈3000，480p≈1500。
-    private static func maxrateK(
+    static func maxrateK(
         sourceBitRateBPS: Double?,
-        sourceHeight: Int?,
-        targetHeight: Int
+        sourceHeight _: Int?,
+        targetHeight: Int,
+        sourceCodec: String?,
+        outputCodec: String
     ) -> Int {
         let sourceK: Int? = {
             guard let bps = sourceBitRateBPS, bps > 0 else { return nil }
-            return Int(bps / 1000 * 1.5)
+            return Int(bps / 1000 * bitrateExpansionMultiplier(sourceCodec: sourceCodec, outputCodec: outputCodec))
         }()
         let tierK = bitrateForHeight(targetHeight)
-        return min(tierK, sourceK ?? tierK)
+        let floorK = bitrateFloorForHeight(targetHeight, outputCodec: outputCodec)
+        return min(tierK, sourceK.map { max($0, floorK) } ?? tierK)
+    }
+
+    private static func bitrateExpansionMultiplier(sourceCodec: String?, outputCodec: String) -> Double {
+        let source = normalizedVideoCodec(sourceCodec)
+        let output = normalizedVideoCodec(outputCodec) ?? outputCodec.lowercased()
+        switch (source, output) {
+        case ("av1", "h264"), ("vp9", "h264"):
+            return 4.0
+        case ("hevc", "h264"):
+            return 2.5
+        case ("av1", "hevc"), ("vp9", "hevc"):
+            return 2.5
+        case ("h264", "h264"):
+            return 1.5
+        case ("h264", "hevc"):
+            return 1.2
+        default:
+            return output == "h264" ? 2.0 : 1.5
+        }
     }
 
     private static func bitrateForHeight(_ height: Int) -> Int {
@@ -671,6 +778,23 @@ public struct FFmpegBurner: SubtitleBurner {
         case 901...1200:  return 6000  // 1080p
         case 601...900:   return 3000  // 720p
         default:          return 1500  // 480p 及以下
+        }
+    }
+
+    private static func bitrateFloorForHeight(_ height: Int, outputCodec: String) -> Int {
+        let output = normalizedVideoCodec(outputCodec) ?? outputCodec.lowercased()
+        let hevc = output == "hevc"
+        switch height {
+        case 1801...:
+            return hevc ? 8000 : 12000
+        case 1201...1800:
+            return hevc ? 5000 : 7000
+        case 901...1200:
+            return hevc ? 1800 : 3000
+        case 601...900:
+            return hevc ? 1000 : 1600
+        default:
+            return hevc ? 600 : 900
         }
     }
 

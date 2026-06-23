@@ -284,6 +284,42 @@ internal static class ProcessRunner
 /// </summary>
 public class YtDlpEngine : IDownloadEngine
 {
+    internal sealed class DownloadProgressTracker
+    {
+        private readonly int _expectedMediaDownloads;
+        private int _completedMediaDownloads;
+        private double? _lastRawFraction;
+        private double? _lastDisplayedFraction;
+
+        public DownloadProgressTracker(int expectedMediaDownloads = 1)
+        {
+            _expectedMediaDownloads = Math.Max(1, expectedMediaDownloads);
+        }
+
+        public string? NormalizeEtaText(string? text) =>
+            _expectedMediaDownloads > 1 ? null : text;
+
+        public double? NormalizePercent(double? percent)
+        {
+            if (percent is not { } value || double.IsNaN(value) || double.IsInfinity(value)) return null;
+            var rawFraction = Math.Clamp(value, 0, 100) / 100;
+            if (_lastRawFraction is { } lastRaw
+                && lastRaw > 0.5
+                && rawFraction + 0.15 < lastRaw)
+            {
+                _completedMediaDownloads++;
+            }
+            _lastRawFraction = rawFraction;
+
+            var mediaDownloads = Math.Max(_expectedMediaDownloads, _completedMediaDownloads + 1);
+            var combined = (_completedMediaDownloads + rawFraction) / mediaDownloads;
+            var liveFraction = Math.Min(combined, 0.98);
+            var displayed = Math.Max(_lastDisplayedFraction ?? 0, liveFraction);
+            _lastDisplayedFraction = displayed;
+            return displayed * 100;
+        }
+    }
+
     private readonly object _cacheLock = new();
     private readonly Dictionary<string, JsonElement> _infoCache = [];
     private readonly List<string> _infoCacheOrder = [];
@@ -708,13 +744,12 @@ public class YtDlpEngine : IDownloadEngine
                 return videoBytes is { } bytes ? SizeText(bytes + (audioBytes ?? 0)) : null;
             }
 
-            // 最高档直接排第一（formats[0] 为推荐项），用通配格式串拿最佳画质。
+            // 每个可见档位先精确绑定高度，再回退到不高于该档位的可用格式。
+            // 避免 2160p/4K 行被 yt-dlp 的通配 best selector 解析成 1080p。
             for (var index = 0; index < Math.Min(heights.Count, 6); index++)
             {
                 var height = heights[index];
-                var formatId = index == 0
-                    ? "bv*+ba/b"
-                    : $"bv*[height<={height}]+ba/b[height<={height}]";
+                var formatId = VideoTierFormatSelector(height);
                 var tier = videoFormats.Where(f => IntField(f, "height") == height).ToList();
                 // 该档是否有 HDR 流。
                 var hdrAvailable = tier.Any(f =>
@@ -935,7 +970,12 @@ public class YtDlpEngine : IDownloadEngine
             {
                 label = entry.Lang;
             }
-            choices.Add(new SubtitleChoice { Id = entry.Lang, Label = label, IsAuto = false });
+            choices.Add(SubtitleChoice.Create(
+                entry.Lang,
+                label,
+                SubtitleSourceKind.HlsManifest,
+                provider: "hls",
+                variant: entry.Url));
         }
         return (choices, table);
     }
@@ -1099,19 +1139,17 @@ public class YtDlpEngine : IDownloadEngine
                 .Where(name => name != "live_chat" && name != "rechat"));
         }
         var real = realCodes
-            .Select(code => new SubtitleChoice { Id = code, Label = SubtitleLabel(code), IsAuto = false })
-            .OrderBy(c => SubtitleSortKey(c.Id).Rank)
-            .ThenBy(c => SubtitleSortKey(c.Id).Lower, StringComparer.Ordinal)
+            .Select(code => SubtitleChoice.Create(code, SubtitleLabel(code), SubtitleSourceKind.Manual))
+            .OrderBy(c => SubtitleSortKey(c.LanguageCode).Rank)
+            .ThenBy(c => SubtitleSortKey(c.LanguageCode).Lower, StringComparer.Ordinal)
             .ToList();
 
         var autoCodes = new List<string>();
         if (json.TryGetProperty("automatic_captions", out var autoDict) && autoDict.ValueKind == JsonValueKind.Object)
         {
-            var realSet = new HashSet<string>(realCodes);
             foreach (var property in autoDict.EnumerateObject())
             {
                 var code = property.Name;
-                if (realSet.Contains(code)) continue;
                 if (AutoCaptionAllowList.Contains(code))
                 {
                     autoCodes.Add(code);
@@ -1128,7 +1166,7 @@ public class YtDlpEngine : IDownloadEngine
             .OrderBy(c => SubtitleSortKey(c).Rank)
             .ThenBy(c => SubtitleSortKey(c).Lower, StringComparer.Ordinal)
             .Take(8)
-            .Select(code => new SubtitleChoice { Id = code, Label = SubtitleLabel(code), IsAuto = true });
+            .Select(code => SubtitleChoice.Create(code, SubtitleLabel(code), SubtitleSourceKind.PlatformAuto));
         return [.. real, .. auto];
     }
 
@@ -1201,6 +1239,30 @@ public class YtDlpEngine : IDownloadEngine
         return $"{clean} [%(id)s].%(ext)s";
     }
 
+    internal static int ExpectedMediaDownloadCount(string formatId) =>
+        ContainsMergeOperator(formatId) ? 2 : 1;
+
+    private static bool ContainsMergeOperator(string selector)
+    {
+        var bracketDepth = 0;
+        foreach (var ch in selector)
+        {
+            if (ch == '[')
+            {
+                bracketDepth++;
+            }
+            else if (ch == ']')
+            {
+                bracketDepth = Math.Max(0, bracketDepth - 1);
+            }
+            else if (ch == '+' && bracketDepth == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public async Task<DownloadResult> DownloadAsync(
         DownloadRequest request,
         TaskControlToken? control,
@@ -1243,13 +1305,15 @@ public class YtDlpEngine : IDownloadEngine
                 var mergeContainer = request.PreferHdr ? "mkv" : "mp4";
                 args.AddRange(["-f", formatSelector, "--merge-output-format", mergeContainer]);
             }
-            var allSubLangs = request.SubtitleLangs.Concat(request.AutoSubtitleLangs).ToList();
+            var subtitleLangs = request.YtDlpSubtitleLangs;
+            var autoSubtitleLangs = request.YtDlpAutoSubtitleLangs;
+            var allSubLangs = DownloadRequest.UniqueForYtDlpSubLangs(subtitleLangs.Concat(autoSubtitleLangs));
             if (allSubLangs.Count > 0)
             {
                 args.AddRange(["--sub-langs", string.Join(",", allSubLangs)]);
-                if (request.SubtitleLangs.Count > 0) args.Add("--write-subs");
-                if (request.AutoSubtitleLangs.Count > 0) args.Add("--write-auto-subs");
-                if (request.AutoSubtitleLangs.Count == 0)
+                if (subtitleLangs.Count > 0) args.Add("--write-subs");
+                if (autoSubtitleLangs.Count > 0) args.Add("--write-auto-subs");
+                if (autoSubtitleLangs.Count == 0)
                 {
                     args.AddRange(["--convert-subs", "srt"]);
                 }
@@ -1271,6 +1335,7 @@ public class YtDlpEngine : IDownloadEngine
             var destPrefix = destDir.EndsWith(sep) ? destDir : destDir + sep;
             var printedPaths = new List<string>();
             var printedLock = new object();
+            var progressTracker = new DownloadProgressTracker(ExpectedMediaDownloadCount(request.FormatId));
             int status = -1;
             string stderrTail = "";
             // 首次下载偶发 "Requested format is not available"（YouTube n-challenge 冷启动 /
@@ -1288,7 +1353,7 @@ public class YtDlpEngine : IDownloadEngine
                         onStart: pid => control?.SetActivePid(pid),
                         onLine: line =>
                         {
-                            if (ParseProgressLine(line) is { } update) progress(update);
+                            if (ParseProgressLine(line, progressTracker) is { } update) progress(update);
                             if (line.StartsWith(destPrefix, StringComparison.Ordinal))
                             {
                                 lock (printedLock)
@@ -1519,7 +1584,7 @@ public class YtDlpEngine : IDownloadEngine
     ];
 
     /// <summary>解析 yt-dlp 输出行：MGP| 进度模板 → Downloading；后处理前缀 → Processing；其余 null。</summary>
-    internal static DownloadProgress? ParseProgressLine(string line)
+    internal static DownloadProgress? ParseProgressLine(string line, DownloadProgressTracker? tracker = null)
     {
         if (line.StartsWith("MGP|", StringComparison.Ordinal))
         {
@@ -1535,9 +1600,9 @@ public class YtDlpEngine : IDownloadEngine
             return new DownloadProgress
             {
                 Phase = DownloadProgress.ProgressPhase.Downloading,
-                Percent = NormalizeProgressPercent(percent),
+                Percent = tracker?.NormalizePercent(percent) ?? NormalizeProgressPercent(percent),
                 SpeedText = speed,
-                EtaText = eta,
+                EtaText = tracker is null ? eta : tracker.NormalizeEtaText(eta),
             };
         }
         if (ProcessingPrefixes.Any(prefix => line.StartsWith(prefix, StringComparison.Ordinal)))
@@ -1819,14 +1884,27 @@ public class YtDlpEngine : IDownloadEngine
     }
 
     /// <summary>
-    /// 给基础 -f 选择器加上 HDR 偏好：把 "bv*" 替换为 "bv*[dynamic_range!=SDR]"，并以 "/" 回退原串
-    /// （HDR 流缺失时仍能下到该档）。preferHdr=false 时原样返回。与 macOS applyHDRPreference 同构。
+    /// Selector for one visible quality tier. The exact-height branch is first so a
+    /// visible 2160p row cannot resolve to 1080p while that 2160p stream exists.
+    /// </summary>
+    internal static string VideoTierFormatSelector(int height) =>
+        $"bv*[height={height}]+ba/b[height={height}]/bv*[height<={height}]+ba/b[height<={height}]";
+
+    /// <summary>
+    /// 给基础 -f 选择器加上 HDR 偏好：每个 fallback 分支先尝试 HDR，再尝试原分支。
+    /// 这样 2160p 档会按「2160 HDR → 2160 普通 → <=2160 HDR → <=2160 普通」回退，
+    /// 不会为了 HDR 静默跳到低一档。与 macOS applyHDRPreference 同构。
     /// </summary>
     internal static string ApplyHdrPreference(string selector, bool preferHdr)
     {
         if (!preferHdr) return selector;
-        var hdrVariant = selector.Replace("bv*", "bv*[dynamic_range!=SDR]");
-        return hdrVariant + "/" + selector;
+        var branches = selector.Split('/');
+        return string.Join("/", branches.SelectMany(branch =>
+        {
+            var hdrVariant = branch.Replace("bv*", "bv*[dynamic_range!=SDR]");
+            if (hdrVariant == branch) return new[] { branch };
+            return new[] { hdrVariant, branch };
+        }));
     }
 
     internal static string SizeText(double bytes)

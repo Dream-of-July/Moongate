@@ -7,11 +7,12 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 SCRATCH="$HOME/Library/Caches/vdl-build"
 APP_NAME="月之门"
-APP_VERSION="${MOONGATE_VERSION:-0.7.6}"
-APP_BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-706}"
+APP_VERSION="${MOONGATE_VERSION:-0.8.0-rc.1}"
+APP_BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-8001}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://dream-of-july.github.io/moongate/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_PUBLIC_ED_KEY_FILE="${SPARKLE_PUBLIC_ED_KEY_FILE:-$PROJ_DIR/sparkle-public-ed-key.txt}"
+MOONGATE_WHISPER_CPP_RUNTIME_DIR="${MOONGATE_WHISPER_CPP_RUNTIME_DIR:-}"
 # Icon Composer 源、actool 的 --app-icon、以及 Info.plist 的 CFBundleIconName 三者必须同名，
 # 否则 macOS 按 CFBundleIconName 从 Assets.car 取分层图标时会落空（Tahoe Liquid Glass 失效）。
 ICON_SOURCE_NAME="$APP_NAME"
@@ -56,6 +57,48 @@ find_sparkle_framework() {
     return 1
 }
 
+copy_whisper_cpp_runtime() {
+    if [[ -z "$MOONGATE_WHISPER_CPP_RUNTIME_DIR" ]]; then
+        return 0
+    fi
+    if [[ ! -d "$MOONGATE_WHISPER_CPP_RUNTIME_DIR" ]]; then
+        echo "MOONGATE_WHISPER_CPP_RUNTIME_DIR 不是目录：$MOONGATE_WHISPER_CPP_RUNTIME_DIR" >&2
+        exit 1
+    fi
+    if [[ ! -x "$MOONGATE_WHISPER_CPP_RUNTIME_DIR/whisper-cli" ]]; then
+        echo "MOONGATE_WHISPER_CPP_RUNTIME_DIR 缺少可执行 whisper-cli。" >&2
+        exit 1
+    fi
+    local runtime_dst="$TMP_APP/Contents/Resources/asr/runtime"
+    echo "==> 打包 whisper.cpp runtime: $MOONGATE_WHISPER_CPP_RUNTIME_DIR"
+    mkdir -p "$runtime_dst"
+    ditto "$MOONGATE_WHISPER_CPP_RUNTIME_DIR" "$runtime_dst"
+    codesign --force --sign - "$runtime_dst/whisper-cli" 2>/dev/null || true
+    local runtime_sha runtime_arch
+    runtime_sha="$(shasum -a 256 "$runtime_dst/whisper-cli" | awk '{print $1}')"
+    runtime_arch="$(uname -m)"
+    case "$runtime_arch" in
+        x86_64|amd64) runtime_arch="x64" ;;
+        aarch64) runtime_arch="arm64" ;;
+    esac
+    cat > "$runtime_dst/asr-runtime-manifest.json" <<JSON
+{
+  "runtimes": [
+    {
+      "provider": "whisper.cpp",
+      "platform": "macos",
+      "architecture": "$runtime_arch",
+      "version": "${MOONGATE_WHISPER_CPP_RUNTIME_VERSION:-local}",
+      "executableRelativePath": "whisper-cli",
+      "sha256": "$runtime_sha",
+      "license": "${MOONGATE_WHISPER_CPP_RUNTIME_LICENSE:-MIT}",
+      "sourceDescription": "${MOONGATE_WHISPER_CPP_RUNTIME_SOURCE:-local staged whisper.cpp runtime}"
+    }
+  ]
+}
+JSON
+}
+
 SPARKLE_FRAMEWORK="$(find_sparkle_framework || true)"
 if [[ -z "$SPARKLE_FRAMEWORK" ]]; then
     echo "找不到 Sparkle.framework；请确认 SwiftPM 已解析 Sparkle 依赖。" >&2
@@ -89,6 +132,7 @@ if [[ "$ICON_READY" == 1 ]]; then
     cp "$ICON_OUT/Assets.car" "$TMP_APP/Contents/Resources/"
     cp "$ICON_OUT/$ICON_SOURCE_NAME.icns" "$TMP_APP/Contents/Resources/$APP_NAME.icns"
 fi
+copy_whisper_cpp_runtime
 
 cat > "$TMP_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

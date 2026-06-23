@@ -7,8 +7,8 @@
         MinWidth="440" MinHeight="480"
         ResizeMode="CanResize" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource WindowBrush}"
-        Foreground="{StaticResource PrimaryTextBrush}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource PrimaryTextBrush}"
         FontSize="13"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
@@ -16,8 +16,8 @@
 
         <!-- 底栏 -->
         <Border DockPanel.Dock="Bottom" Padding="16,12"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,1,0,0">
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="0,1,0,0">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="{DynamicResource L.Common.Cancel}" Style="{StaticResource SecondaryButton}" IsCancel="True"
@@ -25,14 +25,25 @@
                     <Button Content="{DynamicResource L.Common.Done}" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" IsDefault="True"
                             Click="OnDoneClick"/>
                 </StackPanel>
-                <TextBlock Text="{Binding Notice}" FontSize="11.5" Foreground="{StaticResource WarnBrush}"
+                <TextBlock Text="{Binding Notice}" FontSize="11.5" Foreground="{DynamicResource WarnBrush}"
                            TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,10,0"
                            Visibility="{Binding Notice, Converter={StaticResource TextToVis}}"/>
             </DockPanel>
         </Border>
 
-        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12,16,0">
-            <StackPanel Margin="0,0,0,16">
+        <TabControl Margin="16,12,16,0" TabStripPlacement="Left">
+            <TabControl.Resources>
+                <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
+                    <Setter Property="MinWidth" Value="124"/>
+                    <Setter Property="Padding" Value="10,8"/>
+                    <Setter Property="Margin" Value="0,0,10,4"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                </Style>
+            </TabControl.Resources>
+
+            <TabItem Header="{DynamicResource L.SettingsNav.General}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
 
                 <!-- 通用：界面语言 -->
                 <TextBlock Text="{DynamicResource L.Settings.General}" Style="{StaticResource SectionHeader}"/>
@@ -40,7 +51,7 @@
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.Language}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding LanguageIndex}">
+                            <ComboBox SelectedIndex="{Binding LanguageIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Language}">
                                 <ComboBoxItem Content="{DynamicResource L.Settings.LangAuto}"/>
                                 <!-- 语言名按各自语言显示（惯例），不随界面语言翻译 -->
                                 <ComboBoxItem Content="简体中文"/>
@@ -50,7 +61,7 @@
                         </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <TextBlock Text="{DynamicResource L.Settings.TargetLanguage}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding TargetLanguageIndex}">
+                            <ComboBox SelectedIndex="{Binding TargetLanguageIndex}" AutomationProperties.Name="{DynamicResource L.Settings.TargetLanguage}">
                                 <ComboBoxItem Content="简体中文"/>
                                 <ComboBoxItem Content="繁體中文"/>
                                 <ComboBoxItem Content="English"/>
@@ -61,82 +72,28 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 默认 AI 服务 -->
-                <TextBlock Text="{DynamicResource L.Settings.AIService}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <!-- 通用：完成提醒 -->
+                <TextBlock Text="{DynamicResource L.Settings.Notifications}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
-                        <DockPanel>
-                            <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding AIProviderIndex}">
-                                <ComboBoxItem Content="Anthropic-compatible"/>
-                                <ComboBoxItem Content="OpenAI-compatible"/>
-                            </ComboBox>
-                        </DockPanel>
-                        <DockPanel Margin="0,8,0,0">
-                            <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding AIBaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
-                        </DockPanel>
-                        <DockPanel Margin="0,8,0,0">
-                            <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                            <PasswordBox x:Name="AITokenBox" Padding="6,4" PasswordChanged="OnAITokenChanged"/>
-                        </DockPanel>
-                        <TextBlock Text="{Binding AICredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
-                        <DockPanel Margin="80,10,0,0">
-                            <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.FetchModels}" Style="{StaticResource SecondaryButton}"
-                                    Command="{Binding AIEndpoint.FetchModelsCommand}"/>
-                            <TextBlock Text="{Binding AIEndpoint.FetchStatusText}" FontSize="11.5" Margin="10,0,0,0"
-                                       TextWrapping="Wrap" VerticalAlignment="Center"
-                                       Visibility="{Binding AIEndpoint.FetchStatusText, Converter={StaticResource TextToVis}}">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding AIEndpoint.FetchStatusIsError}" Value="True">
-                                                <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                        </DockPanel>
-                        <DockPanel Margin="0,8,0,0"
-                                   Visibility="{Binding AIEndpoint.ShowModelPicker, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
-                            <ComboBox ItemsSource="{Binding AIEndpoint.ModelOptions}"
-                                      SelectedItem="{Binding AIEndpoint.SelectedModelOption}"/>
-                        </DockPanel>
-                        <DockPanel Margin="0,8,0,0">
-                            <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding AIModel, UpdateSourceTrigger=PropertyChanged}"/>
-                        </DockPanel>
-                        <DockPanel Margin="80,10,0,0">
-                            <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.TestConnection}" Style="{StaticResource SecondaryButton}"
-                                    Command="{Binding AIEndpoint.TestConnectionCommand}"/>
-                            <TextBlock Text="{Binding AIEndpoint.TestStatusText}" FontSize="11.5" Margin="10,0,0,0"
-                                       TextWrapping="Wrap" VerticalAlignment="Center"
-                                       Visibility="{Binding AIEndpoint.TestStatusText, Converter={StaticResource TextToVis}}">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding AIEndpoint.TestStatusIsError}" Value="True">
-                                                <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
-                                            </DataTrigger>
-                                            <DataTrigger Binding="{Binding AIEndpoint.TestStatusIsSuccess}" Value="True">
-                                                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                        </DockPanel>
-                        <TextBlock Text="{DynamicResource L.Settings.AIServiceHint}"
-                                   Style="{StaticResource Caption}" Margin="80,4,0,0"/>
+                        <CheckBox Content="{DynamicResource L.Settings.CompletionNotifications}"
+                                  IsChecked="{Binding CompletionNotificationsEnabled}"/>
+                        <CheckBox Content="{DynamicResource L.Settings.CompletionSound}"
+                                  Margin="0,8,0,0"
+                                  IsChecked="{Binding CompletionSoundEnabled}"/>
+                        <TextBlock Text="{DynamicResource L.Settings.NotificationsHelp}"
+                                   Style="{StaticResource Caption}" Margin="0,6,0,0"/>
                     </StackPanel>
                 </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
 
+            <TabItem Header="{DynamicResource L.SettingsNav.SubtitlesTranslation}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
                 <!-- 翻译服务 -->
-                <TextBlock Text="{DynamicResource L.Settings.Translation}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <TextBlock Text="{DynamicResource L.Settings.Translation}" Style="{StaticResource SectionHeader}"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
                         <CheckBox Content="{DynamicResource L.Settings.SmartTranslationPrompts}"
@@ -151,18 +108,18 @@
                                     Visibility="{Binding ShowTranslationOverride, Converter={StaticResource BoolToVis}}">
                             <DockPanel>
                                 <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                                <ComboBox SelectedIndex="{Binding ProviderIndex}">
+                                <ComboBox SelectedIndex="{Binding ProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
                                     <ComboBoxItem Content="Anthropic-compatible"/>
                                     <ComboBoxItem Content="OpenAI-compatible"/>
                                 </ComboBox>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                                <PasswordBox x:Name="TokenBox" Padding="6,4" PasswordChanged="OnTokenChanged"/>
+                                <PasswordBox x:Name="TokenBox" Padding="6,4" PasswordChanged="OnTokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
                             </DockPanel>
                             <TextBlock Text="{Binding CredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
 
@@ -175,10 +132,10 @@
                                            Visibility="{Binding FetchStatusText, Converter={StaticResource TextToVis}}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding FetchStatusIsError}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -189,12 +146,13 @@
                                        Visibility="{Binding ShowModelPicker, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
                                 <ComboBox ItemsSource="{Binding ModelOptions}"
-                                          SelectedItem="{Binding SelectedModelOption}"/>
+                                          SelectedItem="{Binding SelectedModelOption}"
+                                          AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
                             </DockPanel>
                             <!-- 拉不到列表时仍允许手填 -->
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
                             </DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.ModelHint}"
                                        Style="{StaticResource Caption}" Margin="80,4,0,0"/>
@@ -207,13 +165,13 @@
                                            Visibility="{Binding TestStatusText, Converter={StaticResource TextToVis}}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding TestStatusIsError}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding TestStatusIsSuccess}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -221,6 +179,203 @@
                                 </TextBlock>
                             </DockPanel>
                         </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 字幕样式 -->
+                <TextBlock Text="{DynamicResource L.Settings.SubtitleStyle}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.StyleLabel}" Width="96" VerticalAlignment="Center"/>
+                        <ComboBox SelectedIndex="{Binding StyleIndex}" AutomationProperties.Name="{DynamicResource L.Settings.StyleLabel}">
+                            <ComboBoxItem Content="{DynamicResource L.Settings.StyleBilingual}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.StyleChineseOnly}"/>
+                        </ComboBox>
+                    </DockPanel>
+                </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="{DynamicResource L.SettingsNav.LocalSpeech}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
+                        <TextBlock Text="{DynamicResource L.Settings.LocalASRSection}" Style="{StaticResource SectionHeader}"/>
+                        <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                            <StackPanel>
+                                <CheckBox Content="{DynamicResource L.Settings.LocalASREnabled}"
+                                          IsChecked="{Binding LocalAsrEnabled}"/>
+                                <TextBlock Text="{DynamicResource L.Settings.LocalASRHelp}"
+                                           Style="{StaticResource Caption}" Margin="0,5,0,10"/>
+                                <DockPanel>
+                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRRuntimePath}" Width="112" VerticalAlignment="Center"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrRuntimePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRRuntimePath}"/>
+                                </DockPanel>
+                                <Button Content="{DynamicResource L.Settings.LocalASRFindRuntime}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        HorizontalAlignment="Left"
+                                        Margin="112,8,0,0"
+                                        Command="{Binding AdoptLocalAsrRuntimeCommand}"/>
+                                <DockPanel Margin="0,8,0,0">
+                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRModelPath}" Width="112" VerticalAlignment="Center"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelPath}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,8,0,0">
+                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRModelID}" Width="112" VerticalAlignment="Center"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelId, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelID}"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="{DynamicResource L.Settings.LocalASRRecommendedModels}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                        <ItemsControl ItemsSource="{Binding LocalAsrModelCatalogEntries}" Margin="0,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource Card}" Padding="12" Margin="0,0,0,8">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <TextBlock DockPanel.Dock="Right"
+                                                           Text="{Binding InstallState}"
+                                                           Foreground="{DynamicResource SecondaryTextBrush}"/>
+                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                            </DockPanel>
+                                            <DockPanel Margin="0,6,0,0">
+                                                <TextBlock Text="{DynamicResource L.Settings.LocalASRModelSizeMemory}" Width="112"/>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding SizeBytes, StringFormat={}{0:N0} bytes}"/>
+                                                    <TextBlock Text="{Binding MemoryRequiredMb, StringFormat={}{0} MB memory}"
+                                                               Style="{StaticResource Caption}"/>
+                                                </StackPanel>
+                                            </DockPanel>
+                                            <DockPanel Margin="0,6,0,0">
+                                                <TextBlock Text="{DynamicResource L.Settings.LocalASRModelSourceLicense}" Width="112"/>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding SourceDescription}"/>
+                                                    <TextBlock Text="{Binding License}"
+                                                               Style="{StaticResource Caption}"/>
+                                                </StackPanel>
+                                            </DockPanel>
+                                            <DockPanel Margin="0,6,0,0">
+                                                <TextBlock Text="{DynamicResource L.Settings.LocalASRModelSHA256}" Width="112"/>
+                                                <TextBlock Text="{Binding Sha256}"
+                                                           FontFamily="Consolas"
+                                                           TextWrapping="Wrap"/>
+                                            </DockPanel>
+                                            <DockPanel Margin="0,6,0,0">
+                                                <TextBlock Text="{DynamicResource L.Settings.LocalASRModelStatus}" Width="112"/>
+                                                <TextBlock Text="{Binding InstallState}"/>
+                                            </DockPanel>
+                                            <TextBlock Text="{Binding DownloadUrl}"
+                                                       Style="{StaticResource Caption}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,6,0,0"/>
+                                            <TextBlock Text="{DynamicResource L.Settings.LocalASRInstallingModel}"
+                                                       Style="{StaticResource Caption}"
+                                                       Margin="0,8,0,0"
+                                                       Visibility="{Binding DataContext.LocalAsrInstallingModelId, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource TextToVis}}"/>
+                                            <ProgressBar Height="6"
+                                                         Minimum="0"
+                                                         Maximum="1"
+                                                         Value="{Binding DataContext.LocalAsrModelInstallProgress, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                         Margin="0,4,0,0"
+                                                         Visibility="{Binding DataContext.LocalAsrInstallingModelId, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource TextToVis}}"/>
+                                            <Button Content="{DynamicResource L.Settings.LocalASRDownloadModel}"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    HorizontalAlignment="Left"
+                                                    Margin="0,8,0,0"
+                                                    IsEnabled="{Binding DataContext.CanInstallLocalAsrModel, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    Command="{Binding DataContext.InstallLocalAsrModelCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}"/>
+                                            <Button Content="{DynamicResource L.Settings.LocalASRDeleteModel}"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Foreground="{DynamicResource ErrorBrush}"
+                                                    HorizontalAlignment="Left"
+                                                    Margin="0,8,0,0"
+                                                    Command="{Binding DataContext.DeleteLocalAsrModelCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="{DynamicResource L.SettingsNav.AI}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
+                <!-- 默认 AI 服务 -->
+                <TextBlock Text="{DynamicResource L.Settings.AIService}" Style="{StaticResource SectionHeader}"/>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
+                            <ComboBox SelectedIndex="{Binding AIProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
+                                <ComboBoxItem Content="Anthropic-compatible"/>
+                                <ComboBoxItem Content="OpenAI-compatible"/>
+                            </ComboBox>
+                        </DockPanel>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
+                            <TextBox Padding="6,4" Text="{Binding AIBaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="AITokenBox" Padding="6,4" PasswordChanged="OnAITokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding AICredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
+                        <DockPanel Margin="80,10,0,0">
+                            <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.FetchModels}" Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding AIEndpoint.FetchModelsCommand}"/>
+                            <TextBlock Text="{Binding AIEndpoint.FetchStatusText}" FontSize="11.5" Margin="10,0,0,0"
+                                       TextWrapping="Wrap" VerticalAlignment="Center"
+                                       Visibility="{Binding AIEndpoint.FetchStatusText, Converter={StaticResource TextToVis}}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding AIEndpoint.FetchStatusIsError}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </DockPanel>
+                        <DockPanel Margin="0,8,0,0"
+                                   Visibility="{Binding AIEndpoint.ShowModelPicker, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding AIEndpoint.ModelOptions}"
+                                      SelectedItem="{Binding AIEndpoint.SelectedModelOption}" AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
+                            <TextBox Padding="6,4" Text="{Binding AIModel, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
+                        </DockPanel>
+                        <DockPanel Margin="80,10,0,0">
+                            <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.TestConnection}" Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding AIEndpoint.TestConnectionCommand}"/>
+                            <TextBlock Text="{Binding AIEndpoint.TestStatusText}" FontSize="11.5" Margin="10,0,0,0"
+                                       TextWrapping="Wrap" VerticalAlignment="Center"
+                                       Visibility="{Binding AIEndpoint.TestStatusText, Converter={StaticResource TextToVis}}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding AIEndpoint.TestStatusIsError}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding AIEndpoint.TestStatusIsSuccess}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.AIServiceHint}"
+                                   Style="{StaticResource Caption}" Margin="80,4,0,0"/>
                     </StackPanel>
                 </Border>
 
@@ -236,18 +391,18 @@
                                     Visibility="{Binding ShowSummaryOverride, Converter={StaticResource BoolToVis}}">
                             <DockPanel>
                                 <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                                <ComboBox SelectedIndex="{Binding SummaryProviderIndex}">
+                                <ComboBox SelectedIndex="{Binding SummaryProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
                                     <ComboBoxItem Content="Anthropic-compatible"/>
                                     <ComboBoxItem Content="OpenAI-compatible"/>
                                 </ComboBox>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding SummaryBaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding SummaryBaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                                <PasswordBox x:Name="SummaryTokenBox" Padding="6,4" PasswordChanged="OnSummaryTokenChanged"/>
+                                <PasswordBox x:Name="SummaryTokenBox" Padding="6,4" PasswordChanged="OnSummaryTokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
                             </DockPanel>
                             <TextBlock Text="{Binding SummaryCredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
                             <DockPanel Margin="80,10,0,0">
@@ -258,10 +413,10 @@
                                            Visibility="{Binding SummaryEndpoint.FetchStatusText, Converter={StaticResource TextToVis}}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding SummaryEndpoint.FetchStatusIsError}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -272,11 +427,11 @@
                                        Visibility="{Binding SummaryEndpoint.ShowModelPicker, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
                                 <ComboBox ItemsSource="{Binding SummaryEndpoint.ModelOptions}"
-                                          SelectedItem="{Binding SummaryEndpoint.SelectedModelOption}"/>
+                                          SelectedItem="{Binding SummaryEndpoint.SelectedModelOption}" AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding SummaryModel, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding SummaryModel, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
                             </DockPanel>
                             <DockPanel Margin="80,10,0,0">
                                 <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.TestConnection}" Style="{StaticResource SecondaryButton}"
@@ -286,13 +441,13 @@
                                            Visibility="{Binding SummaryEndpoint.TestStatusText, Converter={StaticResource TextToVis}}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding SummaryEndpoint.TestStatusIsError}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding SummaryEndpoint.TestStatusIsSuccess}" Value="True">
-                                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -304,26 +459,20 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
 
-                <!-- 字幕样式 -->
-                <TextBlock Text="{DynamicResource L.Settings.SubtitleStyle}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
-                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
-                    <DockPanel>
-                        <TextBlock Text="{DynamicResource L.Settings.StyleLabel}" Width="96" VerticalAlignment="Center"/>
-                        <ComboBox SelectedIndex="{Binding StyleIndex}">
-                            <ComboBoxItem Content="{DynamicResource L.Settings.StyleBilingual}"/>
-                            <ComboBoxItem Content="{DynamicResource L.Settings.StyleChineseOnly}"/>
-                        </ComboBox>
-                    </DockPanel>
-                </Border>
-
+            <TabItem Header="{DynamicResource L.SettingsNav.VideoOutput}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
                 <!-- 烧录画质 -->
-                <TextBlock Text="{DynamicResource L.Settings.BurnQuality}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <TextBlock Text="{DynamicResource L.Settings.BurnQuality}" Style="{StaticResource SectionHeader}"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.EncodeBackend}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding EncodeBackendIndex}">
+                            <ComboBox SelectedIndex="{Binding EncodeBackendIndex}" AutomationProperties.Name="{DynamicResource L.Settings.EncodeBackend}">
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeAuto}"/>
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeHardware}"/>
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeSoftware}"/>
@@ -375,8 +524,32 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 视频网络 -->
+                <TextBlock Text="{DynamicResource L.Settings.VideoNetwork}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="{DynamicResource L.Settings.VideoProxy}" Width="80" VerticalAlignment="Center"/>
+                            <TextBox Padding="6,4" Text="{Binding VideoProxyUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.VideoProxy}"/>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.VideoProxyHint}"
+                                   Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                        <CheckBox Content="{DynamicResource L.Settings.IgnoreVideoCertificateErrors}"
+                                  IsChecked="{Binding IgnoreVideoCertificateErrors}"
+                                  Margin="0,10,0,0"/>
+                        <TextBlock Text="{DynamicResource L.Settings.IgnoreVideoCertificateErrorsHint}"
+                                   Style="{StaticResource Caption}" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="{DynamicResource L.SettingsNav.SiteLogin}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
                 <!-- 站点登录 -->
-                <TextBlock Text="{DynamicResource L.Settings.SiteLogin}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <TextBlock Text="{DynamicResource L.Settings.SiteLogin}" Style="{StaticResource SectionHeader}"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
                         <TextBlock Text="{Binding LoginStatusText}" Style="{StaticResource Caption}"/>
@@ -388,7 +561,7 @@
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Button Content="{DynamicResource L.Settings.ClearLogins}" Style="{StaticResource SecondaryButton}"
-                                    Foreground="{StaticResource ErrorBrush}"
+                                    Foreground="{DynamicResource ErrorBrush}"
                                     IsEnabled="{Binding HasLogin}"
                                     Click="OnClearLoginsClick"/>
                             <TextBlock Text="{Binding ClearFeedback}" Style="{StaticResource Caption}"
@@ -397,27 +570,15 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
-
-                <!-- 视频网络 -->
-                <TextBlock Text="{DynamicResource L.Settings.VideoNetwork}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
-                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
-                    <StackPanel>
-                        <DockPanel>
-                            <TextBlock Text="{DynamicResource L.Settings.VideoProxy}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding VideoProxyUrl, UpdateSourceTrigger=PropertyChanged}"/>
-                        </DockPanel>
-                        <TextBlock Text="{DynamicResource L.Settings.VideoProxyHint}"
-                                   Style="{StaticResource Caption}" Margin="0,8,0,0"/>
-                        <CheckBox Content="{DynamicResource L.Settings.IgnoreVideoCertificateErrors}"
-                                  IsChecked="{Binding IgnoreVideoCertificateErrors}"
-                                  Margin="0,10,0,0"/>
-                        <TextBlock Text="{DynamicResource L.Settings.IgnoreVideoCertificateErrorsHint}"
-                                   Style="{StaticResource Caption}" Margin="0,6,0,0"/>
                     </StackPanel>
-                </Border>
+                </ScrollViewer>
+            </TabItem>
 
+            <TabItem Header="{DynamicResource L.SettingsNav.ComponentsStorage}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
                 <!-- 依赖组件 -->
-                <TextBlock Text="{DynamicResource L.Settings.Dependencies}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <TextBlock Text="{DynamicResource L.Settings.Dependencies}" Style="{StaticResource SectionHeader}"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
                         <TextBlock Text="{Binding DependencyStatusText}" Style="{StaticResource Caption}"/>
@@ -432,14 +593,132 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 存储 -->
+                <TextBlock Text="{DynamicResource L.Settings.StorageSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <StackPanel>
+                        <!-- 总览 -->
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding StorageTotalSizeText}"
+                                       FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <TextBlock Text="{DynamicResource L.Settings.StorageUsed}" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <Border Height="1" Background="{DynamicResource RowDividerBrush}" Margin="0,10"/>
+
+                        <!-- 应用数据（不提供删除：含设置/登录/缓存，删除会注销） -->
+                        <Grid Margin="0,0,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE713;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageSupportData}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageSupportSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                    Tag="{Binding StorageSupportPath}" Click="OnOpenStorageFolderClick"/>
+                        </Grid>
+
+                        <!-- 本地语音模型（可删除） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE720;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageASRModels}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageModelsSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                <Button Style="{StaticResource SmallButton}"
+                                        Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                        Tag="{Binding StorageModelsPath}" Click="OnOpenStorageFolderClick"/>
+                                <Button Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                        Content="{DynamicResource L.Settings.StorageDelete}"
+                                        Foreground="{DynamicResource ErrorBrush}"
+                                        IsEnabled="{Binding CanDeleteAsrModels}"
+                                        Click="OnDeleteAsrModelsClick"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 依赖组件（删除走「重新下载」，这里只看大小/打开） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE896;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageComponents}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageComponentsSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                    Tag="{Binding StorageComponentsPath}" Click="OnOpenStorageFolderClick"/>
+                        </Grid>
+
+                        <!-- 更新缓存（可清理） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE895;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageUpdateCache}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageUpdateCacheSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageClear}"
+                                    IsEnabled="{Binding CanClearUpdateCache}"
+                                    Click="OnClearUpdateCacheClick"/>
+                        </Grid>
+
+                        <Border Height="1" Background="{DynamicResource RowDividerBrush}" Margin="0,10"/>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Left" Style="{StaticResource SecondaryButton}"
+                                    Content="{DynamicResource L.Settings.StorageRefresh}"
+                                    Command="{Binding RefreshStorageCommand}"/>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.StorageManageHint}"
+                                   Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem>
+                <TabItem.Header>
+                    <DockPanel LastChildFill="True">
+                        <!-- 有可用更新时左侧栏显示红点（对齐 macOS 侧栏角标） -->
+                        <Border DockPanel.Dock="Right" Width="8" Height="8" CornerRadius="4" Margin="6,0,0,0"
+                                VerticalAlignment="Center" Background="{DynamicResource ErrorBrush}"
+                                Visibility="{Binding Updater.IsAvailable, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
+                        <TextBlock Text="{DynamicResource L.SettingsNav.UpdatesAbout}" VerticalAlignment="Center"/>
+                    </DockPanel>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12,0,0,16">
                 <!-- 更新 -->
-                <TextBlock Text="{DynamicResource L.Update.Section}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <TextBlock Text="{DynamicResource L.Update.Section}" Style="{StaticResource SectionHeader}"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Right"
                                        Text="{Binding Updater.CurrentVersion, ElementName=Root, StringFormat=v{0}, Mode=OneWay}"
-                                       Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center"/>
+                                       Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center"/>
                             <TextBlock Text="{DynamicResource L.Update.CurrentVersion}" VerticalAlignment="Center"/>
                         </DockPanel>
                         <TextBlock Text="{Binding Updater.LastCheckedText, ElementName=Root, Mode=OneWay}"
@@ -452,13 +731,13 @@
                             <Button DockPanel.Dock="Right" Content="{DynamicResource L.Update.Check}"
                                     Style="{StaticResource SecondaryButton}" Click="OnCheckUpdateClick"/>
                             <TextBlock Text="{DynamicResource L.Update.UpToDate}" VerticalAlignment="Center"
-                                       Foreground="{StaticResource SuccessBrush}"
+                                       Foreground="{DynamicResource SuccessBrush}"
                                        Visibility="{Binding Updater.IsUpToDate, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
                         </DockPanel>
 
                         <!-- 检查中 -->
                         <TextBlock Margin="0,10,0,0" Text="{DynamicResource L.Update.Checking}"
-                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
                                    Visibility="{Binding Updater.IsChecking, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
 
                         <!-- 发现新版本 -->
@@ -489,19 +768,19 @@
                             <ProgressBar Height="6" Margin="0,6,0,0" Minimum="0" Maximum="1"
                                          Value="{Binding Updater.DownloadFraction, ElementName=Root, Mode=OneWay}"/>
                             <Button Content="{DynamicResource L.Common.Cancel}" HorizontalAlignment="Left" Margin="0,6,0,0"
-                                    Style="{StaticResource LinkButton}" Foreground="{StaticResource SecondaryTextBrush}"
+                                    Style="{StaticResource LinkButton}" Foreground="{DynamicResource SecondaryTextBrush}"
                                     Click="OnCancelUpdateClick"/>
                         </StackPanel>
 
                         <!-- 安装中 -->
                         <TextBlock Margin="0,10,0,0" Text="{DynamicResource L.Update.Installing}"
-                                   Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"
                                    Visibility="{Binding Updater.IsInstalling, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
 
                         <!-- 失败 -->
                         <StackPanel Margin="0,10,0,0"
                                     Visibility="{Binding Updater.IsFailed, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}">
-                            <TextBlock Text="{Binding Updater.FailureReason, ElementName=Root, Mode=OneWay}" Foreground="{StaticResource WarnBrush}"
+                            <TextBlock Text="{Binding Updater.FailureReason, ElementName=Root, Mode=OneWay}" Foreground="{DynamicResource WarnBrush}"
                                        TextWrapping="Wrap"/>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <Button Content="{DynamicResource L.Common.Retry}" Style="{StaticResource SecondaryButton}"
@@ -513,7 +792,25 @@
                     </StackPanel>
                 </Border>
 
-            </StackPanel>
-        </ScrollViewer>
+                <!-- 关于 -->
+                <TextBlock Text="{DynamicResource L.Settings.AboutSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right"
+                                       Text="{Binding Updater.CurrentVersion, ElementName=Root, StringFormat=v{0}, Mode=OneWay}"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{DynamicResource L.Settings.AboutAppName}" FontWeight="SemiBold"/>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.AboutSource}"
+                                   Style="{StaticResource Caption}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
     </DockPanel>
 </Window>

@@ -18,18 +18,52 @@ final class HDRSupportTests: XCTestCase {
 
     // MARK: -f 选择器 HDR 偏好
 
-    func testHDRPreferenceInjectsDynamicRangeConstraintWithFallback() {
-        let base = "bv*[height<=2160]+ba/b[height<=2160]"
+    func testHDRPreferenceInjectsDynamicRangeConstraintWithFallback() throws {
+        let base = YtDlpEngine.videoTierFormatSelector(height: 2160)
         let hdr = YtDlpEngine.applyHDRPreference(to: base, preferHDR: true)
-        // HDR 版加约束，且以 "/" 回退到原始串。
-        XCTAssertTrue(hdr.contains("bv*[dynamic_range!=SDR]"))
-        XCTAssertTrue(hdr.hasSuffix(base))
-        XCTAssertTrue(hdr.contains("/"))
+        let branches = hdr.split(separator: "/").map(String.init)
+
+        // Prefer HDR inside the selected tier, then keep that tier before lower-resolution HDR fallback.
+        XCTAssertEqual(branches, [
+            "bv*[dynamic_range!=SDR][height=2160]+ba",
+            "bv*[height=2160]+ba",
+            "b[height=2160]",
+            "bv*[dynamic_range!=SDR][height<=2160]+ba",
+            "bv*[height<=2160]+ba",
+            "b[height<=2160]",
+        ])
     }
 
     func testHDRPreferenceOffReturnsSelectorUnchanged() {
         let base = "bv*+ba/b"
         XCTAssertEqual(YtDlpEngine.applyHDRPreference(to: base, preferHDR: false), base)
+    }
+
+    func testVideoTierSelectorPrefersExactHeightBeforeLowerFallback() throws {
+        let selector = YtDlpEngine.videoTierFormatSelector(height: 2160)
+
+        XCTAssertEqual(
+            selector,
+            "bv*[height=2160]+ba/b[height=2160]/bv*[height<=2160]+ba/b[height<=2160]"
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(selector.range(of: "[height=2160]")).lowerBound,
+            try XCTUnwrap(selector.range(of: "[height<=2160]")).lowerBound,
+            "The 4K row must try exact 2160p before any <=2160 fallback, or yt-dlp may resolve it to 1080p."
+        )
+    }
+
+    func testTopVideoTierUsesExactHeightBoundSelectorFor4K() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateCore")
+            .appendingPathComponent("Engine.swift"))
+
+        XCTAssertFalse(
+            source.contains("? \"bv*+ba/b\""),
+            "The visible 2160p/4K tier must not use an unbounded best-video selector, which can resolve to 1080p."
+        )
+        XCTAssertTrue(source.contains("videoTierFormatSelector(height: height)"))
     }
 
     // MARK: vcodec 简称
@@ -178,42 +212,81 @@ final class HDRSupportTests: XCTestCase {
     private func select(
         backend: EncodeBackend,
         alwaysH264: Bool = false,
-        sourceIsHEVC: Bool = false,
+        sourceCodec: String? = "h264",
         isHDR: Bool = false,
+        maxrateK: Int? = 6000,
         x265: Bool = true,
         hevcVT: Bool = true,
         h264VT: Bool = true
     ) -> FFmpegBurner.VideoEncoderSelection {
         FFmpegBurner.selectVideoEncoder(
-            backend: backend, alwaysH264: alwaysH264, sourceIsHEVC: sourceIsHEVC, isHDR: isHDR,
-            colorPrimaries: nil, colorTransfer: nil, colorSpace: nil, maxrateK: 6000,
+            backend: backend, alwaysH264: alwaysH264, sourceCodec: sourceCodec, isHDR: isHDR,
+            colorPrimaries: nil, colorTransfer: nil, colorSpace: nil, maxrateK: maxrateK,
             x265Available: x265, hevcVTAvailable: hevcVT, h264VTAvailable: h264VT
         )
     }
 
     func testAutoSDRHEVCSourceUsesHardwareHEVC() {
-        let s = select(backend: .auto, sourceIsHEVC: true)
+        let s = select(backend: .auto, sourceCodec: "hevc")
         XCTAssertTrue(s.encoderArgs.contains("hevc_videotoolbox"))
         XCTAssertTrue(s.encoderArgs.contains("hvc1"))
         XCTAssertFalse(s.encoderArgs.contains("libx265"))
     }
 
     func testSoftwareSDRHEVCSourceUsesLibx265() {
-        let s = select(backend: .software, sourceIsHEVC: true)
+        let s = select(backend: .software, sourceCodec: "hevc")
         XCTAssertTrue(s.encoderArgs.contains("libx265"))
         XCTAssertFalse(s.encoderArgs.contains("hevc_videotoolbox"))
     }
 
-    func testAutoSDRNonHEVCUsesHardwareH264() {
-        let s = select(backend: .auto, sourceIsHEVC: false)
+    func testAutoSDRH264SourceUsesHardwareH264() {
+        let s = select(backend: .auto, sourceCodec: "h264")
         XCTAssertTrue(s.encoderArgs.contains("h264_videotoolbox"))
     }
 
+    func testAutoSDRAV1SourceUsesHardwareHEVCForQuality() {
+        let s = select(backend: .auto, sourceCodec: "av1")
+        XCTAssertTrue(s.encoderArgs.contains("hevc_videotoolbox"))
+        XCTAssertTrue(s.encoderArgs.contains("hvc1"))
+        XCTAssertFalse(s.encoderArgs.contains("h264_videotoolbox"))
+    }
+
+    func testSoftwareSDRVP9SourceUsesLibx265ForQuality() {
+        let s = select(backend: .software, sourceCodec: "vp9")
+        XCTAssertTrue(s.encoderArgs.contains("libx265"))
+        XCTAssertFalse(s.encoderArgs.contains("libx264"))
+    }
+
     func testAlwaysH264ForcesH264EvenForHEVCSource() {
-        let hw = select(backend: .auto, alwaysH264: true, sourceIsHEVC: true)
+        let hw = select(backend: .auto, alwaysH264: true, sourceCodec: "hevc")
         XCTAssertTrue(hw.encoderArgs.contains("h264_videotoolbox"))
-        let sw = select(backend: .software, alwaysH264: true, sourceIsHEVC: true)
+        let sw = select(backend: .software, alwaysH264: true, sourceCodec: "hevc")
         XCTAssertTrue(sw.encoderArgs.contains("libx264"))
+    }
+
+    func testAlwaysH264ForEfficientSourcesUsesHighQualityWithoutNoScaleCap() {
+        let hw = select(
+            backend: .auto,
+            alwaysH264: true,
+            sourceCodec: "av1",
+            maxrateK: nil
+        )
+        XCTAssertTrue(hw.encoderArgs.contains("h264_videotoolbox"))
+        XCTAssertTrue(hw.encoderArgs.contains("-q:v"))
+        XCTAssertTrue(hw.encoderArgs.contains("75"))
+        XCTAssertFalse(hw.encoderArgs.contains("-b:v"))
+        XCTAssertFalse(hw.encoderArgs.contains("-maxrate"))
+
+        let sw = select(
+            backend: .software,
+            alwaysH264: true,
+            sourceCodec: "vp9",
+            maxrateK: nil
+        )
+        XCTAssertTrue(sw.encoderArgs.contains("libx264"))
+        XCTAssertTrue(sw.encoderArgs.contains("-crf"))
+        XCTAssertTrue(sw.encoderArgs.contains("18"))
+        XCTAssertFalse(sw.encoderArgs.contains("-maxrate"))
     }
 
     func testHDRAutoUsesHardwareMain10WithColorMetadata() {
@@ -242,7 +315,7 @@ final class HDRSupportTests: XCTestCase {
 
     func testHardwarePreferredButUnavailableFallsBackToSoftware() {
         // 想用硬件但 VideoToolbox HEVC 不可用 → 回退 libx265。
-        let s = select(backend: .auto, sourceIsHEVC: true, hevcVT: false)
+        let s = select(backend: .auto, sourceCodec: "hevc", hevcVT: false)
         XCTAssertTrue(s.encoderArgs.contains("libx265"))
     }
 
@@ -331,7 +404,7 @@ final class HDRSupportTests: XCTestCase {
 
     private func chain(
         backend: EncodeBackend,
-        sourceIsHEVC: Bool = false,
+        sourceCodec: String? = "h264",
         isHDR: Bool = false,
         alwaysH264: Bool = false,
         x265: Bool = true,
@@ -339,14 +412,14 @@ final class HDRSupportTests: XCTestCase {
         h264VT: Bool = true
     ) -> [FFmpegBurner.VideoEncoderSelection] {
         FFmpegBurner.selectVideoEncoderChain(
-            backend: backend, alwaysH264: alwaysH264, sourceIsHEVC: sourceIsHEVC, isHDR: isHDR,
+            backend: backend, alwaysH264: alwaysH264, sourceCodec: sourceCodec, isHDR: isHDR,
             colorPrimaries: nil, colorTransfer: nil, colorSpace: nil, maxrateK: nil,
             x265Available: x265, hevcVTAvailable: hevcVT, h264VTAvailable: h264VT
         )
     }
 
     func testHardwareHEVCChainFallsBackToLibx265SameCodec() {
-        let c = chain(backend: .auto, sourceIsHEVC: true)
+        let c = chain(backend: .auto, sourceCodec: "hevc")
         XCTAssertEqual(c.count, 2, "硬件主选 + 软件回退")
         XCTAssertTrue(c[0].encoderArgs.contains("hevc_videotoolbox"))
         // 回退仍是 HEVC（libx265），绝不降级成 H.264。
@@ -363,30 +436,76 @@ final class HDRSupportTests: XCTestCase {
     }
 
     func testSoftwareBackendChainHasNoHardwareCandidate() {
-        let c = chain(backend: .software, sourceIsHEVC: true)
+        let c = chain(backend: .software, sourceCodec: "hevc")
         XCTAssertEqual(c.count, 1)
         XCTAssertTrue(c[0].encoderArgs.contains("libx265"))
     }
 
     func testHardwareUnavailableChainHasSingleSoftwareCandidate() {
         // 想用硬件但 VT 不可用：主选已落到软件，回退与主选相同 → 不重复，只一个候选。
-        let c = chain(backend: .auto, sourceIsHEVC: true, hevcVT: false)
+        let c = chain(backend: .auto, sourceCodec: "hevc", hevcVT: false)
         XCTAssertEqual(c.count, 1)
         XCTAssertTrue(c[0].encoderArgs.contains("libx265"))
     }
 
-    // MARK: - 码率一致（不缩放时纯 CRF / -q:v，无 maxrate）
+    // MARK: - 码率封顶（避免压制后体积过度膨胀）
 
-    func testSoftwareNoScaleUsesPureCRFNoMaxrate() {
-        let args = FFmpegBurner.sdrH264VideoArgs(maxrateK: nil)
-        XCTAssertTrue(args.contains("-crf"))
-        XCTAssertFalse(args.contains("-maxrate"), "保持源分辨率时不封顶码率，画质一致")
-    }
-
-    func testSoftwareScaledKeepsMaxrateCap() {
+    func testSoftwareScaledEncodeCanUseMaxrateCap() {
         let args = FFmpegBurner.sdrH264VideoArgs(maxrateK: 6000)
+        XCTAssertTrue(args.contains("-crf"))
         XCTAssertTrue(args.contains("-maxrate"))
         XCTAssertTrue(args.contains("6000k"))
+    }
+
+    func testSoftwareMissingProbeFallsBackToPureCRF() {
+        let args = FFmpegBurner.sdrH264VideoArgs(maxrateK: nil)
+        XCTAssertTrue(args.contains("-crf"))
+        XCTAssertFalse(args.contains("-maxrate"), "探测不到尺寸/码率时保留 CRF 兜底")
+    }
+
+    func testHardwareEncodersUseBitrateCapWhenProvided() {
+        let h264 = FFmpegBurner.hwH264VideoArgs(maxrateK: 6000)
+        XCTAssertTrue(h264.contains("-b:v"))
+        XCTAssertTrue(h264.contains("6000k"))
+        XCTAssertFalse(h264.contains("-q:v"))
+
+        let hevc = FFmpegBurner.hwHEVCVideoArgs(maxrateK: 8000)
+        XCTAssertTrue(hevc.contains("-b:v"))
+        XCTAssertTrue(hevc.contains("8000k"))
+        XCTAssertFalse(hevc.contains("-q:v"))
+    }
+
+    func testBurnerOnlyComputesMaxrateWhenScaling() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateCore")
+            .appendingPathComponent("Burner.swift"))
+
+        XCTAssertTrue(source.contains("let maxrateK: Int? = targetShortSide.map"))
+        XCTAssertFalse(source.contains("let capShortSide = targetShortSide ?? sourceShortSide"))
+        XCTAssertFalse(source.contains("capShortSide.map"))
+    }
+
+    func testScaledCodecAwareMaxrateKeepsFloorForAV1ToH264() {
+        let maxrate = FFmpegBurner.maxrateK(
+            sourceBitRateBPS: 569_000,
+            sourceHeight: 1080,
+            targetHeight: 1080,
+            sourceCodec: "av1",
+            outputCodec: "h264"
+        )
+        XCTAssertGreaterThanOrEqual(maxrate, 3000)
+    }
+
+    func testScaledCodecAwareMaxrateKeepsFloorForAV1ToHEVC() {
+        let maxrate = FFmpegBurner.maxrateK(
+            sourceBitRateBPS: 569_000,
+            sourceHeight: 1080,
+            targetHeight: 1080,
+            sourceCodec: "av1",
+            outputCodec: "hevc"
+        )
+        XCTAssertGreaterThanOrEqual(maxrate, 1800)
     }
 
     func testHEVCSoftwareNoScaleIsPureCRF() {

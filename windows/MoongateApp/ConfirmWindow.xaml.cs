@@ -11,6 +11,7 @@ public partial class ConfirmWindow : Window
     private ConfirmWindow(string message, string? detail, string confirmText, string cancelText)
     {
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         MessageText.Text = message;
         if (string.IsNullOrEmpty(detail))
         {

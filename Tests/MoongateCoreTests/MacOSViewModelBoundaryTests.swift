@@ -51,10 +51,11 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(startDownloadBody.contains("let mode = chineseMode"))
         XCTAssertTrue(startDownloadBody.contains("let selectedFormatIDSnapshot = selectedFormatID"))
         XCTAssertTrue(startDownloadBody.contains("let selectedSubtitleIDsSnapshot = selectedSubtitleIDs"))
+        XCTAssertTrue(startDownloadBody.contains("let primarySubtitleTrackIDSnapshot = primarySubtitleTrackID"))
         XCTAssertTrue(startDownloadBody.contains("let currentSettings = settings"))
         XCTAssertTrue(startDownloadBody.contains("shouldRequireTranslationReadiness(for: mode, info: info)"))
         XCTAssertTrue(startDownloadBody.contains("currentSettings.makeTranslationContext("))
-        XCTAssertTrue(startDownloadBody.contains("sourceLanguage: translationSourceSubtitle(in: info)?.id"))
+        XCTAssertTrue(startDownloadBody.contains("sourceLanguage: translationSourceSubtitle(in: info)?.languageCode"))
         XCTAssertTrue(startDownloadBody.contains("await blockIfTranslationNotReady("))
         XCTAssertTrue(startDownloadBody.contains("settings: currentSettings"))
         XCTAssertTrue(startDownloadBody.contains("guard startSession == session else { return }"))
@@ -63,6 +64,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(startDownloadBody.contains("currentInfo.videoID == info.videoID"))
         XCTAssertTrue(startDownloadBody.contains("guard let formatID = selectedFormatIDSnapshot ?? info.formats.first?.id else { return }"))
         XCTAssertTrue(startDownloadBody.contains("selectedSubtitleIDsSnapshot.contains($0.id)"))
+        XCTAssertTrue(startDownloadBody.contains("primarySubtitleTrackID: primarySubtitleTrackIDSnapshot"))
         XCTAssertTrue(startDownloadBody.contains("queue.enqueue(info: info, request: request, chineseMode: mode, settings: currentSettings)"))
         XCTAssertFalse(compactStartDownloadBody.contains(
             "guard blockIfTranslationNotReady(for: chineseMode) else { return }"
@@ -70,6 +72,16 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("translationRuntimeReadiness("))
         XCTAssertTrue(source.contains("context: translationContext"))
         XCTAssertTrue(source.contains("evaluator: runtimeReadinessEvaluator"))
+    }
+
+    func testStartDownloadScopesPreferHDRToSelectedFormatAvailability() throws {
+        let source = try viewModelSource()
+        let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
+
+        XCTAssertTrue(startDownloadBody.contains("let selectedFormat = info.formats.first { $0.id == formatID }"))
+        XCTAssertTrue(startDownloadBody.contains("let requestPreferHDR = preferHDRSnapshot && (selectedFormat?.hdrAvailable ?? false)"))
+        XCTAssertTrue(startDownloadBody.contains("preferHDR: requestPreferHDR"))
+        XCTAssertFalse(startDownloadBody.contains("preferHDR: preferHDRSnapshot"))
     }
 
     func testBatchChecksTranslationReadinessAfterAutoSelectingSubtitleSource() throws {
@@ -82,7 +94,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
             "let mode = chineseMode guard blockIfTranslationNotReady(for: mode) else { return }"
         ))
 
-        let subtitleSelection = try XCTUnwrap(processBatchBody.range(of: "autoSubtitleLangs = [sub.id]"))
+        let subtitleSelection = try XCTUnwrap(processBatchBody.range(of: "autoSubtitleLangs = [sub.languageCode]"))
         let readinessGate = try XCTUnwrap(processBatchBody.range(of: "shouldRequireTranslationReadiness"))
         let translationContext = try XCTUnwrap(processBatchBody.range(of: "TranslationContext("))
         let contextAwareBlock = try XCTUnwrap(processBatchBody.range(
@@ -96,7 +108,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertLessThan(contextAwareBlock.upperBound, requestConstruction.lowerBound)
         XCTAssertTrue(compactBatchBody.contains("shouldRequireTranslationReadiness( for: mode, info: info,"))
         XCTAssertTrue(processBatchBody.contains("currentSettings.makeTranslationContext("))
-        XCTAssertTrue(processBatchBody.contains("sourceLanguage: subtitleLangs.first ?? autoSubtitleLangs.first"))
+        XCTAssertTrue(processBatchBody.contains("sourceLanguage: subtitleTracks.first?.languageCode"))
         XCTAssertTrue(processBatchBody.contains("await blockIfTranslationNotReady("))
         XCTAssertTrue(processBatchBody.contains("settings: currentSettings"))
         XCTAssertTrue(source.contains(
@@ -137,6 +149,117 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(onAppearBody.contains("refreshSummaryRuntimeReadiness()"))
         XCTAssertTrue(settingsBody.contains("refreshTranslationRuntimeReadiness()"))
         XCTAssertTrue(settingsBody.contains("refreshSummaryRuntimeReadiness()"))
+    }
+
+    func testDefaultQueueReceivesLocalASRGeneratorThroughSettingsFactory() throws {
+        let source = try viewModelSource()
+        let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
+
+        XCTAssertTrue(initializerBody.contains("let initialSettings = AppSettings.load(readCredentials: false)"))
+        XCTAssertTrue(initializerBody.contains("LocalASRGeneratorFactory.make(settings: initialSettings)"))
+        XCTAssertTrue(initializerBody.contains("localASRGenerator:"))
+        XCTAssertFalse(initializerBody.contains("WhisperCppLocalASRSubtitleGenerator("))
+    }
+
+    func testDownloadOptionPersistenceDoesNotRebuildLocalASRGenerator() throws {
+        let source = try viewModelSource()
+        let settingsBody = try XCTUnwrap(publishedSettingsBody(in: source))
+
+        XCTAssertTrue(source.contains("private static func localASRGeneratorSettingsChanged"))
+        XCTAssertTrue(settingsBody.contains("if Self.localASRGeneratorSettingsChanged(oldValue, settings)"))
+        XCTAssertTrue(settingsBody.contains("queue.syncLocalASRGenerator(from: settings)"))
+        XCTAssertFalse(settingsBody.contains("queue.syncLocalASRGenerator(from: settings)\n            refreshTranslationRuntimeReadiness()"))
+    }
+
+    func testDefaultQueueReceivesCompletionNotifierThroughAppLayer() throws {
+        let source = try viewModelSource()
+        let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
+
+        XCTAssertTrue(initializerBody.contains("SystemQueueCompletionNotifier("))
+        XCTAssertTrue(initializerBody.contains("settingsProvider: { AppSettings.load(readCredentials: false) }"))
+        XCTAssertTrue(initializerBody.contains("completionNotifier:"))
+    }
+
+    func testStartupDefersKeychainCredentialReadUntilFirstUse() throws {
+        let source = try viewModelSource()
+        let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
+        // 启动不读凭证（避免首次启动弹 Keychain 授权）
+        XCTAssertTrue(initializerBody.contains("AppSettings.load(readCredentials: false)"))
+        // 幂等 hydrate：真正需要时才从安全存储补齐
+        XCTAssertTrue(source.contains("func hydrateCredentials()"))
+        let hydrateBody = try XCTUnwrap(functionBody(prefix: "func hydrateCredentials", in: source))
+        XCTAssertTrue(hydrateBody.contains("guard !credentialsHydrated"))
+        XCTAssertTrue(hydrateBody.contains("AppSettings.load(readCredentials: true)"))
+        // 首次处理任务 / 开始下载时补齐凭证
+        let parseBody = try XCTUnwrap(functionBody(prefix: "func parse(", in: source))
+        XCTAssertTrue(parseBody.contains("hydrateCredentials()"))
+        let startBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
+        XCTAssertTrue(startBody.contains("hydrateCredentials()"))
+    }
+
+    func testReadySelectionAlwaysIncludesLocalASRTracksAndGatesDownloadOnReadiness() throws {
+        let source = try viewModelSource()
+        let availableBody = try XCTUnwrap(functionBody(prefix: "func availableSubtitleChoices", in: source))
+        let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
+        let translationSourceBody = try XCTUnwrap(functionBody(prefix: "func translationSourceSubtitle", in: source))
+        let settingsBody = try XCTUnwrap(publishedSettingsBody(in: source))
+
+        XCTAssertFalse(availableBody.contains("guard queue.hasLocalASRGenerator else { return choices }"))
+        XCTAssertTrue(availableBody.contains("SubtitleChoice("))
+        XCTAssertTrue(availableBody.contains("sourceKind: .localASR"))
+        XCTAssertTrue(availableBody.contains("provider: \"whisper.cpp\""))
+        XCTAssertTrue(availableBody.contains("variant: \"local\""))
+        XCTAssertTrue(source.contains("var localASRReadyForDownload: Bool"))
+        XCTAssertTrue(source.contains("func openLocalASRSettings()"))
+        XCTAssertTrue(source.contains("pendingSettingsPaneID"))
+        XCTAssertTrue(settingsBody.contains("queue.syncLocalASRGenerator(from: settings)"))
+        XCTAssertTrue(startDownloadBody.contains("availableSubtitleChoices(for: info)"))
+        XCTAssertTrue(startDownloadBody.contains("primaryTrack.sourceKind == .localASR"))
+        XCTAssertTrue(startDownloadBody.contains("!localASRReadyForDownload"))
+        XCTAssertTrue(startDownloadBody.contains("openLocalASRSettings()"))
+        XCTAssertTrue(startDownloadBody.contains("selectedSubtitleIDsSnapshot.contains($0.id)"))
+        XCTAssertTrue(source.contains("@Published var primarySubtitleTrackID: String?"))
+        XCTAssertTrue(source.contains("selectedSubtitleIDs = primarySubtitleTrackID.map { [$0] } ?? []"))
+        XCTAssertTrue(translationSourceBody.contains("primarySubtitleTrack(in: info)"))
+        let primaryTrackBody = try XCTUnwrap(functionBody(prefix: "func primarySubtitleTrack", in: source))
+        XCTAssertTrue(primaryTrackBody.contains("availableSubtitleChoices(for: info)"))
+    }
+
+    func testReadySelectionPersistsStablePrimarySubtitleTrackID() throws {
+        let source = try viewModelSource()
+        let restoreBody = try XCTUnwrap(functionBody(prefix: "private func restoreDownloadOptions", in: source))
+        let persistBody = try XCTUnwrap(functionBody(prefix: "private func persistCurrentDownloadOptions", in: source))
+        let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
+
+        XCTAssertTrue(restoreBody.contains("settings.lastPrimarySubtitleTrackID"))
+        XCTAssertTrue(restoreBody.contains("available.first(where: { $0.id == lastPrimarySubtitleTrackID })"))
+        XCTAssertTrue(restoreBody.contains("exact.sourceKind != .localASR || localASRReadyForDownload"))
+        XCTAssertTrue(restoreBody.contains("best.sourceKind != .localASR"))
+        XCTAssertTrue(persistBody.contains("lastPrimarySubtitleTrackID = primarySubtitleTrackID"))
+        XCTAssertTrue(startDownloadBody.contains("primarySubtitleTrackIDSnapshot"))
+    }
+
+    func testReadySelectionIncludesAutoLocalASRWhenNoPlatformSubtitles() throws {
+        let source = try viewModelSource()
+        let availableBody = try XCTUnwrap(functionBody(prefix: "func availableSubtitleChoices", in: source))
+
+        XCTAssertTrue(availableBody.contains("info.subtitles.isEmpty"))
+        XCTAssertTrue(availableBody.contains("languageCode: \"auto\""))
+        XCTAssertTrue(availableBody.contains("CoreL10n.t(L.Ready.localASRAutoDetectLabel)"))
+        XCTAssertTrue(availableBody.contains("sourceKind: .localASR"))
+        XCTAssertTrue(availableBody.contains("provider: \"whisper.cpp\""))
+        XCTAssertTrue(availableBody.contains("variant: \"local\""))
+    }
+
+    func testDownloadsUseAppOwnedDirectoryForStorageSafety() throws {
+        let source = try viewModelSource()
+        let destinationBody = try XCTUnwrap(functionBody(prefix: "static func destinationDirectory", in: source))
+
+        XCTAssertTrue(source.contains("static var appDownloadsDirectory"))
+        XCTAssertTrue(source.contains("appendingPathComponent(\"Moongate\", isDirectory: true)"))
+        XCTAssertTrue(destinationBody.contains("let downloads = appDownloadsDirectory"))
+        XCTAssertTrue(destinationBody.contains("guard multiFile else { return downloads }"))
+        XCTAssertTrue(destinationBody.contains("downloads.appendingPathComponent(sanitizedFolderName(title), isDirectory: true)"))
     }
 
     private func viewModelSource() throws -> String {

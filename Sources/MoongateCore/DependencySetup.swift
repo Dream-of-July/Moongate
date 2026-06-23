@@ -13,38 +13,54 @@ public enum DependencySetup {
         /// 一句话用途
         public let purpose: String
         public let isInstalled: Bool
+        /// 是否属于普通下载链路的必需组件；本地 whisper.cpp 是可选能力，不阻塞 onboarding。
+        public let isRequired: Bool
     }
 
-    /// 三件套体检。ffmpeg 与 Burner 同口径：必须带 subtitles/libass 渲染能力；
+    /// 依赖体检。ffmpeg 与 Burner 同口径：必须带 subtitles/libass 渲染能力；
     /// JS 运行时 deno/node 任一即可（yt-dlp 解 YouTube n-challenge 需要）。
+    /// whisper.cpp 为本地 ASR 可选组件，不阻塞普通下载。
     public static func check() -> [Component] {
         components(
             ytDlpInstalled: find("yt-dlp") != nil,
             subtitleRendererFfmpegInstalled: FFmpegBurner.locateSubtitleRendererFFmpeg() != nil,
-            jsRuntimeInstalled: find("deno") != nil || find("node") != nil
+            jsRuntimeInstalled: find("deno") != nil || find("node") != nil,
+            localWhisperInstalled: ASRRuntimeLocator(
+                extraSearchURLs: localASRRuntimeSearchURLs()
+            ).locate() != nil || find("whisper-cli") != nil
         )
     }
 
     internal static func components(
         ytDlpInstalled: Bool,
         subtitleRendererFfmpegInstalled: Bool,
-        jsRuntimeInstalled: Bool
+        jsRuntimeInstalled: Bool,
+        localWhisperInstalled: Bool = false
     ) -> [Component] {
         [
             Component(
                 id: "yt-dlp", formula: "yt-dlp",
                 purpose: CoreL10n.t(L.Dependency.purposeYtDlp),
-                isInstalled: ytDlpInstalled
+                isInstalled: ytDlpInstalled,
+                isRequired: true
             ),
             Component(
                 id: "ffmpeg", formula: "ffmpeg-full",
                 purpose: CoreL10n.t(L.Dependency.purposeFfmpeg),
-                isInstalled: subtitleRendererFfmpegInstalled
+                isInstalled: subtitleRendererFfmpegInstalled,
+                isRequired: true
             ),
             Component(
                 id: "deno", formula: "deno",
                 purpose: CoreL10n.t(L.Dependency.purposeDeno),
-                isInstalled: jsRuntimeInstalled
+                isInstalled: jsRuntimeInstalled,
+                isRequired: true
+            ),
+            Component(
+                id: "whisper-cli", formula: "whisper-cpp",
+                purpose: CoreL10n.t(L.Dependency.purposeWhisperCpp),
+                isInstalled: localWhisperInstalled,
+                isRequired: false
             ),
         ]
     }
@@ -53,11 +69,19 @@ public enum DependencySetup {
         components.filter { !$0.isInstalled }
     }
 
-    public static func needsSetup(_ components: [Component]) -> Bool {
-        !missing(from: components).isEmpty
+    public static func missingRequired(from components: [Component]) -> [Component] {
+        components.filter { $0.isRequired && !$0.isInstalled }
     }
 
-    public static var missing: [Component] { missing(from: check()) }
+    public static func missingOptional(from components: [Component]) -> [Component] {
+        components.filter { !$0.isRequired && !$0.isInstalled }
+    }
+
+    public static func needsSetup(_ components: [Component]) -> Bool {
+        !missingRequired(from: components).isEmpty
+    }
+
+    public static var missing: [Component] { missingRequired(from: check()) }
 
     /// Homebrew 可执行路径（Apple Silicon / Intel 双位置）。
     public static func brewPath() -> String? {
@@ -71,6 +95,23 @@ public enum DependencySetup {
             if FileManager.default.isExecutableFile(atPath: path) { return path }
         }
         return nil
+    }
+
+    private static func localASRRuntimeSearchURLs() -> [URL] {
+        let runtimeURL = AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+        var urls = [
+            runtimeURL,
+            runtimeURL.appendingPathComponent("bin", isDirectory: true),
+        ]
+        if let bundledRuntimeURL = Bundle.main.resourceURL?
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true) {
+            urls.append(bundledRuntimeURL)
+            urls.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
+        }
+        return urls
     }
 }
 #endif

@@ -1,6 +1,6 @@
 import Foundation
 import MoongateMobileCore
-#if canImport(Translation)
+#if compiler(>=6.3) && canImport(Translation)
 import Translation
 #endif
 
@@ -41,7 +41,7 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
         let sourceIdentifier = try Self.requiredSourceLanguage(from: request.context)
         let targetIdentifier = try Self.requiredTargetLanguage(from: request.context)
 
-        #if canImport(Translation)
+        #if compiler(>=6.3) && canImport(Translation)
         guard #available(macOS 26.0, iOS 26.0, *) else {
             throw MoongateError.translateFailed(CoreL10n.t(L.Core.appleTranslationUnsupportedOS))
         }
@@ -98,7 +98,7 @@ struct DefaultAppleTranslationExecutor: AppleTranslationExecuting {
     }
 }
 
-#if canImport(Translation)
+#if compiler(>=6.3) && canImport(Translation)
 @available(macOS 26.0, iOS 26.0, *)
 private func executeInstalledTranslation(
     _ request: AppleTranslationBatchRequest,

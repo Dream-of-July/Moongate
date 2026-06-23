@@ -2,8 +2,8 @@ import XCTest
 @testable import MoongateCore
 
 final class EngineProgressTests: XCTestCase {
-    func testDownloadProgressReportsRawPercentAcrossSeparateStreams() {
-        let state = YtDlpEngine.DownloadProgressTracker()
+    func testDownloadProgressAggregatesSeparateMediaStreams() {
+        let state = YtDlpEngine.DownloadProgressTracker(expectedMediaDownloads: 2)
         let recorder = ProgressRecorder()
 
         for line in [
@@ -16,16 +16,33 @@ final class EngineProgressTests: XCTestCase {
         ] {
             YtDlpEngine.handleOutputLine(line, state: state) { update in
                 recorder.append(update.percent)
+                recorder.appendETA(update.etaText)
             }
         }
 
-        XCTAssertEqual(recorder.values, [0, 50, 100, 0, 30, 100])
+        XCTAssertEqual(recorder.values.count, 6)
+        zip(recorder.values, [0, 25, 50, 50, 65, 98]).forEach { actual, expected in
+            XCTAssertEqual(actual, expected, accuracy: 0.0001)
+        }
+        XCTAssertEqual(recorder.etaValues, [nil, nil, nil, nil, nil, nil])
+    }
+
+    func testExpectedMediaDownloadCountClassifiesKnownSelectors() {
+        let exact4K = YtDlpEngine.videoTierFormatSelector(height: 2160)
+        let hdr4K = YtDlpEngine.applyHDRPreference(to: exact4K, preferHDR: true)
+
+        XCTAssertEqual(YtDlpEngine.expectedMediaDownloadCount(for: exact4K), 2)
+        XCTAssertEqual(YtDlpEngine.expectedMediaDownloadCount(for: hdr4K), 2)
+        XCTAssertEqual(YtDlpEngine.expectedMediaDownloadCount(for: "ba[ext=m4a]/ba/best"), 1)
+        XCTAssertEqual(YtDlpEngine.expectedMediaDownloadCount(for: "best"), 1)
+        XCTAssertEqual(YtDlpEngine.expectedMediaDownloadCount(for: "b[dynamic_range=HDR10+]/best"), 1)
     }
 }
 
 private final class ProgressRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [Double] = []
+    private var etaStorage: [String?] = []
 
     var values: [Double] {
         lock.lock()
@@ -33,10 +50,22 @@ private final class ProgressRecorder: @unchecked Sendable {
         return storage
     }
 
+    var etaValues: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return etaStorage
+    }
+
     func append(_ value: Double?) {
         guard let value else { return }
         lock.lock()
         storage.append(value)
+        lock.unlock()
+    }
+
+    func appendETA(_ value: String?) {
+        lock.lock()
+        etaStorage.append(value)
         lock.unlock()
     }
 }
