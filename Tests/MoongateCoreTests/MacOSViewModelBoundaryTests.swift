@@ -155,7 +155,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let source = try viewModelSource()
         let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
 
-        XCTAssertTrue(initializerBody.contains("let initialSettings = AppSettings.load()"))
+        XCTAssertTrue(initializerBody.contains("let initialSettings = AppSettings.load(readCredentials: false)"))
         XCTAssertTrue(initializerBody.contains("LocalASRGeneratorFactory.make(settings: initialSettings)"))
         XCTAssertTrue(initializerBody.contains("localASRGenerator:"))
         XCTAssertFalse(initializerBody.contains("WhisperCppLocalASRSubtitleGenerator("))
@@ -176,8 +176,25 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
 
         XCTAssertTrue(initializerBody.contains("SystemQueueCompletionNotifier("))
-        XCTAssertTrue(initializerBody.contains("settingsProvider: { AppSettings.load() }"))
+        XCTAssertTrue(initializerBody.contains("settingsProvider: { AppSettings.load(readCredentials: false) }"))
         XCTAssertTrue(initializerBody.contains("completionNotifier:"))
+    }
+
+    func testStartupDefersKeychainCredentialReadUntilFirstUse() throws {
+        let source = try viewModelSource()
+        let initializerBody = try XCTUnwrap(functionBody(prefix: "init(", in: source))
+        // 启动不读凭证（避免首次启动弹 Keychain 授权）
+        XCTAssertTrue(initializerBody.contains("AppSettings.load(readCredentials: false)"))
+        // 幂等 hydrate：真正需要时才从安全存储补齐
+        XCTAssertTrue(source.contains("func hydrateCredentials()"))
+        let hydrateBody = try XCTUnwrap(functionBody(prefix: "func hydrateCredentials", in: source))
+        XCTAssertTrue(hydrateBody.contains("guard !credentialsHydrated"))
+        XCTAssertTrue(hydrateBody.contains("AppSettings.load(readCredentials: true)"))
+        // 首次处理任务 / 开始下载时补齐凭证
+        let parseBody = try XCTUnwrap(functionBody(prefix: "func parse(", in: source))
+        XCTAssertTrue(parseBody.contains("hydrateCredentials()"))
+        let startBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
+        XCTAssertTrue(startBody.contains("hydrateCredentials()"))
     }
 
     func testReadySelectionAlwaysIncludesLocalASRTracksAndGatesDownloadOnReadiness() throws {

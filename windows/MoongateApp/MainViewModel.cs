@@ -132,6 +132,9 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     public RelayCommand SummarizeCommand { get; }
     public RelayCommand CancelSummaryCommand { get; }
 
+    /// <summary>App 级共享更新服务，供主窗设置入口的「有可用更新」红点绑定（只读观察，不触发检查）。</summary>
+    public UpdateService Updater => App.WindowsUpdater;
+
     // MARK: - 阶段与派生状态
 
     private ParseStage _stage = ParseStage.Idle;

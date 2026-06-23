@@ -38,7 +38,7 @@
         <Grid>
             <TextBlock x:Name="InitText" Text="{DynamicResource L.Login.LoadingPage}" HorizontalAlignment="Center"
                        VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}"/>
-            <wv2:WebView2 x:Name="WebView"/>
+            <wv2:WebView2 x:Name="WebView" AutomationProperties.Name="{DynamicResource L.Login.Instruction}"/>
         </Grid>
     </DockPanel>
 </Window>

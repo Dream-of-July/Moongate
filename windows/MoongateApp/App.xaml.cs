@@ -100,6 +100,11 @@ public partial class App : Application
             main.Show();
             ThemeManager.ApplyWindowTheme(main);
             StartupDiagnostics.Mark("MainWindow shown");
+
+            // 启动后静默检查更新（6 小时节流），让主窗设置入口的红点能在不打开设置时也亮起。
+            // 只读观察：失败不改状态、不打扰用户；下载/安装仍由设置页显式触发。
+            try { WindowsUpdater.CheckAutomaticSilent(); }
+            catch (Exception updateError) { StartupDiagnostics.RecordException("startup update check", updateError); }
         }
         catch (Exception error)
         {

@@ -1038,6 +1038,149 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerKeepsSpacesAroundLatinRunsInsideCjk()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "cjk-latin",
+            LanguageCode = "zh",
+            Words =
+            [
+                new AsrWord { Text = "說", StartSeconds = 0.0, EndSeconds = 0.2 },
+                new AsrWord { Text = "法", StartSeconds = 0.2, EndSeconds = 0.4 },
+                new AsrWord { Text = "I", StartSeconds = 0.4, EndSeconds = 0.55 },
+                new AsrWord { Text = "'m", StartSeconds = 0.55, EndSeconds = 0.7 },
+                new AsrWord { Text = "actually", StartSeconds = 0.7, EndSeconds = 1.0 },
+                new AsrWord { Text = "a", StartSeconds = 1.0, EndSeconds = 1.1 },
+                new AsrWord { Text = "lingu", StartSeconds = 1.1, EndSeconds = 1.35 },
+                new AsrWord { Text = "ist", StartSeconds = 1.35, EndSeconds = 1.5 },
+                new AsrWord { Text = "這是", StartSeconds = 1.5, EndSeconds = 1.9 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("說法 I'm actually a linguist", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("I 'm", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("I'mactually", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("lingu ist", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRejoinsMainstreamLatinSubwordFragments()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "latin-subwords",
+            LanguageCode = "zh",
+            Words =
+            [
+                new AsrWord { Text = "混合", StartSeconds = 0.0, EndSeconds = 0.15 },
+                new AsrWord { Text = "de", StartSeconds = 0.15, EndSeconds = 0.30 },
+                new AsrWord { Text = "esper", StartSeconds = 0.30, EndSeconds = 0.50 },
+                new AsrWord { Text = "ança", StartSeconds = 0.50, EndSeconds = 0.70 },
+                new AsrWord { Text = "At", StartSeconds = 0.70, EndSeconds = 0.85 },
+                new AsrWord { Text = "ual", StartSeconds = 0.85, EndSeconds = 1.00 },
+                new AsrWord { Text = "mente", StartSeconds = 1.00, EndSeconds = 1.30 },
+                new AsrWord { Text = "yo", StartSeconds = 1.30, EndSeconds = 1.50 },
+                new AsrWord { Text = "siempre", StartSeconds = 1.50, EndSeconds = 1.90 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("de esperança", text, StringComparison.Ordinal);
+        Assert.Contains("yo siempre", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("esper ança", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("yosiempre", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerAbsorbsJapaneseOrphanFragmentsAcrossSoftCaps()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-orphans",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "一緒にい", StartSeconds = 0.0, EndSeconds = 0.48 },
+                new AsrWord { Text = "こう", StartSeconds = 0.76, EndSeconds = 5.72 },
+                new AsrWord { Text = "見て朝の花丸スタンプカ", StartSeconds = 8.0, EndSeconds = 12.8 },
+                new AsrWord { Text = "ード", StartSeconds = 13.08, EndSeconds = 14.2 },
+                new AsrWord { Text = "僕が", StartSeconds = 14.48, EndSeconds = 15.0 },
+                new AsrWord { Text = "顔", StartSeconds = 20.0, EndSeconds = 24.1 },
+                new AsrWord { Text = "洗って偉い", StartSeconds = 24.38, EndSeconds = 26.1 },
+                new AsrWord { Text = "コウペンちゃ", StartSeconds = 30.0, EndSeconds = 31.46 },
+                new AsrWord { Text = "う", StartSeconds = 31.74, EndSeconds = 35.9 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var texts = AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text).ToArray();
+
+        Assert.DoesNotContain("こう", texts);
+        Assert.Contains(texts, text => text.Contains("一緒にいこう", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, text => text.StartsWith("ード", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("スタンプカード", StringComparison.Ordinal));
+        Assert.DoesNotContain("顔", texts);
+        Assert.Contains(texts, text => text.Contains("顔洗って", StringComparison.Ordinal));
+        Assert.DoesNotContain("う", texts);
+        Assert.Contains(texts, text => text.Contains("コウペンちゃう", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerDropsOrShortensJapaneseResidualFragments()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-residuals",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "一緒にいようねさ", StartSeconds = 0.0, EndSeconds = 2.1 },
+                new AsrWord { Text = "っ", StartSeconds = 2.38, EndSeconds = 7.2 },
+                new AsrWord { Text = "ー", StartSeconds = 8.0, EndSeconds = 13.2 },
+                new AsrWord { Text = "ぁ", StartSeconds = 13.5, EndSeconds = 16.9 },
+                new AsrWord { Text = "おはよう", StartSeconds = 20.0, EndSeconds = 21.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+
+        Assert.DoesNotContain(cues, cue => cue.Text is "っ" or "ー" or "ぁ");
+        foreach (var cue in cues.Where(cue => SubtitleTimingPlanner.VisibleCharacters(cue.Text) <= 2))
+        {
+            var start = SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+            var end = SrtTools.SrtTimeToSeconds(cue.End)!.Value;
+            Assert.True(end - start < 3.0, $"short residual-like cue held too long: {cue.Text}");
+        }
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerDoesNotCapBeforeLastCjkWordEnds()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "cjk-last-word",
+            LanguageCode = "zh",
+            Words =
+            [
+                new AsrWord { Text = "早上来这里菜市场", StartSeconds = 0.0, EndSeconds = 6.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cue = Assert.Single(AsrTranscriptMapper.SourceCues(transcript));
+        var end = SrtTools.SrtTimeToSeconds(cue.End)!.Value;
+
+        Assert.True(end >= 6.0, $"cue ended before the last CJK word: {cue.End}");
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerKeepsTrailingParticleAttachedAndDropsNoSpeech()
     {
         var transcript = new AsrTranscript
@@ -1179,12 +1322,34 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void WhisperCueRetimerShortensHoldForMixedCjkLatinRuns()
+    {
+        var mixed = WhisperCueRetimer.Retime(
+            [
+                RetimerCue(10.0, 11.2, "說法I'mactuallyalinguist", 11.0),
+                RetimerCue(13.0, 13.6, "下一句", 13.5),
+            ],
+            null);
+        var mixedEnd = SrtTools.SrtTimeToSeconds(mixed[0].End)!.Value;
+        Assert.Equal(11.0 + WhisperCueRetimer.MixedCjkLatinHoldToNextSeconds, mixedEnd, 3);
+
+        var plainCjk = WhisperCueRetimer.Retime(
+            [
+                RetimerCue(20.0, 21.2, "真正身份是一位語言學家", 21.0),
+                RetimerCue(23.0, 23.6, "下一句", 23.5),
+            ],
+            null);
+        var plainEnd = SrtTools.SrtTimeToSeconds(plainCjk[0].End)!.Value;
+        Assert.Equal(21.0 + WhisperCueRetimer.HoldToNextSeconds, plainEnd, 3);
+    }
+
+    [Fact]
     public void WhisperCueRetimerRespectsDurationCapAndTranscriptLength()
     {
         var longCjk = WhisperCueRetimer.Retime([RetimerCue(10.0, 30.0, "字幕字幕字幕字幕")], null);
         var start = SrtTools.SrtTimeToSeconds(longCjk[0].Start)!.Value;
         var end = SrtTools.SrtTimeToSeconds(longCjk[0].End)!.Value;
-        Assert.True(end - start <= LocalAsrSubtitleTimingPlanner.HardMaximumCjkCueSeconds + 0.0015);
+        Assert.True(end - start <= LocalAsrSubtitleTimingPlanner.RelaxedCjkCueSeconds + 0.0015);
 
         var clamped = WhisperCueRetimer.Retime([RetimerCue(8.0, 20.0, "字幕")], 11.0);
         Assert.True(SrtTools.SrtTimeToSeconds(clamped[0].End)!.Value <= 11.0 + 0.0015);

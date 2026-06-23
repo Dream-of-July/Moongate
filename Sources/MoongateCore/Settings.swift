@@ -377,10 +377,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     static let aiTokenKey = "aiAuthToken"
     static let summaryTokenKey = "summaryAuthToken"
 
-    public static func load() -> AppSettings {
+    /// 加载设置。`readCredentials` 为 false 时跳过 Keychain 凭证读取与明文迁移
+    /// （启动期用，避免首次启动还没真正用到 API 就弹 Keychain 授权；凭证在首次需要时由 App 显式 hydrate）。
+    public static func load(readCredentials: Bool = true) -> AppSettings {
         load(
             supportDirectory: supportDirectory,
-            legacySupportDirectory: legacySupportDirectory
+            legacySupportDirectory: legacySupportDirectory,
+            readCredentials: readCredentials
         )
     }
 
@@ -388,24 +391,28 @@ public struct AppSettings: Codable, Sendable, Equatable {
         supportDirectory: URL,
         legacySupportDirectory: URL,
         settingsFileName: String = "settings.json",
-        cookieFileName: String = "cookies.txt"
+        cookieFileName: String = "cookies.txt",
+        readCredentials: Bool = true
     ) -> AppSettings {
         let settingsURL = supportDirectory.appendingPathComponent(settingsFileName)
+        func applyCredentials(_ parsed: AppSettings) -> AppSettings {
+            readCredentials ? applyAndMigrateCredentials(parsed, settingsFileURL: settingsURL) : parsed
+        }
         guard let data = try? migratedData(
             supportDirectory: supportDirectory,
             legacySupportDirectory: legacySupportDirectory,
             settingsFileName: settingsFileName,
             cookieFileName: cookieFileName
         ) else {
-            return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
+            return applyCredentials(AppSettings())
         }
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            return applyAndMigrateCredentials(settings, settingsFileURL: settingsURL)
+            return applyCredentials(settings)
         }
         // 数据存在但解析失败：不静默回默认并在下次保存时覆盖，而是先把损坏文件改名备份、
         // 置位一次性提示，再返回默认。用户的旧凭证/配置仍有机会人工恢复（DATA-SETTINGS-002）。
         backupCorruptSettings(at: settingsURL)
-        return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
+        return applyCredentials(AppSettings())
     }
 
     /// 把损坏的 settings.json 改名为 settings.corrupt-<timestamp>.json。

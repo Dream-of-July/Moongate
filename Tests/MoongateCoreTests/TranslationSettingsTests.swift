@@ -812,6 +812,43 @@ final class TranslationSettingsTests: XCTestCase {
         func delete(_ key: String) {}
     }
 
+    /// 统计 get 调用次数，用于验证启动期 load 不读 Keychain（避免首次启动弹授权）。
+    private final class CountingCredentialStore: CredentialStore, @unchecked Sendable {
+        private let backing = InMemoryCredentialStore()
+        private(set) var getCount = 0
+        func get(_ key: String) -> String? { getCount += 1; return backing.get(key) }
+        func set(_ key: String, _ value: String) throws { try backing.set(key, value) }
+        func delete(_ key: String) { backing.delete(key) }
+    }
+
+    func testStartupLoadSkipsCredentialReadsUntilHydrated() throws {
+        let prevStore = AppSettings.credentialStore
+        defer { AppSettings.credentialStore = prevStore }
+        let store = CountingCredentialStore()
+        AppSettings.credentialStore = store
+
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("月之门", isDirectory: true)
+        let settingsURL = dir.appendingPathComponent("settings.json")
+        var s = AppSettings()
+        s.aiBaseURL = "https://example.com"
+        s.aiAuthToken = "tok-ai"
+        try s.save(supportDirectory: dir, settingsFileURL: settingsURL)
+        let legacy = root.appendingPathComponent("none")
+
+        // 启动路径：readCredentials: false 不应触发任何 Keychain 读取，Token 留空待 hydrate。
+        let countBeforeLazy = store.getCount
+        let lazy = AppSettings.load(supportDirectory: dir, legacySupportDirectory: legacy, readCredentials: false)
+        XCTAssertEqual(store.getCount, countBeforeLazy, "启动 load 不应读取凭证")
+        XCTAssertEqual(lazy.aiAuthToken, "")
+
+        // 显式需要时：readCredentials: true 从安全存储补齐。
+        let hydrated = AppSettings.load(supportDirectory: dir, legacySupportDirectory: legacy, readCredentials: true)
+        XCTAssertEqual(hydrated.aiAuthToken, "tok-ai")
+        XCTAssertGreaterThan(store.getCount, countBeforeLazy, "hydrate 路径应读取凭证")
+    }
+
     func testCredentialsMigrateLegacyPlaintextIntoStoreAndStripFromDisk() throws {
         let prevStore = AppSettings.credentialStore
         defer { AppSettings.credentialStore = prevStore }

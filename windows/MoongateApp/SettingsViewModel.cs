@@ -29,6 +29,7 @@ public sealed class SettingsViewModel : ObservableObject
     public RelayCommand AdoptLocalAsrRuntimeCommand { get; }
     public RelayCommand<AsrModelCatalogEntry> InstallLocalAsrModelCommand { get; }
     public RelayCommand<AsrModelCatalogEntry> DeleteLocalAsrModelCommand { get; }
+    public RelayCommand RefreshStorageCommand { get; }
 
     public SettingsViewModel(AppSettings current, QueueManager queue, string? initialNotice)
     {
@@ -93,6 +94,7 @@ public sealed class SettingsViewModel : ObservableObject
         AdoptLocalAsrRuntimeCommand = new RelayCommand(AdoptLocalAsrRuntime);
         InstallLocalAsrModelCommand = new RelayCommand<AsrModelCatalogEntry>(entry => _ = InstallLocalAsrModelAsync(entry));
         DeleteLocalAsrModelCommand = new RelayCommand<AsrModelCatalogEntry>(DeleteLocalAsrModel);
+        RefreshStorageCommand = new RelayCommand(() => _ = CalculateStorageSizesAsync(), () => !StorageCalculating);
 
         RefreshLoginStatus();
         RefreshDependencyStatus();
@@ -879,6 +881,177 @@ public sealed class SettingsViewModel : ObservableObject
         AppSettings.SupportDirectory,
         LocalAsrModelStoreDirectory,
         BinaryLocator.BinDirectory);
+
+    // MARK: - 存储管理（只作用于 App-owned 目录：支持数据 / 本地模型 / 依赖组件 / 更新缓存）
+
+    private bool _storageCalculating;
+    public bool StorageCalculating
+    {
+        get => _storageCalculating;
+        private set { if (SetProperty(ref _storageCalculating, value)) RefreshStorageCommand.RaiseCanExecuteChanged(); }
+    }
+
+    private string _storageSupportSizeText = "";
+    public string StorageSupportSizeText { get => _storageSupportSizeText; private set => SetProperty(ref _storageSupportSizeText, value); }
+
+    private string _storageModelsSizeText = "";
+    public string StorageModelsSizeText { get => _storageModelsSizeText; private set => SetProperty(ref _storageModelsSizeText, value); }
+
+    private string _storageComponentsSizeText = "";
+    public string StorageComponentsSizeText { get => _storageComponentsSizeText; private set => SetProperty(ref _storageComponentsSizeText, value); }
+
+    private string _storageUpdateCacheSizeText = "";
+    public string StorageUpdateCacheSizeText { get => _storageUpdateCacheSizeText; private set => SetProperty(ref _storageUpdateCacheSizeText, value); }
+
+    private string _storageTotalSizeText = "";
+    public string StorageTotalSizeText { get => _storageTotalSizeText; private set => SetProperty(ref _storageTotalSizeText, value); }
+
+    public string StorageSupportPath => AppSettings.SupportDirectory;
+    public string StorageModelsPath => LocalAsrModelStoreDirectory;
+    public string StorageComponentsPath => BinaryLocator.BinDirectory;
+
+    private long _storageModelsBytes;
+    public bool CanDeleteAsrModels => _storageModelsBytes > 0;
+
+    private long _storageUpdateCacheBytes;
+    public bool CanClearUpdateCache => _storageUpdateCacheBytes > 0;
+
+    /// <summary>后台线程计算各 App-owned 目录占用，回到 UI 线程更新文案。模型目录在支持目录之下，需从支持数据中扣除以免重复计。</summary>
+    public async Task CalculateStorageSizesAsync()
+    {
+        if (StorageCalculating) return;
+        StorageCalculating = true;
+        var calculating = Loc.S("L.Settings.StorageCalculating");
+        StorageSupportSizeText = calculating;
+        StorageModelsSizeText = calculating;
+        StorageComponentsSizeText = calculating;
+        StorageUpdateCacheSizeText = calculating;
+        StorageTotalSizeText = calculating;
+        var supportDir = AppSettings.SupportDirectory;
+        var modelsDir = LocalAsrModelStoreDirectory;
+        var componentsDir = BinaryLocator.BinDirectory;
+        try
+        {
+            var (support, models, components, updateCache) = await Task.Run(() =>
+            {
+                var m = DirectorySize(modelsDir);
+                var s = Math.Max(DirectorySize(supportDir) - m, 0);
+                return (s, m, DirectorySize(componentsDir), UpdateCacheBytes());
+            }).ConfigureAwait(true);
+            _storageModelsBytes = models;
+            _storageUpdateCacheBytes = updateCache;
+            StorageSupportSizeText = FormatBytes(support);
+            StorageModelsSizeText = FormatBytes(models);
+            StorageComponentsSizeText = FormatBytes(components);
+            StorageUpdateCacheSizeText = FormatBytes(updateCache);
+            StorageTotalSizeText = FormatBytes(support + models + components + updateCache);
+            RaisePropertyChanged(nameof(CanDeleteAsrModels));
+            RaisePropertyChanged(nameof(CanClearUpdateCache));
+        }
+        finally
+        {
+            StorageCalculating = false;
+        }
+    }
+
+    /// <summary>删除全部已安装本地模型（仅清空受管模型目录），刷新模型目录与占用。</summary>
+    public void DeleteAllAsrModels()
+    {
+        try
+        {
+            ClearDirectoryContents(LocalAsrModelStoreDirectory);
+            if (LocalAsrModelId.Length > 0)
+            {
+                LocalAsrModelId = "";
+                LocalAsrModelPath = "";
+            }
+            RefreshLocalAsrModelCatalog();
+        }
+        catch (Exception error)
+        {
+            Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+        _ = CalculateStorageSizesAsync();
+    }
+
+    /// <summary>清理更新临时缓存（安装器残留目录）。</summary>
+    public void ClearUpdateCache()
+    {
+        try
+        {
+            UpdateService.CleanStaleUpdateDirs();
+        }
+        catch (Exception error)
+        {
+            Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+        _ = CalculateStorageSizesAsync();
+    }
+
+    private static long DirectorySize(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path)) return 0;
+            long total = 0;
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try { total += new FileInfo(file).Length; }
+                catch { /* 单文件读不到大小（被占用/权限）跳过 */ }
+            }
+            return total;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static long UpdateCacheBytes()
+    {
+        try
+        {
+            var temp = Path.GetTempPath();
+            if (!Directory.Exists(temp)) return 0;
+            long total = 0;
+            foreach (var dir in Directory.EnumerateDirectories(temp, "moongate-update-*"))
+            {
+                total += DirectorySize(dir);
+            }
+            return total;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static void ClearDirectoryContents(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        foreach (var file in Directory.EnumerateFiles(path))
+        {
+            try { File.Delete(file); } catch { /* 被占用则跳过，刷新时仍计入 */ }
+        }
+        foreach (var dir in Directory.EnumerateDirectories(path))
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* 同上 */ }
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0) return "0 MB";
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit += 1;
+        }
+        return unit <= 1 ? $"{value:0} {units[unit]}" : $"{value:0.0} {units[unit]}";
+    }
 
     /// <summary>
     /// 结构化健康检查（DEP-WIN-003）：跑 --version / -filters 把状态细分为

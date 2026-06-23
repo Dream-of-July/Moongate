@@ -69,14 +69,14 @@
     <sys:String x:Key="L.Mode.BurnIn">翻譯並燒錄進影片</sys:String>
     <sys:String x:Key="L.Mode.BurnOriginal">直接燒錄字幕（不翻譯）</sys:String>
     <sys:String x:Key="L.Ready.NotConfigured">未設定翻譯服務</sys:String>
-    <sys:String x:Key="L.Ready.GoSettings">前往設定</sys:String>
+    <sys:String x:Key="L.Ready.GoSettings">開啟設定</sys:String>
 
     <!-- AI 摘要 -->
     <sys:String x:Key="L.Summary.Section">AI 摘要</sys:String>
-    <sys:String x:Key="L.Summary.Button">✦ 摘要影片內容</sys:String>
+    <sys:String x:Key="L.Summary.Button">摘要影片內容</sys:String>
     <sys:String x:Key="L.Summary.Hint">下載前先用 AI 看一眼這是什麼影片。</sys:String>
     <sys:String x:Key="L.Summary.Running">正在理解影片內容…</sys:String>
-    <sys:String x:Key="L.Summary.Regenerate">↻ 重新摘要</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">重新摘要</sys:String>
     <sys:String x:Key="L.Summary.Unconfigured">摘要需要先在設定裡配置可用的 AI 服務：填寫服務位址、模型和憑證。</sys:String>
 
     <!-- 輸出選項 -->
@@ -276,6 +276,21 @@
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp：{0} · ffmpeg：{1} · deno：{2}</sys:String>
     <sys:String x:Key="L.Settings.StorageSection">儲存</sys:String>
     <sys:String x:Key="L.Settings.StorageStatusFmt">應用程式資料：{0}&#x0a;本機 ASR 模型：{1}&#x0a;內建元件：{2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageUsed">已用空間</sys:String>
+    <sys:String x:Key="L.Settings.StorageSupportData">應用程式資料</sys:String>
+    <sys:String x:Key="L.Settings.StorageASRModels">本機語音模型</sys:String>
+    <sys:String x:Key="L.Settings.StorageComponents">依賴元件</sys:String>
+    <sys:String x:Key="L.Settings.StorageUpdateCache">更新快取</sys:String>
+    <sys:String x:Key="L.Settings.StorageCalculating">計算中…</sys:String>
+    <sys:String x:Key="L.Settings.StorageOpenFolder">開啟所在資料夾</sys:String>
+    <sys:String x:Key="L.Settings.StorageDelete">刪除</sys:String>
+    <sys:String x:Key="L.Settings.StorageClear">清理</sys:String>
+    <sys:String x:Key="L.Settings.StorageRefresh">重新整理</sys:String>
+    <sys:String x:Key="L.Settings.StorageManageHint">這裡只清理應用程式自身產生的資料。下載的影片保存在系統下載資料夾，請到那裡管理。</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsConfirm">刪除全部本機語音模型？</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsDetail">刪除後需要重新下載模型才能使用本機語音辨識。</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheConfirm">清理更新快取？</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheDetail">刪除殘留的更新安裝包暫存檔，不影響已安裝的應用程式。</sys:String>
     <sys:String x:Key="L.Settings.AboutSection">關於</sys:String>
     <sys:String x:Key="L.Settings.AboutAppName">月之門</sys:String>
     <sys:String x:Key="L.Settings.AboutSource">原始碼與發布：GitHub 上的 Dream-of-July/moongate。</sys:String>
@@ -296,6 +311,7 @@
     <sys:String x:Key="L.Update.FoundPrefix">發現新版本 </sys:String>
     <sys:String x:Key="L.Update.DownloadInstall">下載並更新</sys:String>
     <sys:String x:Key="L.Update.OpenReleases">開啟發布頁</sys:String>
+    <sys:String x:Key="L.Update.AvailableBadge">有可用更新</sys:String>
     <sys:String x:Key="L.Update.Downloading">正在下載更新… </sys:String>
     <sys:String x:Key="L.Update.Installing">正在啟動安裝程式，應用程式將退出以完成更新…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">更新包位址不可信，已阻止。請到 GitHub 手動下載。</sys:String>

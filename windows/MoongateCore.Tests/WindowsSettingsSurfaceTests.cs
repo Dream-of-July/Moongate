@@ -29,7 +29,7 @@ public class WindowsSettingsSurfaceTests
         .ToHashSet(StringComparer.Ordinal);
 
     [Fact]
-    public void WindowsFirstRunOnboardingPersistsLanguagesWithoutApiSetup()
+    public void WindowsFirstRunOnboardingPersistsLanguagesAndOffersApiEditor()
     {
         var mainWindowCode = Read("windows", "MoongateApp", "MainWindow.xaml.cs");
         var onboardingXaml = Read("windows", "MoongateApp", "OnboardingWindow.xaml");
@@ -48,16 +48,23 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("AppLanguageBox", onboardingXaml);
         Assert.Contains("TargetLanguageBox", onboardingXaml);
         Assert.Contains("Content=\"繁體中文\"", onboardingXaml);
-        Assert.DoesNotContain("TokenBox", onboardingXaml);
-        Assert.DoesNotContain("AuthToken", onboardingXaml, StringComparison.OrdinalIgnoreCase);
 
+        // v0.8：onboarding 选非本地翻译时内联展示与设置页一致的完整 API 编辑器
+        // （URL / API key / 拉取模型 / 测试连接），复用 APIEndpointActions，不再只设默认值。
+        Assert.Contains("OnboardingApiTokenBox", onboardingXaml);
+        Assert.Contains("Endpoint.FetchModelsCommand", onboardingXaml);
+        Assert.Contains("Endpoint.TestConnectionCommand", onboardingXaml);
+        Assert.Contains("L.Settings.BaseUrl", onboardingXaml);
+        Assert.Contains("L.Settings.TestConnection", onboardingXaml);
+
+        Assert.Contains("APIEndpointActions", onboardingCode);
         Assert.Contains("OnboardingCompleted = true", onboardingCode);
         Assert.Contains("AppLanguage = SelectedAppLanguage", onboardingCode);
         Assert.Contains("TranslationTargetLanguage = SelectedTargetLanguage", onboardingCode);
+        Assert.Contains("AIAuthToken = _apiEditor.AuthToken", onboardingCode);
+        Assert.Contains("AIModel = _apiEditor.Model", onboardingCode);
         Assert.Contains("settings.Save()", onboardingCode);
         Assert.Contains("LocalizationManager.Apply(settings.AppLanguage)", onboardingCode);
-        Assert.DoesNotContain("TranslationAuthToken", onboardingCode);
-        Assert.DoesNotContain("AIAuthToken", onboardingCode);
 
         foreach (var resource in new[] { zh, en, zhHant })
         {
@@ -102,16 +109,13 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("StartButton", onboardingXaml);
 
         Assert.Contains("LocalAsrEnabled = PreferLocalSpeechRecognitionBox.IsChecked == true", onboardingCode);
-        Assert.Contains("SelectedTranslationProvider", onboardingCode);
-        Assert.Contains("TranslationProviderBox.SelectedIndex = main.Settings.AIProvider switch", onboardingCode);
+        Assert.Contains("var provider = SelectedTranslationProvider;", onboardingCode);
         Assert.Contains("SummaryTranslationMethod.Text = SelectedComboBoxText(TranslationProviderBox)", onboardingCode);
-        Assert.Contains("AIProvider = SelectedTranslationProvider", onboardingCode);
-        Assert.Contains("TranslationProvider = SelectedTranslationProvider", onboardingCode);
-        Assert.Contains("AIBaseUrl = SelectedTranslationProvider.DefaultBaseUrl()", onboardingCode);
-        Assert.Contains("TranslationBaseUrl = SelectedTranslationProvider.DefaultBaseUrl()", onboardingCode);
+        Assert.Contains("AIProvider = provider", onboardingCode);
+        Assert.Contains("TranslationProvider = provider", onboardingCode);
+        Assert.Contains("TranslationFollowsDefault = true", onboardingCode);
         Assert.Contains("LocalAsrEnabled", settings);
-        Assert.DoesNotContain("TokenBox", onboardingXaml);
-        Assert.DoesNotContain("AuthToken", onboardingXaml, StringComparison.OrdinalIgnoreCase);
+        // 本地 ASR 仍只收集「是否偏向本地识别」同意，不在 onboarding 暴露模型/运行时路径或下载动作。
         Assert.DoesNotContain("localASRModelPath", onboardingXaml);
         Assert.DoesNotContain("localASRRuntimePath", onboardingXaml);
         Assert.DoesNotContain("downloadModel", onboardingXaml, StringComparison.OrdinalIgnoreCase);
@@ -311,7 +315,16 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("<sys:String x:Key=\"L.SettingsNav.LocalSpeech\">本機語音識別</sys:String>", zhHant);
         foreach (var key in navKeys)
         {
-            Assert.Contains($"Header=\"{{DynamicResource {key}}}\"", xaml);
+            // UpdatesAbout 用复合 Header（带「有可用更新」红点），其余仍是简单 Header 属性。
+            // 两种形式都引用了对应的本地化 key，分组信息架构不变。
+            if (key == "L.SettingsNav.UpdatesAbout")
+            {
+                Assert.Contains($"{{DynamicResource {key}}}", xaml);
+            }
+            else
+            {
+                Assert.Contains($"Header=\"{{DynamicResource {key}}}\"", xaml);
+            }
             foreach (var resource in new[] { zh, en, zhHant })
             {
                 Assert.Contains($"x:Key=\"{key}\"", resource);
@@ -366,8 +379,12 @@ public class WindowsSettingsSurfaceTests
         Assert.True(updatesPageStart > componentsPageStart);
         Assert.True(xaml.IndexOf("L.Settings.StorageSection", StringComparison.Ordinal) > componentsPageStart);
         Assert.True(xaml.IndexOf("L.Settings.StorageSection", StringComparison.Ordinal) < updatesPageStart);
-        Assert.Contains("StorageStatusText", xaml);
+        // v0.8：存储区从纯文字升级为带占用大小 + 删除/清理的管理界面
+        Assert.Contains("StorageTotalSizeText", xaml);
+        Assert.Contains("RefreshStorageCommand", xaml);
+        Assert.Contains("L.Settings.StorageDelete", xaml);
         Assert.Contains("public string StorageStatusText", viewModel);
+        Assert.Contains("CalculateStorageSizesAsync", viewModel);
         Assert.Contains("AppSettings.SupportDirectory", viewModel);
         Assert.Contains("LocalAsrModelStoreDirectory", viewModel);
         Assert.Contains("BinaryLocator.BinDirectory", viewModel);

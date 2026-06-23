@@ -1017,6 +1017,58 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(cues.contains { $0.text.hasSuffix(" the") })
     }
 
+    func testLocalASRTimingPlannerKeepsSpacesAroundLatinRunsInsideCJK() {
+        let transcript = ASRTranscript(
+            id: "cjk-latin",
+            languageCode: "zh",
+            words: [
+                ASRWord(text: "說", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: "法", startSeconds: 0.2, endSeconds: 0.4),
+                ASRWord(text: "I", startSeconds: 0.4, endSeconds: 0.55),
+                ASRWord(text: "'m", startSeconds: 0.55, endSeconds: 0.7),
+                ASRWord(text: "actually", startSeconds: 0.7, endSeconds: 1.0),
+                ASRWord(text: "a", startSeconds: 1.0, endSeconds: 1.1),
+                ASRWord(text: "lingu", startSeconds: 1.1, endSeconds: 1.35),
+                ASRWord(text: "ist", startSeconds: 1.35, endSeconds: 1.5),
+                ASRWord(text: "這是", startSeconds: 1.5, endSeconds: 1.9)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("說法 I'm actually a linguist"))
+        XCTAssertFalse(text.contains("I 'm"))
+        XCTAssertFalse(text.contains("I'mactually"))
+        XCTAssertFalse(text.contains("lingu ist"))
+    }
+
+    func testLocalASRTimingPlannerRejoinsMainstreamLatinSubwordFragments() {
+        let transcript = ASRTranscript(
+            id: "latin-subwords",
+            languageCode: "zh",
+            words: [
+                ASRWord(text: "混合", startSeconds: 0.0, endSeconds: 0.15),
+                ASRWord(text: "de", startSeconds: 0.15, endSeconds: 0.30),
+                ASRWord(text: "esper", startSeconds: 0.30, endSeconds: 0.50),
+                ASRWord(text: "ança", startSeconds: 0.50, endSeconds: 0.70),
+                ASRWord(text: "At", startSeconds: 0.70, endSeconds: 0.85),
+                ASRWord(text: "ual", startSeconds: 0.85, endSeconds: 1.00),
+                ASRWord(text: "mente", startSeconds: 1.00, endSeconds: 1.30),
+                ASRWord(text: "yo", startSeconds: 1.30, endSeconds: 1.50),
+                ASRWord(text: "siempre", startSeconds: 1.50, endSeconds: 1.90)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("de esperança"))
+        XCTAssertTrue(text.contains("yo siempre"))
+        XCTAssertFalse(text.contains("esper ança"))
+        XCTAssertFalse(text.contains("yosiempre"))
+    }
+
     func testLocalASRTimingPlannerMergesLoneShortCue() {
         // A long phrase pushes the soft cap so 「顔」 would break off as a lone 1-char cue; with a big
         // gap to the next word it would otherwise stand alone. It must be merged into a neighbour.
@@ -1035,6 +1087,76 @@ final class ASRContractsTests: XCTestCase {
         let cues = ASRTranscriptMapper.sourceCues(from: transcript)
         XCTAssertFalse(cues.contains { $0.text == "顔" }, "lone 1-char cue must be merged into a neighbour")
         XCTAssertTrue(cues.contains { $0.text.contains("顔") })
+    }
+
+    func testLocalASRTimingPlannerAbsorbsJapaneseOrphanFragmentsAcrossSoftCaps() {
+        let transcript = ASRTranscript(
+            id: "japanese-orphans",
+            languageCode: "ja",
+            words: [
+                ASRWord(text: "一緒にい", startSeconds: 0.0, endSeconds: 0.48),
+                ASRWord(text: "こう", startSeconds: 0.76, endSeconds: 5.72),
+                ASRWord(text: "見て朝の花丸スタンプカ", startSeconds: 8.0, endSeconds: 12.8),
+                ASRWord(text: "ード", startSeconds: 13.08, endSeconds: 14.2),
+                ASRWord(text: "僕が", startSeconds: 14.48, endSeconds: 15.0),
+                ASRWord(text: "顔", startSeconds: 20.0, endSeconds: 24.1),
+                ASRWord(text: "洗って偉い", startSeconds: 24.38, endSeconds: 26.1),
+                ASRWord(text: "コウペンちゃ", startSeconds: 30.0, endSeconds: 31.46),
+                ASRWord(text: "う", startSeconds: 31.74, endSeconds: 35.9)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let texts = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text)
+
+        XCTAssertFalse(texts.contains("こう"), "「こう」 must not stand alone after 「一緒にい」")
+        XCTAssertTrue(texts.contains { $0.contains("一緒にいこう") })
+        XCTAssertFalse(texts.contains { $0.hasPrefix("ード") }, "片仮名の後半だけで cue を始めない")
+        XCTAssertTrue(texts.contains { $0.contains("スタンプカード") })
+        XCTAssertFalse(texts.contains("顔"), "「顔」 must be attached to the following action phrase")
+        XCTAssertTrue(texts.contains { $0.contains("顔洗って") })
+        XCTAssertFalse(texts.contains("う"), "Koupen-chan tail fragment must not stand alone")
+        XCTAssertTrue(texts.contains { $0.contains("コウペンちゃう") })
+    }
+
+    func testLocalASRTimingPlannerDropsOrShortensJapaneseResidualFragments() throws {
+        let transcript = ASRTranscript(
+            id: "japanese-residuals",
+            languageCode: "ja",
+            words: [
+                ASRWord(text: "一緒にいようねさ", startSeconds: 0.0, endSeconds: 2.1),
+                ASRWord(text: "っ", startSeconds: 2.38, endSeconds: 7.2),
+                ASRWord(text: "ー", startSeconds: 8.0, endSeconds: 13.2),
+                ASRWord(text: "ぁ", startSeconds: 13.5, endSeconds: 16.9),
+                ASRWord(text: "おはよう", startSeconds: 20.0, endSeconds: 21.0)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+
+        XCTAssertFalse(cues.contains { ["っ", "ー", "ぁ"].contains($0.text) })
+        for cue in cues where SubtitleTimingPlanner.visibleCharacters(cue.text) <= 2 {
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            XCTAssertLessThan(end - start, 3.0, "short residual-like cue held too long: \(cue.text)")
+        }
+    }
+
+    func testLocalASRTimingPlannerDoesNotCapBeforeLastCJKWordEnds() throws {
+        let transcript = ASRTranscript(
+            id: "cjk-last-word",
+            languageCode: "zh",
+            words: [
+                ASRWord(text: "早上来这里菜市场", startSeconds: 0.0, endSeconds: 6.0)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cue = try XCTUnwrap(ASRTranscriptMapper.sourceCues(from: transcript).first)
+        let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+
+        XCTAssertGreaterThanOrEqual(end, 6.0)
     }
 
     func testCJKWordBoundaryDetectsMidWordVsBoundary() {
@@ -1194,12 +1316,35 @@ final class ASRContractsTests: XCTestCase {
         }
     }
 
+    func testWhisperCueRetimerShortensHoldForMixedCJKLatinRuns() throws {
+        let mixed = WhisperCueRetimer.retime(
+            [
+                retimerCue(10.0, 11.2, "說法I'mactuallyalinguist", lastTokenEnd: 11.0),
+                retimerCue(13.0, 13.6, "下一句", lastTokenEnd: 13.5)
+            ],
+            transcriptDurationSeconds: nil
+        )
+        let mixedEnd = try XCTUnwrap(srtTimeToSeconds(mixed[0].end))
+        XCTAssertEqual(mixedEnd, 11.0 + WhisperCueRetimer.mixedCJKLatinHoldToNextSeconds, accuracy: 0.0015)
+
+        let plainCJK = WhisperCueRetimer.retime(
+            [
+                retimerCue(20.0, 21.2, "真正身份是一位語言學家", lastTokenEnd: 21.0),
+                retimerCue(23.0, 23.6, "下一句", lastTokenEnd: 23.5)
+            ],
+            transcriptDurationSeconds: nil
+        )
+        let plainEnd = try XCTUnwrap(srtTimeToSeconds(plainCJK[0].end))
+        XCTAssertEqual(plainEnd, 21.0 + WhisperCueRetimer.holdToNextSeconds, accuracy: 0.0015)
+    }
+
     func testWhisperCueRetimerRespectsDurationCapAndTranscriptLength() throws {
-        // A long CJK cue must stay within the hard CJK cap even after grouping holds particles.
+        // A long CJK cue may exceed the hard cap to avoid cutting off the last real word,
+        // but it must still stay within the relaxed CJK cap.
         let longCJK = WhisperCueRetimer.retime([retimerCue(10.0, 30.0, "字幕字幕字幕字幕")], transcriptDurationSeconds: nil)
         let start = try XCTUnwrap(srtTimeToSeconds(longCJK[0].start))
         let end = try XCTUnwrap(srtTimeToSeconds(longCJK[0].end))
-        XCTAssertLessThanOrEqual(end - start, LocalASRSubtitleTimingPlanner.hardMaximumCJKCueSeconds + 0.0015)
+        XCTAssertLessThanOrEqual(end - start, LocalASRSubtitleTimingPlanner.relaxedCJKCueSeconds + 0.0015)
 
         // Transcript duration is a hard end ceiling.
         let clamped = WhisperCueRetimer.retime([retimerCue(8.0, 20.0, "字幕")], transcriptDurationSeconds: 11.0)

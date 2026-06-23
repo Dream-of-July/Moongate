@@ -131,6 +131,8 @@ struct SettingsView: View {
         }
         .onChange(of: appleTranslationSourceLanguage) { refreshDraftRuntimeReadiness() }
         .onAppear {
+            // 打开设置即补齐凭证，使 SecureField 显示已存 Token、连接测试/拉模型可用。
+            model.hydrateCredentials()
             draft = model.settings
             applyPendingSettingsPane()
             refreshLoginStatus()
@@ -212,12 +214,11 @@ struct SettingsView: View {
         .accessibilityValue(pane == .updates && updater.updateAvailable ? localizer.t(L.Update.updateAvailableStatus) : "")
     }
 
+    // 有更新可用的提示：布尔状态用无数字红点，而非数字角标（永远是 "1" 语义不对），与 Windows 更新页角标一致。
     private var settingsUpdateBadge: some View {
-        Text("1")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
-            .frame(minWidth: 16, minHeight: 16)
-            .background(Circle().fill(.red))
+        Circle()
+            .fill(.red)
+            .frame(width: 8, height: 8)
             .accessibilityHidden(true)
     }
 

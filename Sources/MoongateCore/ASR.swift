@@ -738,9 +738,12 @@ enum LocalASRSubtitleTimingPlanner {
     private static let phraseTailSeconds = 0.2
     static let maximumCJKCueSeconds = 4.5
     static let hardMaximumCJKCueSeconds = 5.5
+    static let relaxedCJKCueSeconds = 6.5
     static let maximumLatinCueSeconds = SubtitleTimingPlanner.normalReadableCueSeconds
+    private static let shortStandaloneCJKCueSeconds = 2.4
     private static let maximumCJKUnits = 18
     private static let hardMaximumCJKUnits = 28
+    private static let relaxedShortMergeMaxCJKUnits = 34
     private static let maximumLatinTokens = 14
     private static let largeSpeechGapSeconds = 0.65
 
@@ -753,12 +756,43 @@ enum LocalASRSubtitleTimingPlanner {
         "、", "。", "，", "．", "・", "！", "？", "」", "』", "）", "”", "’"
     ]
 
+    /// Standalone residual kana / long-vowel marks that whisper often hallucinates from breath,
+    /// music, or stretched audio. Keeping them as cues creates multi-second 「っ」/「ー」 flashes.
+    private static let droppableJapaneseResiduals: Set<String> = [
+        "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゃ", "ゅ", "ょ", "ゎ"
+    ]
+
     /// A cue with at most this many visible characters is too short to stand alone (e.g. 「顔」,
     /// 「ね」, a lone 「えらい」) and is merged into the temporally-closest neighbour.
     private static let loneMergeMaxVisibleChars = 3
     /// Only merge a lone short cue into a neighbour within this gap (same utterance), so merging
     /// never drags a word across a long pause (which would make it appear early).
     private static let loneMergeMaxGapSeconds = 1.0
+    private static let latinContinuationSuffixes: Set<String> = [
+        "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
+        "ist", "ists", "tion", "tions", "ment", "ness", "less", "able", "ible",
+        "al", "ial", "ual", "cial", "ance", "ence", "ancia", "anca", "ança",
+        "encia", "ência", "eiro", "eira", "eiros", "eiras", "iro", "iros", "ira", "iras",
+        "ais", "ias", "ción", "ciones", "ção", "ções", "dad", "dade", "idades",
+        "mente", "mento", "miento", "amiento", "zione", "zioni",
+        "lich", "chen", "en", "em", "ern", "ung", "ungen", "heit", "keit",
+        "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache"
+    ]
+    private static let strongLatinContinuationSuffixes: Set<String> = [
+        "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
+        "ist", "ists", "tion", "tions", "ment", "ness", "less", "able", "ible"
+    ]
+    private static let latinContinuationFunctionWords: Set<String> = [
+        "a", "an", "and", "as", "at", "but", "by", "for", "from", "if", "in", "is", "it",
+        "of", "on", "or", "the", "to", "we", "you", "he", "she", "they", "i", "me", "my",
+        "un", "una", "une", "le", "la", "les", "de", "des", "du", "et", "ou", "que",
+        "je", "tu", "il", "elle", "nous", "vous", "ce", "ces", "mon", "ma", "mes",
+        "el", "los", "las", "y", "o", "yo", "tú", "tu", "él", "ella", "por", "para", "con",
+        "em", "no", "na", "os", "as", "eu", "nós", "nos", "não", "ao", "à",
+        "io", "noi", "voi", "che", "per", "con",
+        "ich", "du", "er", "sie", "wir", "ihr", "der", "die", "das", "ein", "eine",
+        "mit", "zu", "auf", "im", "am"
+    ]
 
     /// Merge lone, too-short groups into the neighbour they are closest to in time. whisper splits
     /// off single morphemes (especially before/after its own timing gaps); without this they become
@@ -770,24 +804,51 @@ enum LocalASRSubtitleTimingPlanner {
         var result: [[SubtitleCueSourceFragment]] = []
         var index = 0
         while index < groups.count {
-            let group = groups[index]
+            var group = groups[index]
+            if group.count > 1,
+               let previous = result.last,
+               startsWithLeadingProhibited(group[0].text) {
+                let leading = [group[0]]
+                let gapPrev = leading[0].startSeconds - previous.last!.endSeconds
+                if gapPrev <= loneMergeMaxGapSeconds,
+                   fitsMergedCue(previous + leading, absorbingShortGroup: leading) {
+                    result[result.count - 1] = previous + leading
+                    group.removeFirst()
+                }
+            }
+
             let text = joinedText(group)
-            let isShort = SubtitleTimingPlanner.visibleCharacters(text) <= loneMergeMaxVisibleChars && !endsSentence(text)
+            let isShort = isShortJapaneseOrphanGroup(group)
             if isShort {
                 let gapPrev = result.last.map { group.first!.startSeconds - $0.last!.endSeconds }
                     ?? Double.greatestFiniteMagnitude
                 let nextGroup = index + 1 < groups.count ? groups[index + 1] : nil
                 let gapNext = nextGroup.map { $0.first!.startSeconds - group.last!.endSeconds }
                     ?? Double.greatestFiniteMagnitude
-                // Prefer the smaller-gap side; only merge within the same-utterance gap and cue cap.
-                if gapPrev <= gapNext, gapPrev <= loneMergeMaxGapSeconds,
-                   let previous = result.last, fitsMergedCue(previous + group) {
+                let previous = result.last
+                let canMergePrevious = gapPrev <= loneMergeMaxGapSeconds
+                    && previous.map { fitsMergedCue($0 + group, absorbingShortGroup: group) } == true
+                let canMergeNext = gapNext <= loneMergeMaxGapSeconds
+                    && nextGroup.map { fitsMergedCue(group + $0, absorbingShortGroup: group) } == true
+
+                if shouldPreferNextMerge(for: text), canMergeNext, let nextGroup {
+                    result.append(group + nextGroup)
+                    index += 2
+                    continue
+                }
+                if shouldPreferPreviousMerge(for: text), canMergePrevious, let previous {
                     result[result.count - 1] = previous + group
                     index += 1
                     continue
                 }
-                if gapNext < gapPrev, gapNext <= loneMergeMaxGapSeconds,
-                   let nextGroup, fitsMergedCue(group + nextGroup) {
+
+                // Prefer the smaller-gap side; only merge within the same-utterance gap.
+                if canMergePrevious, (!canMergeNext || gapPrev <= gapNext), let previous {
+                    result[result.count - 1] = previous + group
+                    index += 1
+                    continue
+                }
+                if canMergeNext, let nextGroup {
                     result.append(group + nextGroup)
                     index += 2 // consumed current + next
                     continue
@@ -799,15 +860,76 @@ enum LocalASRSubtitleTimingPlanner {
         return result
     }
 
-    private static func fitsMergedCue(_ fragments: [SubtitleCueSourceFragment]) -> Bool {
+    private static func fitsMergedCue(
+        _ fragments: [SubtitleCueSourceFragment],
+        absorbingShortGroup: [SubtitleCueSourceFragment]? = nil
+    ) -> Bool {
         guard let first = fragments.first, let last = fragments.last else { return false }
         let text = joinedText(fragments)
         let duration = last.endSeconds - first.startSeconds
         if containsCJK(text) {
-            return duration <= hardMaximumCJKCueSeconds
-                && SubtitleTimingPlanner.timingTokens(text).count <= hardMaximumCJKUnits
+            let units = SubtitleTimingPlanner.timingTokens(text).count
+            if duration <= hardMaximumCJKCueSeconds && units <= hardMaximumCJKUnits {
+                return true
+            }
+            guard let absorbingShortGroup, isShortJapaneseOrphanGroup(absorbingShortGroup) else {
+                return false
+            }
+            return duration <= relaxedCJKCueSeconds
+                && units <= relaxedShortMergeMaxCJKUnits
         }
         return duration <= maximumLatinCueSeconds
+    }
+
+    static func maximumCueSeconds(for text: String) -> Double {
+        if isShortStandaloneCJKCueText(text) {
+            return shortStandaloneCJKCueSeconds
+        }
+        return containsCJK(text) ? hardMaximumCJKCueSeconds : maximumLatinCueSeconds
+    }
+
+    static func maximumCueSeconds(for text: String, start: Double, lastTokenEnd: Double) -> Double {
+        var cap = maximumCueSeconds(for: text)
+        if containsCJK(text), lastTokenEnd > start + cap {
+            cap = max(cap, min(lastTokenEnd - start, relaxedCJKCueSeconds))
+        }
+        return cap
+    }
+
+    private static func isShortJapaneseOrphanGroup(_ group: [SubtitleCueSourceFragment]) -> Bool {
+        let text = joinedText(group)
+        return containsCJK(text)
+            && SubtitleTimingPlanner.visibleCharacters(text) <= loneMergeMaxVisibleChars
+            && !endsSentence(text)
+    }
+
+    private static func isShortStandaloneCJKCueText(_ text: String) -> Bool {
+        containsCJK(text)
+            && SubtitleTimingPlanner.visibleCharacters(text) <= 2
+            && !endsSentence(text)
+    }
+
+    private static func shouldPreferNextMerge(for text: String) -> Bool {
+        containsKanji(text)
+    }
+
+    private static func shouldPreferPreviousMerge(for text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return false }
+        return cjkLeadingProhibited.contains(first) || !containsKanji(trimmed)
+    }
+
+    private static func startsWithLeadingProhibited(_ text: String) -> Bool {
+        guard let first = text.trimmingCharacters(in: .whitespacesAndNewlines).first else {
+            return false
+        }
+        return cjkLeadingProhibited.contains(first)
+    }
+
+    private static func containsKanji(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(Int(scalar.value))
+        }
     }
 
     static func cleanedSpeechText(_ value: String) -> String {
@@ -885,6 +1007,7 @@ enum LocalASRSubtitleTimingPlanner {
         // Drop no-speech fragments (a lone "?", "...", "♪" etc.) outright — they carry no readable
         // content and otherwise become standalone cues that linger to the cue cap.
         if isPurePunctuation(fragment.text) { return false }
+        if isDroppableJapaneseResidual(fragment.text) { return false }
         return true
     }
 
@@ -901,6 +1024,12 @@ enum LocalASRSubtitleTimingPlanner {
         let candidateDuration = next.endSeconds - first.startSeconds
         if containsCJK(candidateText) {
             let units = SubtitleTimingPlanner.timingTokens(candidateText).count
+            let latinContinuation = isStrongLatinContinuationFragment(left: last.text, right: next.text)
+            if latinContinuation,
+               candidateDuration <= relaxedCJKCueSeconds,
+               units <= relaxedShortMergeMaxCJKUnits {
+                return false
+            }
             // Hard ceilings always break.
             if candidateDuration > hardMaximumCJKCueSeconds { return true }
             if units > hardMaximumCJKUnits { return true }
@@ -917,7 +1046,11 @@ enum LocalASRSubtitleTimingPlanner {
         }
 
         if candidateDuration > maximumLatinCueSeconds { return true }
-        if SubtitleTimingPlanner.speechTokens(candidateText).count > maximumLatinTokens,
+        let latinBudgetText = candidate
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if SubtitleTimingPlanner.speechTokens(latinBudgetText).count > maximumLatinTokens,
            !hasWeakBoundary(left: last.text, right: next.text) {
             return true
         }
@@ -938,7 +1071,8 @@ enum LocalASRSubtitleTimingPlanner {
         if let transcriptDurationSeconds {
             end = min(end, transcriptDurationSeconds)
         }
-        end = min(end, start + (containsCJK(text) ? hardMaximumCJKCueSeconds : maximumLatinCueSeconds))
+        let maximumEnd = start + maximumCueSeconds(for: text, start: start, lastTokenEnd: last.endSeconds)
+        end = min(end, maximumEnd)
         end = max(end, start + minimumCueSeconds)
         // Neighbor-aware timing (lead-in, hold-to-next-onset, no-overlap) is applied later by
         // WhisperCueRetimer. makeCue intentionally does NOT clamp to the next group's start here:
@@ -953,9 +1087,24 @@ enum LocalASRSubtitleTimingPlanner {
     }
 
     private static func joinedText(_ fragments: [SubtitleCueSourceFragment]) -> String {
-        let parts = fragments.map(\.text)
-        let separator = parts.contains(where: containsCJK) ? "" : " "
-        return parts.joined(separator: separator)
+        var output = ""
+        var previous = ""
+        let allowBroadLatinContinuation = containsCJK(fragments.map(\.text).joined())
+        for part in fragments.map(\.text) {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if !output.isEmpty,
+               shouldInsertSpace(
+                left: previous,
+                right: trimmed,
+                allowBroadLatinContinuation: allowBroadLatinContinuation
+               ) {
+                output += " "
+            }
+            output += trimmed
+            previous = trimmed
+        }
+        return output
             .replacingOccurrences(of: "  ", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -964,16 +1113,134 @@ enum LocalASRSubtitleTimingPlanner {
         SubtitleTimingPlanner.containsCJKText(text)
     }
 
+    private static func shouldInsertSpace(
+        left: String,
+        right: String,
+        allowBroadLatinContinuation: Bool
+    ) -> Bool {
+        guard let rightFirst = right.first else { return false }
+        if isNoSpaceBefore(rightFirst) { return false }
+        if isStrongLatinContinuationFragment(left: left, right: right) { return false }
+        if allowBroadLatinContinuation, isLatinContinuationFragment(left: left, right: right) {
+            return false
+        }
+        return containsASCIIAlphanumeric(left) || containsASCIIAlphanumeric(right)
+    }
+
+    private static func containsASCIIAlphanumeric(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            return (0x30...0x39).contains(value)
+                || (0x41...0x5A).contains(value)
+                || (0x61...0x7A).contains(value)
+        }
+    }
+
+    private static func isNoSpaceBefore(_ character: Character) -> Bool {
+        ["'", ".", ",", "!", "?", ":", ";", "。", "、", "！", "？", "，", "：", "；", "）", ")", "」", "』", "”", "’"]
+            .contains(character)
+    }
+
     private static func hasWeakBoundary(left: String, right: String) -> Bool {
         // CJK: never break right before a leading particle / small kana / closing punctuation.
         if let firstChar = right.trimmingCharacters(in: .whitespacesAndNewlines).first,
            cjkLeadingProhibited.contains(firstChar) {
             return true
         }
+        if isStrongLatinContinuationFragment(left: left, right: right) {
+            return true
+        }
         let leftTokens = SubtitleTimingPlanner.wordTokens(left)
         let rightTokens = SubtitleTimingPlanner.wordTokens(right)
         guard let last = leftTokens.last, let first = rightTokens.first else { return false }
         return SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first)
+    }
+
+    private static func isStrongLatinContinuationFragment(left: String, right: String) -> Bool {
+        if hasApostropheInsideLatinRun(left) { return false }
+        let leftRun = trailingLatinLetterRun(left)
+        let rightRun = leadingLatinLetterRun(right)
+        guard !leftRun.isEmpty, !rightRun.isEmpty else { return false }
+        let rightLower = rightRun.lowercased()
+        if strongLatinContinuationSuffixes.contains(rightLower) { return true }
+        return leftRun.count == 1
+            && leftRun == leftRun.uppercased()
+            && startsWithLowercaseLetter(rightRun)
+    }
+
+    private static func isLatinContinuationFragment(left: String, right: String) -> Bool {
+        if hasApostropheInsideLatinRun(left) { return false }
+        let leftRun = trailingLatinLetterRun(left)
+        let rightRun = leadingLatinLetterRun(right)
+        guard !leftRun.isEmpty, !rightRun.isEmpty else { return false }
+        let leftLower = leftRun.lowercased()
+        let rightLower = rightRun.lowercased()
+        if latinContinuationSuffixes.contains(rightLower) { return true }
+        if leftRun.count == 1,
+           leftRun == leftRun.uppercased(),
+           startsWithLowercaseLetter(rightRun) {
+            return true
+        }
+        if leftRun.count <= 3,
+           startsWithUppercaseLetter(leftRun),
+           rightRun.count >= 3,
+           !latinContinuationFunctionWords.contains(rightLower),
+           startsWithLowercaseLetter(rightRun) {
+            return true
+        }
+        if leftRun.count <= 2,
+           rightRun.count >= 3,
+           !latinContinuationFunctionWords.contains(leftLower),
+           !latinContinuationFunctionWords.contains(rightLower),
+           startsWithLowercaseLetter(rightRun) {
+            return true
+        }
+        return false
+    }
+
+    private static func hasApostropheInsideLatinRun(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("'") || trimmed.contains("’")
+    }
+
+    private static func trailingLatinLetterRun(_ text: String) -> String {
+        var characters: [Character] = []
+        for character in text.reversed() {
+            guard isLatinLetter(character) else { break }
+            characters.append(character)
+        }
+        return String(characters.reversed())
+    }
+
+    private static func leadingLatinLetterRun(_ text: String) -> String {
+        var characters: [Character] = []
+        for character in text {
+            guard isLatinLetter(character) else { break }
+            characters.append(character)
+        }
+        return String(characters)
+    }
+
+    private static func isLatinLetter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            let value = scalar.value
+            let inLatinBlock = (0x0041...0x005A).contains(value)
+                || (0x0061...0x007A).contains(value)
+                || (0x00C0...0x00FF).contains(value)
+                || (0x0100...0x024F).contains(value)
+                || (0x1E00...0x1EFF).contains(value)
+            return inLatinBlock && CharacterSet.letters.contains(scalar)
+        }
+    }
+
+    private static func startsWithLowercaseLetter(_ text: String) -> Bool {
+        guard let first = text.first else { return false }
+        return first.lowercased() == String(first) && first.uppercased() != String(first)
+    }
+
+    private static func startsWithUppercaseLetter(_ text: String) -> Bool {
+        guard let first = text.first else { return false }
+        return first.uppercased() == String(first) && first.lowercased() != String(first)
     }
 
     private static func endsSentence(_ value: String) -> Bool {
@@ -990,6 +1257,10 @@ enum LocalASRSubtitleTimingPlanner {
             CharacterSet.punctuationCharacters.contains(scalar)
                 || CharacterSet.symbols.contains(scalar)
         }
+    }
+
+    private static func isDroppableJapaneseResidual(_ text: String) -> Bool {
+        droppableJapaneseResiduals.contains(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 
@@ -1044,6 +1315,9 @@ public enum WhisperCueRetimer {
     /// than human captions, so holding toward the next onset cuts the dominant early-cutoff
     /// failures; capped so a long pause never produces a long idle hold.
     public static let holdToNextSeconds = 0.7
+    /// Mixed CJK + Latin/number runs are often ASR-glued code switches; use a shorter hold so
+    /// pasted English fragments do not linger across the next silence.
+    public static let mixedCJKLatinHoldToNextSeconds = 0.45
     private static let minimumCueSeconds = LocalASRSubtitleTimingPlanner.minimumCueSeconds
     private static let epsilon = 0.001
 
@@ -1064,13 +1338,16 @@ public enum WhisperCueRetimer {
             guard let start = srtTimeToSeconds(cue.start), let end = srtTimeToSeconds(cue.end) else {
                 return cues // unparseable input: leave untouched rather than corrupt timing
             }
-            let cap = SubtitleTimingPlanner.containsCJKText(cue.text)
-                ? LocalASRSubtitleTimingPlanner.hardMaximumCJKCueSeconds
-                : LocalASRSubtitleTimingPlanner.maximumLatinCueSeconds
+            let lastTokenEnd = cue.sourceFragments.last?.endSeconds ?? end
+            let cap = LocalASRSubtitleTimingPlanner.maximumCueSeconds(
+                for: cue.text,
+                start: start,
+                lastTokenEnd: lastTokenEnd
+            )
             raws.append(RawCue(
                 start: start,
                 end: end,
-                lastTokenEnd: cue.sourceFragments.last?.endSeconds ?? end,
+                lastTokenEnd: lastTokenEnd,
                 text: cue.text,
                 fragments: cue.sourceFragments,
                 cap: cap
@@ -1097,7 +1374,8 @@ public enum WhisperCueRetimer {
             // word ends, capped at holdToNextSeconds past the last token (so a long pause cannot
             // produce a long idle hold) and at the next onset minus a guard (so cues never overlap).
             let ceiling = hasNext ? nextStart - interCueGuardSeconds : Double.greatestFiniteMagnitude
-            var end = max(raw.end, min(ceiling, raw.lastTokenEnd + holdToNextSeconds))
+            let hold = holdToNextSeconds(for: raw.text)
+            var end = max(raw.end, min(ceiling, raw.lastTokenEnd + hold))
             if let duration = transcriptDurationSeconds { end = min(end, duration) }
             end = min(end, start + raw.cap)
             end = max(end, start + minimumCueSeconds) // minimum readable duration (before overlap clamp)
@@ -1115,6 +1393,20 @@ public enum WhisperCueRetimer {
             previousEnd = end
         }
         return output
+    }
+
+    private static func holdToNextSeconds(for text: String) -> Double {
+        containsCJKLatinMix(text) ? mixedCJKLatinHoldToNextSeconds : holdToNextSeconds
+    }
+
+    private static func containsCJKLatinMix(_ text: String) -> Bool {
+        guard SubtitleTimingPlanner.containsCJKText(text) else { return false }
+        return text.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            return (0x30...0x39).contains(value)
+                || (0x41...0x5A).contains(value)
+                || (0x61...0x7A).contains(value)
+        }
     }
 }
 

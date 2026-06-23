@@ -33,7 +33,7 @@
 
         <TabControl Margin="16,12,16,0" TabStripPlacement="Left">
             <TabControl.Resources>
-                <Style TargetType="TabItem">
+                <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
                     <Setter Property="MinWidth" Value="124"/>
                     <Setter Property="Padding" Value="10,8"/>
                     <Setter Property="Margin" Value="0,0,10,4"/>
@@ -51,7 +51,7 @@
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.Language}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding LanguageIndex}">
+                            <ComboBox SelectedIndex="{Binding LanguageIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Language}">
                                 <ComboBoxItem Content="{DynamicResource L.Settings.LangAuto}"/>
                                 <!-- 语言名按各自语言显示（惯例），不随界面语言翻译 -->
                                 <ComboBoxItem Content="简体中文"/>
@@ -61,7 +61,7 @@
                         </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <TextBlock Text="{DynamicResource L.Settings.TargetLanguage}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding TargetLanguageIndex}">
+                            <ComboBox SelectedIndex="{Binding TargetLanguageIndex}" AutomationProperties.Name="{DynamicResource L.Settings.TargetLanguage}">
                                 <ComboBoxItem Content="简体中文"/>
                                 <ComboBoxItem Content="繁體中文"/>
                                 <ComboBoxItem Content="English"/>
@@ -108,18 +108,18 @@
                                     Visibility="{Binding ShowTranslationOverride, Converter={StaticResource BoolToVis}}">
                             <DockPanel>
                                 <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                                <ComboBox SelectedIndex="{Binding ProviderIndex}">
+                                <ComboBox SelectedIndex="{Binding ProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
                                     <ComboBoxItem Content="Anthropic-compatible"/>
                                     <ComboBoxItem Content="OpenAI-compatible"/>
                                 </ComboBox>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                                <PasswordBox x:Name="TokenBox" Padding="6,4" PasswordChanged="OnTokenChanged"/>
+                                <PasswordBox x:Name="TokenBox" Padding="6,4" PasswordChanged="OnTokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
                             </DockPanel>
                             <TextBlock Text="{Binding CredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
 
@@ -146,12 +146,13 @@
                                        Visibility="{Binding ShowModelPicker, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
                                 <ComboBox ItemsSource="{Binding ModelOptions}"
-                                          SelectedItem="{Binding SelectedModelOption}"/>
+                                          SelectedItem="{Binding SelectedModelOption}"
+                                          AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
                             </DockPanel>
                             <!-- 拉不到列表时仍允许手填 -->
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
                             </DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.ModelHint}"
                                        Style="{StaticResource Caption}" Margin="80,4,0,0"/>
@@ -186,7 +187,7 @@
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <DockPanel>
                         <TextBlock Text="{DynamicResource L.Settings.StyleLabel}" Width="96" VerticalAlignment="Center"/>
-                        <ComboBox SelectedIndex="{Binding StyleIndex}">
+                        <ComboBox SelectedIndex="{Binding StyleIndex}" AutomationProperties.Name="{DynamicResource L.Settings.StyleLabel}">
                             <ComboBoxItem Content="{DynamicResource L.Settings.StyleBilingual}"/>
                             <ComboBoxItem Content="{DynamicResource L.Settings.StyleChineseOnly}"/>
                         </ComboBox>
@@ -208,7 +209,7 @@
                                            Style="{StaticResource Caption}" Margin="0,5,0,10"/>
                                 <DockPanel>
                                     <TextBlock Text="{DynamicResource L.Settings.LocalASRRuntimePath}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrRuntimePath, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrRuntimePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRRuntimePath}"/>
                                 </DockPanel>
                                 <Button Content="{DynamicResource L.Settings.LocalASRFindRuntime}"
                                         Style="{StaticResource SecondaryButton}"
@@ -217,11 +218,11 @@
                                         Command="{Binding AdoptLocalAsrRuntimeCommand}"/>
                                 <DockPanel Margin="0,8,0,0">
                                     <TextBlock Text="{DynamicResource L.Settings.LocalASRModelPath}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelPath, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelPath}"/>
                                 </DockPanel>
                                 <DockPanel Margin="0,8,0,0">
                                     <TextBlock Text="{DynamicResource L.Settings.LocalASRModelID}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelId, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelId, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelID}"/>
                                 </DockPanel>
                             </StackPanel>
                         </Border>
@@ -310,18 +311,18 @@
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding AIProviderIndex}">
+                            <ComboBox SelectedIndex="{Binding AIProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
                                 <ComboBoxItem Content="Anthropic-compatible"/>
                                 <ComboBoxItem Content="OpenAI-compatible"/>
                             </ComboBox>
                         </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding AIBaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Padding="6,4" Text="{Binding AIBaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
                         </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                            <PasswordBox x:Name="AITokenBox" Padding="6,4" PasswordChanged="OnAITokenChanged"/>
+                            <PasswordBox x:Name="AITokenBox" Padding="6,4" PasswordChanged="OnAITokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
                         </DockPanel>
                         <TextBlock Text="{Binding AICredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
                         <DockPanel Margin="80,10,0,0">
@@ -346,11 +347,11 @@
                                    Visibility="{Binding AIEndpoint.ShowModelPicker, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
                             <ComboBox ItemsSource="{Binding AIEndpoint.ModelOptions}"
-                                      SelectedItem="{Binding AIEndpoint.SelectedModelOption}"/>
+                                      SelectedItem="{Binding AIEndpoint.SelectedModelOption}" AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
                         </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding AIModel, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Padding="6,4" Text="{Binding AIModel, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
                         </DockPanel>
                         <DockPanel Margin="80,10,0,0">
                             <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.TestConnection}" Style="{StaticResource SecondaryButton}"
@@ -390,18 +391,18 @@
                                     Visibility="{Binding ShowSummaryOverride, Converter={StaticResource BoolToVis}}">
                             <DockPanel>
                                 <TextBlock Text="{DynamicResource L.Settings.Protocol}" Width="80" VerticalAlignment="Center"/>
-                                <ComboBox SelectedIndex="{Binding SummaryProviderIndex}">
+                                <ComboBox SelectedIndex="{Binding SummaryProviderIndex}" AutomationProperties.Name="{DynamicResource L.Settings.Protocol}">
                                     <ComboBoxItem Content="Anthropic-compatible"/>
                                     <ComboBoxItem Content="OpenAI-compatible"/>
                                 </ComboBox>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.BaseUrl}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding SummaryBaseUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding SummaryBaseUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.BaseUrl}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.Credential}" Width="80" VerticalAlignment="Center"/>
-                                <PasswordBox x:Name="SummaryTokenBox" Padding="6,4" PasswordChanged="OnSummaryTokenChanged"/>
+                                <PasswordBox x:Name="SummaryTokenBox" Padding="6,4" PasswordChanged="OnSummaryTokenChanged" AutomationProperties.Name="{DynamicResource L.Settings.Credential}"/>
                             </DockPanel>
                             <TextBlock Text="{Binding SummaryCredentialHelpText}" Style="{StaticResource Caption}" Margin="80,4,0,0"/>
                             <DockPanel Margin="80,10,0,0">
@@ -426,11 +427,11 @@
                                        Visibility="{Binding SummaryEndpoint.ShowModelPicker, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="{DynamicResource L.Settings.SelectModel}" Width="80" VerticalAlignment="Center"/>
                                 <ComboBox ItemsSource="{Binding SummaryEndpoint.ModelOptions}"
-                                          SelectedItem="{Binding SummaryEndpoint.SelectedModelOption}"/>
+                                          SelectedItem="{Binding SummaryEndpoint.SelectedModelOption}" AutomationProperties.Name="{DynamicResource L.Settings.SelectModel}"/>
                             </DockPanel>
                             <DockPanel Margin="0,8,0,0">
                                 <TextBlock Text="{DynamicResource L.Settings.ModelName}" Width="80" VerticalAlignment="Center"/>
-                                <TextBox Padding="6,4" Text="{Binding SummaryModel, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Padding="6,4" Text="{Binding SummaryModel, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.ModelName}"/>
                             </DockPanel>
                             <DockPanel Margin="80,10,0,0">
                                 <Button DockPanel.Dock="Left" Content="{DynamicResource L.Settings.TestConnection}" Style="{StaticResource SecondaryButton}"
@@ -471,7 +472,7 @@
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.EncodeBackend}" Width="96" VerticalAlignment="Center"/>
-                            <ComboBox SelectedIndex="{Binding EncodeBackendIndex}">
+                            <ComboBox SelectedIndex="{Binding EncodeBackendIndex}" AutomationProperties.Name="{DynamicResource L.Settings.EncodeBackend}">
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeAuto}"/>
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeHardware}"/>
                                 <ComboBoxItem Content="{DynamicResource L.Settings.EncodeSoftware}"/>
@@ -529,7 +530,7 @@
                     <StackPanel>
                         <DockPanel>
                             <TextBlock Text="{DynamicResource L.Settings.VideoProxy}" Width="80" VerticalAlignment="Center"/>
-                            <TextBox Padding="6,4" Text="{Binding VideoProxyUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Padding="6,4" Text="{Binding VideoProxyUrl, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.VideoProxy}"/>
                         </DockPanel>
                         <TextBlock Text="{DynamicResource L.Settings.VideoProxyHint}"
                                    Style="{StaticResource Caption}" Margin="0,8,0,0"/>
@@ -595,15 +596,119 @@
                 <!-- 存储 -->
                 <TextBlock Text="{DynamicResource L.Settings.StorageSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
-                    <TextBlock Text="{Binding StorageStatusText}"
-                               Style="{StaticResource Caption}"
-                               TextWrapping="Wrap"/>
+                    <StackPanel>
+                        <!-- 总览 -->
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding StorageTotalSizeText}"
+                                       FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <TextBlock Text="{DynamicResource L.Settings.StorageUsed}" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <Border Height="1" Background="{DynamicResource RowDividerBrush}" Margin="0,10"/>
+
+                        <!-- 应用数据（不提供删除：含设置/登录/缓存，删除会注销） -->
+                        <Grid Margin="0,0,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE713;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageSupportData}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageSupportSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                    Tag="{Binding StorageSupportPath}" Click="OnOpenStorageFolderClick"/>
+                        </Grid>
+
+                        <!-- 本地语音模型（可删除） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE720;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageASRModels}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageModelsSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                <Button Style="{StaticResource SmallButton}"
+                                        Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                        Tag="{Binding StorageModelsPath}" Click="OnOpenStorageFolderClick"/>
+                                <Button Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                        Content="{DynamicResource L.Settings.StorageDelete}"
+                                        Foreground="{DynamicResource ErrorBrush}"
+                                        IsEnabled="{Binding CanDeleteAsrModels}"
+                                        Click="OnDeleteAsrModelsClick"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 依赖组件（删除走「重新下载」，这里只看大小/打开） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE896;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageComponents}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageComponentsSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageOpenFolder}"
+                                    Tag="{Binding StorageComponentsPath}" Click="OnOpenStorageFolderClick"/>
+                        </Grid>
+
+                        <!-- 更新缓存（可清理） -->
+                        <Grid Margin="0,6,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE895;" FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{DynamicResource L.Settings.StorageUpdateCache}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="{Binding StorageUpdateCacheSizeText}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" Margin="8,0,8,0"/>
+                            <Button Grid.Column="3" Style="{StaticResource SmallButton}"
+                                    Content="{DynamicResource L.Settings.StorageClear}"
+                                    IsEnabled="{Binding CanClearUpdateCache}"
+                                    Click="OnClearUpdateCacheClick"/>
+                        </Grid>
+
+                        <Border Height="1" Background="{DynamicResource RowDividerBrush}" Margin="0,10"/>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Left" Style="{StaticResource SecondaryButton}"
+                                    Content="{DynamicResource L.Settings.StorageRefresh}"
+                                    Command="{Binding RefreshStorageCommand}"/>
+                        </DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.StorageManageHint}"
+                                   Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                    </StackPanel>
                 </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="{DynamicResource L.SettingsNav.UpdatesAbout}">
+            <TabItem>
+                <TabItem.Header>
+                    <DockPanel LastChildFill="True">
+                        <!-- 有可用更新时左侧栏显示红点（对齐 macOS 侧栏角标） -->
+                        <Border DockPanel.Dock="Right" Width="8" Height="8" CornerRadius="4" Margin="6,0,0,0"
+                                VerticalAlignment="Center" Background="{DynamicResource ErrorBrush}"
+                                Visibility="{Binding Updater.IsAvailable, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
+                        <TextBlock Text="{DynamicResource L.SettingsNav.UpdatesAbout}" VerticalAlignment="Center"/>
+                    </DockPanel>
+                </TabItem.Header>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12,0,0,16">
                 <!-- 更新 -->

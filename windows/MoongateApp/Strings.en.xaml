@@ -73,10 +73,10 @@
 
     <!-- AI summary -->
     <sys:String x:Key="L.Summary.Section">AI Summary</sys:String>
-    <sys:String x:Key="L.Summary.Button">✦ Summarize video</sys:String>
+    <sys:String x:Key="L.Summary.Button">Summarize video</sys:String>
     <sys:String x:Key="L.Summary.Hint">Let AI tell you what this video is before downloading.</sys:String>
     <sys:String x:Key="L.Summary.Running">Understanding the video…</sys:String>
-    <sys:String x:Key="L.Summary.Regenerate">↻ Regenerate</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">Regenerate</sys:String>
     <sys:String x:Key="L.Summary.Unconfigured">Summary needs a usable AI service configured in Settings: base URL, model, and credential.</sys:String>
 
     <!-- Output options -->
@@ -276,6 +276,21 @@
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp: {0} · ffmpeg: {1} · deno: {2}</sys:String>
     <sys:String x:Key="L.Settings.StorageSection">Storage</sys:String>
     <sys:String x:Key="L.Settings.StorageStatusFmt">App data: {0}&#x0a;Local ASR models: {1}&#x0a;Bundled components: {2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageUsed">Used</sys:String>
+    <sys:String x:Key="L.Settings.StorageSupportData">App data</sys:String>
+    <sys:String x:Key="L.Settings.StorageASRModels">Speech models</sys:String>
+    <sys:String x:Key="L.Settings.StorageComponents">Components</sys:String>
+    <sys:String x:Key="L.Settings.StorageUpdateCache">Update cache</sys:String>
+    <sys:String x:Key="L.Settings.StorageCalculating">Calculating…</sys:String>
+    <sys:String x:Key="L.Settings.StorageOpenFolder">Open folder</sys:String>
+    <sys:String x:Key="L.Settings.StorageDelete">Delete</sys:String>
+    <sys:String x:Key="L.Settings.StorageClear">Clear</sys:String>
+    <sys:String x:Key="L.Settings.StorageRefresh">Refresh</sys:String>
+    <sys:String x:Key="L.Settings.StorageManageHint">This only clears data the app created. Downloaded videos live in your system Downloads folder—manage them there.</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsConfirm">Delete all local speech models?</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsDetail">You'll need to download a model again to use local speech recognition.</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheConfirm">Clear update cache?</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheDetail">Removes leftover update installer temp files. Your installed app is unaffected.</sys:String>
     <sys:String x:Key="L.Settings.AboutSection">About</sys:String>
     <sys:String x:Key="L.Settings.AboutAppName">Moongate</sys:String>
     <sys:String x:Key="L.Settings.AboutSource">Source and releases: Dream-of-July/moongate on GitHub.</sys:String>
@@ -296,6 +311,7 @@
     <sys:String x:Key="L.Update.FoundPrefix">New version available </sys:String>
     <sys:String x:Key="L.Update.DownloadInstall">Download &amp; update</sys:String>
     <sys:String x:Key="L.Update.OpenReleases">Open releases page</sys:String>
+    <sys:String x:Key="L.Update.AvailableBadge">Update available</sys:String>
     <sys:String x:Key="L.Update.Downloading">Downloading update… </sys:String>
     <sys:String x:Key="L.Update.Installing">Launching the installer. The app will exit to finish updating…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">The update URL is not trusted and was blocked. Please download manually from GitHub.</sys:String>

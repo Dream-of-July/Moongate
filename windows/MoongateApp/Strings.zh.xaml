@@ -69,14 +69,14 @@
     <sys:String x:Key="L.Mode.BurnIn">翻译并烧录进视频</sys:String>
     <sys:String x:Key="L.Mode.BurnOriginal">直接烧录字幕（不翻译）</sys:String>
     <sys:String x:Key="L.Ready.NotConfigured">未配置翻译服务</sys:String>
-    <sys:String x:Key="L.Ready.GoSettings">去设置</sys:String>
+    <sys:String x:Key="L.Ready.GoSettings">打开设置</sys:String>
 
     <!-- AI 总结 -->
     <sys:String x:Key="L.Summary.Section">AI 总结</sys:String>
-    <sys:String x:Key="L.Summary.Button">✦ 总结视频内容</sys:String>
+    <sys:String x:Key="L.Summary.Button">总结视频内容</sys:String>
     <sys:String x:Key="L.Summary.Hint">下载前先用 AI 看一眼这是什么视频。</sys:String>
     <sys:String x:Key="L.Summary.Running">正在理解视频内容…</sys:String>
-    <sys:String x:Key="L.Summary.Regenerate">↻ 重新总结</sys:String>
+    <sys:String x:Key="L.Summary.Regenerate">重新总结</sys:String>
     <sys:String x:Key="L.Summary.Unconfigured">总结需要先在设置里配置可用的 AI 服务：填写服务地址、模型和凭证。</sys:String>
 
     <!-- 输出选项 -->
@@ -276,6 +276,21 @@
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp：{0} · ffmpeg：{1} · deno：{2}</sys:String>
     <sys:String x:Key="L.Settings.StorageSection">存储</sys:String>
     <sys:String x:Key="L.Settings.StorageStatusFmt">应用数据：{0}&#x0a;本地 ASR 模型：{1}&#x0a;内置组件：{2}</sys:String>
+    <sys:String x:Key="L.Settings.StorageUsed">已用空间</sys:String>
+    <sys:String x:Key="L.Settings.StorageSupportData">应用数据</sys:String>
+    <sys:String x:Key="L.Settings.StorageASRModels">本地语音模型</sys:String>
+    <sys:String x:Key="L.Settings.StorageComponents">依赖组件</sys:String>
+    <sys:String x:Key="L.Settings.StorageUpdateCache">更新缓存</sys:String>
+    <sys:String x:Key="L.Settings.StorageCalculating">计算中…</sys:String>
+    <sys:String x:Key="L.Settings.StorageOpenFolder">打开所在文件夹</sys:String>
+    <sys:String x:Key="L.Settings.StorageDelete">删除</sys:String>
+    <sys:String x:Key="L.Settings.StorageClear">清理</sys:String>
+    <sys:String x:Key="L.Settings.StorageRefresh">刷新</sys:String>
+    <sys:String x:Key="L.Settings.StorageManageHint">这里只清理应用自身产生的数据。下载的视频保存在系统下载文件夹，请到那里管理。</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsConfirm">删除全部本地语音模型？</sys:String>
+    <sys:String x:Key="L.Settings.StorageDeleteModelsDetail">删除后需要重新下载模型才能使用本地语音识别。</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheConfirm">清理更新缓存？</sys:String>
+    <sys:String x:Key="L.Settings.StorageClearCacheDetail">删除残留的更新安装包临时文件，不影响已安装的应用。</sys:String>
     <sys:String x:Key="L.Settings.AboutSection">关于</sys:String>
     <sys:String x:Key="L.Settings.AboutAppName">月之门</sys:String>
     <sys:String x:Key="L.Settings.AboutSource">源码与发布：GitHub 上的 Dream-of-July/moongate。</sys:String>
@@ -296,6 +311,7 @@
     <sys:String x:Key="L.Update.FoundPrefix">发现新版本 </sys:String>
     <sys:String x:Key="L.Update.DownloadInstall">下载并更新</sys:String>
     <sys:String x:Key="L.Update.OpenReleases">打开发布页</sys:String>
+    <sys:String x:Key="L.Update.AvailableBadge">有可用更新</sys:String>
     <sys:String x:Key="L.Update.Downloading">正在下载更新… </sys:String>
     <sys:String x:Key="L.Update.Installing">正在启动安装程序，应用将退出以完成更新…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">更新包地址不可信，已阻止。请到 GitHub 手动下载。</sys:String>

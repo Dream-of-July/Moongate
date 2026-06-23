@@ -298,7 +298,7 @@ def _match_by_tokens(cue: Cue, words: Sequence[Dict[str, Any]], cursor: int) -> 
 def _match_by_overlap(cue: Cue, words: Sequence[Dict[str, Any]]) -> Tuple[Optional[int], Optional[int]]:
     covered = [
         index for index, word in enumerate(words)
-        if word["end"] >= cue.start - 0.30 and word["start"] <= cue.end + 0.30
+        if word["end"] >= cue.start - 0.05 and word["start"] <= cue.end + 0.05
     ]
     if not covered:
         return None, None
@@ -487,6 +487,112 @@ def evaluate_cues(
         "cue_count": len(cues),
         "word_count": len(asr_words),
         "alignment_mode": alignment_mode,
+        "cues": rows,
+    }
+
+
+def evaluate_cues_against_reference_cues(
+    cues: Sequence[Cue],
+    reference_cues: Sequence[Cue],
+    sample_id: str,
+) -> Dict[str, Any]:
+    ordered_cues = list(cues)
+    sorted_references = sorted(reference_cues, key=lambda cue: (cue.start, cue.end))
+    rows: List[Dict[str, Any]] = []
+    for index, cue in enumerate(ordered_cues):
+        overlaps = [
+            reference
+            for reference in sorted_references
+            if reference.end > cue.start and reference.start < cue.end
+        ]
+        if overlaps:
+            reference_start = min(reference.start for reference in overlaps)
+            reference_end = max(reference.end for reference in overlaps)
+            reference_text = "\n".join(reference.text for reference in overlaps)
+            match_method = "reference_overlap"
+            if len(overlaps) == 1:
+                reference = overlaps[0]
+                group_indices = [
+                    candidate_index
+                    for candidate_index, candidate in enumerate(ordered_cues)
+                    if candidate.end > reference.start and candidate.start < reference.end
+                ]
+                if len(group_indices) > 1 and index in group_indices:
+                    position = group_indices.index(index)
+                    if position > 0:
+                        previous_candidate = ordered_cues[group_indices[position - 1]]
+                        reference_start = max(reference.start, previous_candidate.end)
+                    if position + 1 < len(group_indices):
+                        next_candidate = ordered_cues[group_indices[position + 1]]
+                        reference_end = min(reference.end, next_candidate.start)
+                    if reference_end < reference_start:
+                        reference_start = reference.start
+                        reference_end = reference.end
+        elif sorted_references:
+            cue_center = (cue.start + cue.end) / 2.0
+            nearest = min(
+                sorted_references,
+                key=lambda reference: abs(((reference.start + reference.end) / 2.0) - cue_center),
+            )
+            reference_start = nearest.start
+            reference_end = nearest.end
+            reference_text = nearest.text
+            match_method = "reference_nearest"
+        else:
+            reference_start = None
+            reference_end = None
+            reference_text = ""
+            match_method = "unmatched"
+
+        duration = max(0.0, cue.end - cue.start)
+        readable_characters = len("".join(ch for ch in cue.text if not ch.isspace()))
+        reading_speed = readable_characters / duration if duration > 0 else 0.0
+        row: Dict[str, Any] = {
+            "index": cue.index,
+            "start": cue.start,
+            "end": cue.end,
+            "duration": duration,
+            "text": cue.text,
+            "reading_speed_chars_per_second": reading_speed,
+            "match_method": match_method,
+            "reference_start": reference_start,
+            "reference_end": reference_end,
+            "reference_text": reference_text,
+            "short_feedback": is_short_feedback(cue.text),
+            "weak_boundary": weak_boundary(cue, ordered_cues[index + 1] if index + 1 < len(ordered_cues) else None),
+            "cjk_singleton": cjk_singleton(cue),
+        }
+        if reference_start is None or reference_end is None:
+            row.update({
+                "start_error_ms": None,
+                "end_error_ms": None,
+                "early_cutoff_ms": None,
+                "late_hold_ms": None,
+                "long_idle_hold_ms": None,
+                "accepted": False,
+            })
+        else:
+            start_error = (cue.start - reference_start) * 1000.0
+            end_error = (cue.end - reference_end) * 1000.0
+            early_cutoff = max(0.0, -end_error)
+            late_hold = max(0.0, end_error)
+            row.update({
+                "start_error_ms": start_error,
+                "end_error_ms": end_error,
+                "early_cutoff_ms": early_cutoff if early_cutoff > EARLY_CUTOFF_MS else 0.0,
+                "late_hold_ms": late_hold,
+                "long_idle_hold_ms": late_hold if late_hold > LONG_IDLE_HOLD_MS else 0.0,
+                "accepted": (
+                    ACCEPTED_START_MIN_MS <= start_error <= ACCEPTED_START_MAX_MS
+                    and ACCEPTED_END_MIN_MS <= end_error <= ACCEPTED_END_MAX_MS
+                ),
+            })
+        rows.append(row)
+    return {
+        "sample_id": sample_id,
+        "cue_count": len(cues),
+        "word_count": len(sorted_references),
+        "alignment_mode": "reference_cue",
         "cues": rows,
     }
 

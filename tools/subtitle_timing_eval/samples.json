@@ -111,6 +111,39 @@
       "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
     },
     {
+      "id": "tedx_kwangwoon_only_one_ko",
+      "title": "TEDxKwangwoon: My life and to be the Only One",
+      "source": "https://www.youtube.com/watch?v=sp1MA8jpNe8",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": ["ko"],
+      "section": { "start_seconds": 120, "duration_seconds": 120 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
+    },
+    {
+      "id": "sebasi_praise_method_ko",
+      "title": "Sebasi: How Koreans should give praise",
+      "source": "https://www.youtube.com/watch?v=3Ktf6NkgXtI",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": ["ko"],
+      "section": { "start_seconds": 120, "duration_seconds": 120 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
+    },
+    {
+      "id": "sebasi_english_self_study_ko",
+      "title": "Sebasi: How to study English alone with YouTube",
+      "source": "https://www.youtube.com/watch?v=TBlTBDbpu2M",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": ["ko"],
+      "section": { "start_seconds": 120, "duration_seconds": 120 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions", "code_switching"]
+    },
+    {
       "id": "korean_auto_ko",
       "title": "Korean automatic captions with rolling carry and long idle holds",
       "source": "https://www.youtube.com/watch?v=C4Vxt492DAc",
@@ -131,6 +164,17 @@
       "spoken_languages": ["yue", "en"],
       "section": { "start_seconds": 120, "duration_seconds": 300 },
       "stressors": ["cjk_no_spaces", "code_switching", "manual_captions"]
+    },
+    {
+      "id": "cantonese_uk_yue",
+      "title": "Cantonese talk: preserving Hong Kong Cantonese in the UK",
+      "source": "https://www.youtube.com/watch?v=oc0uynThYDQ",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": ["yue"],
+      "section": { "start_seconds": 120, "duration_seconds": 120 },
+      "stressors": ["cjk_no_spaces", "dense_speech", "manual_captions"]
     },
     {
       "id": "cantonese_ai_subanana_yue",
@@ -177,6 +221,30 @@
       "stressors": ["dense_speech", "romance_word_boundaries"]
     },
     {
+      "id": "mtedx_portuguese_weakness_pt",
+      "title": "Eu quero poder ser fraca | Stephanie Ribeiro | TEDxSaoPauloSalon",
+      "source": "https://www.youtube.com/watch?v=2EpIZVU-N3Y",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt",
+      "spoken_languages": ["pt"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual",
+      "reference_source": "mTEDx/OpenSLR SLR100 eval.pt"
+    },
+    {
+      "id": "portuguese_tedx_lages_pt",
+      "title": "Traduzir, transcrever e compartilhar história para um mundo melhor | Raissa Mendes | TEDxLages",
+      "source": "https://www.youtube.com/watch?v=lAz028cjuLs",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt-BR",
+      "spoken_languages": ["pt"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"]
+    },
+    {
       "id": "french_auto_fr",
       "title": "Super Easy French 167: French market talk with automatic captions",
       "source": "https://www.youtube.com/watch?v=3jdRN1LZvSg",
@@ -188,6 +256,30 @@
       "stressors": ["dense_speech", "romance_word_boundaries", "rolling_captions", "automatic_captions"]
     },
     {
+      "id": "french_talk_public_fr",
+      "title": "French TEDx talk with human captions",
+      "source": "https://www.youtube.com/watch?v=2E_Kx-MBlEA",
+      "category": "french_talk",
+      "language_group": "fr",
+      "subtitle_lang": "fr",
+      "spoken_languages": ["fr"],
+      "section": { "start_seconds": 90, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"]
+    },
+    {
+      "id": "mtedx_german_flight_de",
+      "title": "Alter Falter! Was Flugzeuge und Regalbretter gemeinsam haben | Yves Klett | TEDxStuttgart",
+      "source": "https://www.youtube.com/watch?v=QYYTMoQSAHk",
+      "category": "german_talk",
+      "language_group": "de",
+      "subtitle_lang": "de",
+      "spoken_languages": ["de"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "manual_captions"],
+      "caption_kind": "manual",
+      "reference_source": "mTEDx/OpenSLR SLR100 eval.de"
+    },
+    {
       "id": "italian_auto_it",
       "title": "Italian talk with YouTube automatic captions",
       "source": "https://www.youtube.com/watch?v=1D1QvZYVIkU",
@@ -197,6 +289,17 @@
       "spoken_languages": ["it"],
       "section": { "start_seconds": 360, "duration_seconds": 300 },
       "stressors": ["dense_speech", "romance_word_boundaries", "rolling_captions", "automatic_captions", "vtt_word_timing"]
+    },
+    {
+      "id": "italian_talk_public_it",
+      "title": "Italian TEDx talk with human captions",
+      "source": "https://www.youtube.com/watch?v=Wr2YJoQeYsE",
+      "category": "italian_talk",
+      "language_group": "it",
+      "subtitle_lang": "it",
+      "spoken_languages": ["it"],
+      "section": { "start_seconds": 90, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"]
     },
     {
       "id": "news_explainer_en",

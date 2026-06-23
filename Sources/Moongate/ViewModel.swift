@@ -79,7 +79,7 @@ final class ViewModel: ObservableObject {
     }
     /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
     /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
-    static var persistedAppLanguage: String { AppSettings.load().appLanguage }
+    static var persistedAppLanguage: String { AppSettings.load(readCredentials: false).appLanguage }
 
     private static func localASRGeneratorSettingsChanged(_ old: AppSettings, _ new: AppSettings) -> Bool {
         old.localASREnabled != new.localASREnabled
@@ -88,7 +88,9 @@ final class ViewModel: ObservableObject {
             || old.localASRModelID != new.localASRModelID
     }
 
-    @Published var settings = AppSettings.load() {
+    /// 启动时不读 Keychain 凭证（避免首次启动弹授权）；首次真正需要凭证时由 hydrateCredentials() 补齐。
+    /// 默认空设置仅作占位，init 会立刻用 load(readCredentials: false) 覆盖。
+    @Published var settings = AppSettings() {
         didSet {
             CoreL10n.sync(from: settings)
             queue.syncConcurrency(from: settings)
@@ -159,20 +161,23 @@ final class ViewModel: ObservableObject {
     /// 代际令牌：reset / 取消后，旧解析任务的回调全部作废
     private var session = 0
 
+    /// 凭证是否已从安全存储补齐（见 hydrateCredentials）。启动时为 false，首次需要时置 true。
+    private var credentialsHydrated = false
+
     init(
         engine: any DownloadEngine = makeDefaultEngine(),
         queue: QueueManager? = nil,
         updater: UpdateService? = nil,
         runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating = AppleRuntimeReadinessEvaluator()
     ) {
-        let initialSettings = AppSettings.load()
+        let initialSettings = AppSettings.load(readCredentials: false)
         self.settings = initialSettings
         self.primarySubtitleTrackID = nil
         self.engine = engine
         self.queue = queue ?? QueueManager(
             engine: engine,
             localASRGenerator: LocalASRGeneratorFactory.make(settings: initialSettings),
-            completionNotifier: SystemQueueCompletionNotifier(settingsProvider: { AppSettings.load() })
+            completionNotifier: SystemQueueCompletionNotifier(settingsProvider: { AppSettings.load(readCredentials: false) })
         )
         self.updater = updater ?? UpdateService()
         self.runtimeReadinessEvaluator = runtimeReadinessEvaluator
@@ -180,6 +185,15 @@ final class ViewModel: ObservableObject {
             self?.dismissSheetsForUpdateUI()
         }
         CoreL10n.sync(from: settings)
+    }
+
+    /// 首次真正需要 API 凭证（打开设置 / 开始下载翻译 / 总结）时，从 Keychain 补齐 Token。
+    /// 启动时刻意不读，避免首次启动还没用到 API 就弹 Keychain 授权；幂等，仅读一次。
+    /// 注意：必须在任何会写回设置（保存）之前调用，否则会把空 Token 写盖掉安全存储里的值。
+    func hydrateCredentials() {
+        guard !credentialsHydrated else { return }
+        credentialsHydrated = true
+        settings = AppSettings.load(readCredentials: true)
     }
 
     // MARK: - 派生状态
@@ -246,6 +260,9 @@ final class ViewModel: ObservableObject {
     func parse() {
         let input = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty, !isParsing else { return }
+        // 用户开始处理任务即补齐凭证：ready 页的「翻译/总结是否已配置」判断需要 Token，
+        // 且此时弹一次 Keychain 授权（仅当有旧凭证项）比首次启动就弹更合理。
+        hydrateCredentials()
 
         // 一次粘贴多条链接：逐个解析并按默认选项（最高画质）自动加入队列
         let urls = Self.extractURLs(from: input)
@@ -533,6 +550,7 @@ final class ViewModel: ObservableObject {
     /// ready 页「加入队列」：构造 DownloadRequest 入队，然后清空回可输入态以便继续添加下一条。
     func startDownload() async {
         guard case .ready(let info) = stage else { return }
+        hydrateCredentials()
         let startSession = session
         let mode = chineseMode
         let selectedFormatIDSnapshot = selectedFormatID
@@ -969,6 +987,7 @@ final class ViewModel: ObservableObject {
     /// 对当前 Ready 的视频做 AI 总结：优先现拉字幕文本，拿不到回退视频简介。
     func summarizeCurrentVideo() {
         guard case .ready(let info) = stage else { return }
+        hydrateCredentials()
         if let reason = summaryUnavailableReason {
             summaryState = .failed(reason)
             return
