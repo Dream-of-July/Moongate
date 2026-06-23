@@ -605,8 +605,15 @@ public static partial class LocalAsrSubtitleTimingPlanner
     // music, or stretched audio. Keeping them as cues creates multi-second 「っ」/「ー」 flashes.
     private static readonly HashSet<string> DroppableJapaneseResiduals =
     [
-        "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゃ", "ゅ", "ょ", "ゎ",
+        "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゎ",
     ];
+
+    private const int JapaneseLoopMinPhraseFragments = 4;
+    private const int JapaneseLoopMaxPhraseFragments = 12;
+    private const int JapaneseLoopMinRepeatCount = 4;
+    private const int JapaneseLoopAllowedRepeats = 1;
+    private const double JapaneseLoopMaxOccurrenceGapSeconds = 3.0;
+    private const double JapaneseLoopFuseSeconds = 90.0;
 
     // A cue with at most this many visible characters is too short to stand alone (lone 「顔」/「ね」)
     // and is merged into the temporally-closest neighbour, within this same-utterance gap.
@@ -628,8 +635,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
         IReadOnlyList<SubtitleCueSourceFragment> fragments,
         double? transcriptDurationSeconds = null)
     {
-        var ordered = fragments
+        var loopSuppressed = SuppressRepeatedJapaneseLoopFragments(fragments
             .Where(ShouldKeep)
+            .ToList());
+        var ordered = loopSuppressed
             .OrderBy(fragment => fragment.StartSeconds)
             .ThenBy(fragment => fragment.EndSeconds)
             .ToList();
@@ -685,6 +694,207 @@ public static partial class LocalAsrSubtitleTimingPlanner
                 cue.SourceFragments))
             .ToList();
     }
+
+    private readonly record struct JapaneseLoopMatch(string Signature, int PhraseLength, int RepeatCount);
+
+    private sealed class JapaneseLoopFuse(int phraseLength, HashSet<char> characters, double suppressUntilSeconds)
+    {
+        public int PhraseLength { get; } = phraseLength;
+        public HashSet<char> Characters { get; } = characters;
+        public double SuppressUntilSeconds { get; set; } = suppressUntilSeconds;
+    }
+
+    private static List<SubtitleCueSourceFragment> SuppressRepeatedJapaneseLoopFragments(
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        if (fragments.Count < JapaneseLoopMinPhraseFragments * JapaneseLoopMinRepeatCount)
+        {
+            return fragments.ToList();
+        }
+
+        var output = new List<SubtitleCueSourceFragment>(fragments.Count);
+        var fuses = new Dictionary<string, JapaneseLoopFuse>(StringComparer.Ordinal);
+        var index = 0;
+
+        while (index < fragments.Count)
+        {
+            if (FusedJapaneseLoopMatch(index, fragments, fuses) is { } fused)
+            {
+                var dropEnd = index + fused.RepeatCount * fused.PhraseLength;
+                if (dropEnd > index && dropEnd <= fragments.Count && fuses.TryGetValue(fused.Signature, out var fuse))
+                {
+                    fuse.SuppressUntilSeconds = Math.Max(
+                        fuse.SuppressUntilSeconds,
+                        fragments[dropEnd - 1].EndSeconds + JapaneseLoopFuseSeconds);
+                }
+                index = dropEnd;
+                continue;
+            }
+
+            if (RepeatedJapaneseLoopMatch(index, fragments) is { } match)
+            {
+                var keepEnd = index + JapaneseLoopAllowedRepeats * match.PhraseLength;
+                output.AddRange(fragments.Skip(index).Take(keepEnd - index));
+
+                var dropEnd = index + match.RepeatCount * match.PhraseLength;
+                if (dropEnd > index && dropEnd <= fragments.Count)
+                {
+                    fuses[match.Signature] = new JapaneseLoopFuse(
+                        match.PhraseLength,
+                        new HashSet<char>(match.Signature),
+                        fragments[dropEnd - 1].EndSeconds + JapaneseLoopFuseSeconds);
+                }
+                index = dropEnd;
+                continue;
+            }
+
+            output.Add(fragments[index]);
+            index += 1;
+        }
+
+        return output;
+    }
+
+    private static JapaneseLoopMatch? RepeatedJapaneseLoopMatch(
+        int index,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        for (var phraseLength = Math.Min(JapaneseLoopMaxPhraseFragments, fragments.Count - index);
+             phraseLength >= JapaneseLoopMinPhraseFragments;
+             phraseLength--)
+        {
+            var signature = JapaneseLoopSignature(index, phraseLength, fragments);
+            if (signature is null) continue;
+            var repeatCount = ConsecutiveJapaneseLoopCount(signature, phraseLength, index, fragments);
+            if (repeatCount >= JapaneseLoopMinRepeatCount)
+            {
+                return new JapaneseLoopMatch(signature, phraseLength, repeatCount);
+            }
+        }
+        return null;
+    }
+
+    private static JapaneseLoopMatch? FusedJapaneseLoopMatch(
+        int index,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments,
+        IReadOnlyDictionary<string, JapaneseLoopFuse> fuses)
+    {
+        foreach (var (signature, fuse) in fuses)
+        {
+            if (fragments[index].StartSeconds > fuse.SuppressUntilSeconds) continue;
+            if (IsJapaneseLoopCompatibleNoise(fragments[index].Text, fuse.Characters))
+            {
+                var compatibleCount = ConsecutiveJapaneseLoopCompatibleNoiseCount(fuse.Characters, index, fragments);
+                return new JapaneseLoopMatch(signature, 1, compatibleCount);
+            }
+            if (!string.Equals(
+                    JapaneseLoopSignature(index, fuse.PhraseLength, fragments),
+                    signature,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var exactRepeatCount = Math.Max(
+                1,
+                ConsecutiveJapaneseLoopCount(signature, fuse.PhraseLength, index, fragments));
+            return new JapaneseLoopMatch(signature, fuse.PhraseLength, exactRepeatCount);
+        }
+        return null;
+    }
+
+    private static int ConsecutiveJapaneseLoopCompatibleNoiseCount(
+        HashSet<char> characters,
+        int index,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        var count = 0;
+        while (index + count < fragments.Count
+            && IsJapaneseLoopCompatibleNoise(fragments[index + count].Text, characters))
+        {
+            count += 1;
+        }
+        return Math.Max(1, count);
+    }
+
+    private static int ConsecutiveJapaneseLoopCount(
+        string signature,
+        int phraseLength,
+        int index,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        var count = 0;
+        double? previousStart = null;
+        while (index + (count + 1) * phraseLength <= fragments.Count)
+        {
+            var phraseIndex = index + count * phraseLength;
+            if (!string.Equals(
+                    JapaneseLoopSignature(phraseIndex, phraseLength, fragments),
+                    signature,
+                    StringComparison.Ordinal))
+            {
+                break;
+            }
+            var start = fragments[phraseIndex].StartSeconds;
+            if (previousStart is { } previous
+                && start - previous > JapaneseLoopMaxOccurrenceGapSeconds)
+            {
+                break;
+            }
+            previousStart = start;
+            count += 1;
+        }
+        return count;
+    }
+
+    private static string? JapaneseLoopSignature(
+        int index,
+        int length,
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        if (length < JapaneseLoopMinPhraseFragments || index + length > fragments.Count)
+        {
+            return null;
+        }
+        var span = fragments[index + length - 1].EndSeconds - fragments[index].StartSeconds;
+        if (span > JapaneseLoopMaxOccurrenceGapSeconds) return null;
+
+        var builder = new StringBuilder();
+        for (var i = index; i < index + length; i++)
+        {
+            builder.Append(NormalizedJapaneseLoopText(fragments[i].Text));
+        }
+        var signature = builder.ToString();
+        return signature.Length >= JapaneseLoopMinPhraseFragments
+            && signature.Length <= 16
+            && IsHiraganaLoopText(signature)
+            && signature.Distinct().Count() > 1
+            ? signature
+            : null;
+    }
+
+    private static string NormalizedJapaneseLoopText(string text)
+    {
+        var builder = new StringBuilder();
+        foreach (var ch in text)
+        {
+            if (ch is >= '\u3040' and <= '\u309F')
+            {
+                builder.Append(ch);
+            }
+        }
+        return builder.ToString();
+    }
+
+    private static bool IsJapaneseLoopCompatibleNoise(string text, HashSet<char> characters)
+    {
+        var normalized = NormalizedJapaneseLoopText(text);
+        return normalized.Length > 0
+            && IsHiraganaLoopText(normalized)
+            && normalized.All(characters.Contains);
+    }
+
+    private static bool IsHiraganaLoopText(string text) =>
+        text.All(ch => ch is >= '\u3040' and <= '\u309F');
 
     // Merge lone, too-short groups into the temporally-closest neighbour (avoids jarring 1-char
     // cues like 「顔」 separated from 「洗って」). Mirrors the Swift MergeShortGroups.

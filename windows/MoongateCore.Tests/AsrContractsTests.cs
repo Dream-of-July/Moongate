@@ -1013,6 +1013,54 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerSuppressesRepeatedJapaneseLoopHallucinations()
+    {
+        var words = new List<AsrWord>
+        {
+            new() { Text = "おはよう", StartSeconds = 160.0, EndSeconds = 160.6 },
+        };
+        var loopTokens = new[] { "き", "ょ", "う", "も", "、", "は", "な", "ま", "る" };
+        for (var repeatIndex = 0; repeatIndex < 12; repeatIndex++)
+        {
+            var baseTime = 162.0 + repeatIndex * 0.02;
+            for (var tokenIndex = 0; tokenIndex < loopTokens.Length; tokenIndex++)
+            {
+                var token = loopTokens[tokenIndex];
+                var start = baseTime + tokenIndex * 0.01;
+                words.Add(new AsrWord
+                {
+                    Text = token,
+                    StartSeconds = start,
+                    EndSeconds = start + (token == "、" ? 0.01 : 0.05),
+                });
+            }
+        }
+        words.Add(new AsrWord { Text = "またね", StartSeconds = 180.0, EndSeconds = 180.8 });
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-loop-hallucination",
+            LanguageCode = "ja",
+            Words = words,
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+        var joined = string.Join(" ", cues.Select(cue => cue.Text));
+        var loopCount = joined.Split("きょうもはなまる", StringSplitOptions.None).Length - 1;
+
+        Assert.Contains("おはよう", joined, StringComparison.Ordinal);
+        Assert.Contains("またね", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("きうも", joined, StringComparison.Ordinal);
+        Assert.True(loopCount <= 1, "runaway repeated Japanese loop should be fused after one readable repeat");
+        foreach (var cue in cues)
+        {
+            var start = SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+            var end = SrtTools.SrtTimeToSeconds(cue.End)!.Value;
+            Assert.True(end > start, "local ASR cues must never serialize as zero-duration SRT entries");
+        }
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerAvoidsWeakLatinBoundaries()
     {
         var transcript = new AsrTranscript

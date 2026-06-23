@@ -759,8 +759,15 @@ enum LocalASRSubtitleTimingPlanner {
     /// Standalone residual kana / long-vowel marks that whisper often hallucinates from breath,
     /// music, or stretched audio. Keeping them as cues creates multi-second 「っ」/「ー」 flashes.
     private static let droppableJapaneseResiduals: Set<String> = [
-        "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゃ", "ゅ", "ょ", "ゎ"
+        "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゎ"
     ]
+
+    private static let japaneseLoopMinPhraseFragments = 4
+    private static let japaneseLoopMaxPhraseFragments = 12
+    private static let japaneseLoopMinRepeatCount = 4
+    private static let japaneseLoopAllowedRepeats = 1
+    private static let japaneseLoopMaxOccurrenceGapSeconds = 3.0
+    private static let japaneseLoopFuseSeconds = 90.0
 
     /// A cue with at most this many visible characters is too short to stand alone (e.g. 「顔」,
     /// 「ね」, a lone 「えらい」) and is merged into the temporally-closest neighbour.
@@ -958,9 +965,13 @@ enum LocalASRSubtitleTimingPlanner {
         from fragments: [SubtitleCueSourceFragment],
         transcriptDurationSeconds: Double?
     ) -> [SubtitleCue] {
-        let ordered = fragments
-            .filter { shouldKeep($0) }
-            .sorted { $0.startSeconds == $1.startSeconds ? $0.endSeconds < $1.endSeconds : $0.startSeconds < $1.startSeconds }
+        let loopSuppressed = suppressRepeatedJapaneseLoopFragments(fragments.filter { shouldKeep($0) })
+        let ordered = loopSuppressed
+            .sorted {
+                $0.startSeconds == $1.startSeconds
+                    ? $0.endSeconds < $1.endSeconds
+                    : $0.startSeconds < $1.startSeconds
+            }
         guard !ordered.isEmpty else { return [] }
 
         var groups: [[SubtitleCueSourceFragment]] = []
@@ -1005,6 +1016,211 @@ enum LocalASRSubtitleTimingPlanner {
                 text: cue.text,
                 sourceFragments: cue.sourceFragments
             )
+        }
+    }
+
+    private struct JapaneseLoopMatch {
+        let signature: String
+        let phraseLength: Int
+        let repeatCount: Int
+    }
+
+    private struct JapaneseLoopFuse {
+        let phraseLength: Int
+        let characters: Set<Character>
+        var suppressUntilSeconds: Double
+    }
+
+    private static func suppressRepeatedJapaneseLoopFragments(
+        _ fragments: [SubtitleCueSourceFragment]
+    ) -> [SubtitleCueSourceFragment] {
+        guard fragments.count >= japaneseLoopMinPhraseFragments * japaneseLoopMinRepeatCount else {
+            return fragments
+        }
+        var output: [SubtitleCueSourceFragment] = []
+        output.reserveCapacity(fragments.count)
+        var fuses: [String: JapaneseLoopFuse] = [:]
+        var index = 0
+
+        while index < fragments.count {
+            if let fused = fusedJapaneseLoopMatch(at: index, in: fragments, fuses: fuses) {
+                let dropEnd = index + fused.repeatCount * fused.phraseLength
+                if dropEnd > index, dropEnd <= fragments.count {
+                    let last = fragments[dropEnd - 1]
+                    if var fuse = fuses[fused.signature] {
+                        fuse.suppressUntilSeconds = max(
+                            fuse.suppressUntilSeconds,
+                            last.endSeconds + japaneseLoopFuseSeconds
+                        )
+                        fuses[fused.signature] = fuse
+                    }
+                }
+                index = dropEnd
+                continue
+            }
+
+            if let match = repeatedJapaneseLoopMatch(at: index, in: fragments) {
+                let keepEnd = index + japaneseLoopAllowedRepeats * match.phraseLength
+                output.append(contentsOf: fragments[index..<keepEnd])
+
+                let dropEnd = index + match.repeatCount * match.phraseLength
+                if dropEnd > index, dropEnd <= fragments.count {
+                    let last = fragments[dropEnd - 1]
+                    fuses[match.signature] = JapaneseLoopFuse(
+                        phraseLength: match.phraseLength,
+                        characters: Set(match.signature),
+                        suppressUntilSeconds: last.endSeconds + japaneseLoopFuseSeconds
+                    )
+                }
+                index = dropEnd
+                continue
+            }
+
+            output.append(fragments[index])
+            index += 1
+        }
+        return output
+    }
+
+    private static func repeatedJapaneseLoopMatch(
+        at index: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> JapaneseLoopMatch? {
+        for phraseLength in stride(
+            from: min(japaneseLoopMaxPhraseFragments, fragments.count - index),
+            through: japaneseLoopMinPhraseFragments,
+            by: -1
+        ) {
+            guard let signature = japaneseLoopSignature(at: index, length: phraseLength, in: fragments) else {
+                continue
+            }
+            let repeatCount = consecutiveJapaneseLoopCount(
+                signature: signature,
+                phraseLength: phraseLength,
+                at: index,
+                in: fragments
+            )
+            if repeatCount >= japaneseLoopMinRepeatCount {
+                return JapaneseLoopMatch(
+                    signature: signature,
+                    phraseLength: phraseLength,
+                    repeatCount: repeatCount
+                )
+            }
+        }
+        return nil
+    }
+
+    private static func fusedJapaneseLoopMatch(
+        at index: Int,
+        in fragments: [SubtitleCueSourceFragment],
+        fuses: [String: JapaneseLoopFuse]
+    ) -> JapaneseLoopMatch? {
+        for (signature, fuse) in fuses {
+            guard fragments[index].startSeconds <= fuse.suppressUntilSeconds else {
+                continue
+            }
+            if isJapaneseLoopCompatibleNoise(fragments[index].text, characters: fuse.characters) {
+                let repeatCount = consecutiveJapaneseLoopCompatibleNoiseCount(
+                    characters: fuse.characters,
+                    at: index,
+                    in: fragments
+                )
+                return JapaneseLoopMatch(signature: signature, phraseLength: 1, repeatCount: repeatCount)
+            }
+            guard japaneseLoopSignature(at: index, length: fuse.phraseLength, in: fragments) == signature else {
+                continue
+            }
+            let repeatCount = max(
+                1,
+                consecutiveJapaneseLoopCount(
+                    signature: signature,
+                    phraseLength: fuse.phraseLength,
+                    at: index,
+                    in: fragments
+                )
+            )
+            return JapaneseLoopMatch(signature: signature, phraseLength: fuse.phraseLength, repeatCount: repeatCount)
+        }
+        return nil
+    }
+
+    private static func consecutiveJapaneseLoopCompatibleNoiseCount(
+        characters: Set<Character>,
+        at index: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int {
+        var count = 0
+        while index + count < fragments.count,
+              isJapaneseLoopCompatibleNoise(fragments[index + count].text, characters: characters) {
+            count += 1
+        }
+        return max(1, count)
+    }
+
+    private static func consecutiveJapaneseLoopCount(
+        signature: String,
+        phraseLength: Int,
+        at index: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int {
+        var count = 0
+        var previousStart: Double?
+        while index + (count + 1) * phraseLength <= fragments.count {
+            let phraseIndex = index + count * phraseLength
+            guard japaneseLoopSignature(at: phraseIndex, length: phraseLength, in: fragments) == signature else {
+                break
+            }
+            let start = fragments[phraseIndex].startSeconds
+            if let previousStart, start - previousStart > japaneseLoopMaxOccurrenceGapSeconds {
+                break
+            }
+            previousStart = start
+            count += 1
+        }
+        return count
+    }
+
+    private static func japaneseLoopSignature(
+        at index: Int,
+        length: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> String? {
+        guard length >= japaneseLoopMinPhraseFragments, index + length <= fragments.count else {
+            return nil
+        }
+        let phraseFragments = fragments[index..<(index + length)]
+        let span = (phraseFragments.last?.endSeconds ?? 0) - (phraseFragments.first?.startSeconds ?? 0)
+        guard span <= japaneseLoopMaxOccurrenceGapSeconds else { return nil }
+        let signature = phraseFragments
+            .map { normalizedJapaneseLoopText($0.text) }
+            .joined()
+        guard signature.count >= japaneseLoopMinPhraseFragments,
+              signature.count <= 16,
+              signature.allSatisfy(isHiraganaLoopScalar),
+              Set(signature).count > 1 else {
+            return nil
+        }
+        return signature
+    }
+
+    private static func normalizedJapaneseLoopText(_ text: String) -> String {
+        String(text.unicodeScalars.filter { scalar in
+            let value = scalar.value
+            return (0x3040...0x309F).contains(Int(value))
+        })
+    }
+
+    private static func isJapaneseLoopCompatibleNoise(_ text: String, characters: Set<Character>) -> Bool {
+        let normalized = normalizedJapaneseLoopText(text)
+        return !normalized.isEmpty
+            && normalized.allSatisfy(isHiraganaLoopScalar)
+            && normalized.allSatisfy { characters.contains($0) }
+    }
+
+    private static func isHiraganaLoopScalar(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            (0x3040...0x309F).contains(Int(scalar.value))
         }
     }
 

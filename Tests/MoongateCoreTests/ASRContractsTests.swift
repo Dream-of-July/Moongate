@@ -996,6 +996,45 @@ final class ASRContractsTests: XCTestCase {
         }
     }
 
+    func testLocalASRTimingPlannerSuppressesRepeatedJapaneseLoopHallucinations() throws {
+        var words: [ASRWord] = [
+            ASRWord(text: "おはよう", startSeconds: 160.0, endSeconds: 160.6)
+        ]
+        let loopTokens = ["き", "ょ", "う", "も", "、", "は", "な", "ま", "る"]
+        for repeatIndex in 0..<12 {
+            let base = 162.0 + Double(repeatIndex) * 0.02
+            for (tokenIndex, token) in loopTokens.enumerated() {
+                let start = base + Double(tokenIndex) * 0.01
+                words.append(ASRWord(
+                    text: token,
+                    startSeconds: start,
+                    endSeconds: start + (token == "、" ? 0.01 : 0.05)
+                ))
+            }
+        }
+        words.append(ASRWord(text: "またね", startSeconds: 180.0, endSeconds: 180.8))
+        let transcript = ASRTranscript(
+            id: "japanese-loop-hallucination",
+            languageCode: "ja",
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript)
+        let joined = cues.map(\.text).joined(separator: " ")
+        let loopCount = joined.components(separatedBy: "きょうもはなまる").count - 1
+
+        XCTAssertTrue(joined.contains("おはよう"))
+        XCTAssertTrue(joined.contains("またね"))
+        XCTAssertFalse(joined.contains("きうも"), "small kana inside a real syllable must not be dropped")
+        XCTAssertLessThanOrEqual(loopCount, 1, "runaway repeated Japanese loop should be fused after one readable repeat")
+        for cue in cues {
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            XCTAssertGreaterThan(end, start, "local ASR cues must never serialize as zero-duration SRT entries")
+        }
+    }
+
     func testLocalASRTimingPlannerAvoidsWeakLatinBoundaries() {
         let transcript = ASRTranscript(
             id: "latin",
