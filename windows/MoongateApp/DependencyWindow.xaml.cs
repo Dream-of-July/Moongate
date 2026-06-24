@@ -18,6 +18,7 @@ public partial class DependencyWindow : Window
     public DependencyWindow(string title, string caption, Func<IProgress<string>, CancellationToken, Task> work)
     {
         _work = work;
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         Title = title;

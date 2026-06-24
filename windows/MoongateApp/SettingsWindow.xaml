@@ -289,7 +289,7 @@
                                             <ProgressBar Height="6"
                                                          Minimum="0"
                                                          Maximum="1"
-                                                         Value="{Binding DataContext.LocalAsrModelInstallProgress, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                         Value="{Binding DataContext.LocalAsrModelInstallProgress, RelativeSource={RelativeSource AncestorType=Window}, Mode=OneWay}"
                                                          Margin="0,4,0,0"
                                                          Visibility="{Binding DataContext.LocalAsrInstallingModelId, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource TextToVis}}"/>
                                             <Button Content="{DynamicResource L.Settings.LocalASRDownloadModel}"

@@ -29,6 +29,31 @@ public class WindowsSettingsSurfaceTests
         .ToHashSet(StringComparer.Ordinal);
 
     [Fact]
+    public void WindowsChineseTypographyUsesCjkUiFontsAndCulture()
+    {
+        var loc = Read("windows", "MoongateApp", "Loc.cs");
+
+        Assert.Contains("CultureInfo.DefaultThreadCurrentUICulture = culture", loc);
+        Assert.Contains("XmlLanguage.GetLanguage(CurrentCultureName)", loc);
+        Assert.Contains("Microsoft YaHei UI, Microsoft JhengHei UI, Segoe UI", loc);
+        Assert.Contains("Microsoft JhengHei UI, Microsoft YaHei UI, Segoe UI", loc);
+
+        foreach (var path in new[]
+        {
+            Path.Combine("windows", "MoongateApp", "MainWindow.xaml.cs"),
+            Path.Combine("windows", "MoongateApp", "SettingsWindow.xaml.cs"),
+            Path.Combine("windows", "MoongateApp", "ConfirmWindow.xaml.cs"),
+            Path.Combine("windows", "MoongateApp", "LoginWindow.xaml.cs"),
+            Path.Combine("windows", "MoongateApp", "OnboardingWindow.xaml.cs"),
+            Path.Combine("windows", "MoongateApp", "DependencyWindow.xaml.cs"),
+        })
+        {
+            var source = Read(path.Split(Path.DirectorySeparatorChar));
+            Assert.Contains("LocalizationManager.ApplyTypography(this);", source);
+        }
+    }
+
+    [Fact]
     public void WindowsFirstRunOnboardingPersistsLanguagesAndOffersApiEditor()
     {
         var mainWindowCode = Read("windows", "MoongateApp", "MainWindow.xaml.cs");
@@ -435,7 +460,7 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("L.Settings.LocalASRModelStatus", xaml);
         Assert.Contains("L.Settings.LocalASRDownloadModel", xaml);
         Assert.Contains("L.Settings.LocalASRInstallingModel", xaml);
-        Assert.Contains("LocalAsrModelInstallProgress", xaml);
+        Assert.Contains("Value=\"{Binding DataContext.LocalAsrModelInstallProgress, RelativeSource={RelativeSource AncestorType=Window}, Mode=OneWay}\"", xaml);
         Assert.Contains("L.Settings.LocalASRDeleteModel", xaml);
         Assert.Contains("Command=\"{Binding DataContext.InstallLocalAsrModelCommand", xaml);
         Assert.Contains("Command=\"{Binding DataContext.DeleteLocalAsrModelCommand", xaml);

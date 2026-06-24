@@ -29,6 +29,7 @@ public partial class OnboardingWindow : Window
     public OnboardingWindow(MainViewModel main)
     {
         _main = main;
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         AppLanguageBox.SelectedIndex = main.Settings.AppLanguage switch

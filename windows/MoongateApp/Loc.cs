@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Markup;
+using System.Windows.Media;
 using Moongate.Core;
 
 namespace Moongate.App;
@@ -28,6 +30,12 @@ public static class LocalizationManager
 
     public static bool IsEnglish => CurrentLanguage == "en";
     public static string CurrentLanguage { get; private set; } = "zh-Hans";
+    public static string CurrentCultureName => CurrentLanguage switch
+    {
+        "en" => "en-US",
+        "zh-Hant" => "zh-Hant",
+        _ => "zh-CN",
+    };
 
     /// <summary>appLanguage："auto"（跟随系统 UI 语言）| "zh-Hans" | "zh-Hant" | "en"。</summary>
     public static void Apply(string appLanguage)
@@ -40,6 +48,12 @@ public static class LocalizationManager
             // auto：系统界面语言是中文则用中文，其余一律英文
             _ => ResolveSystemLanguage(),
         };
+        var culture = CultureInfo.GetCultureInfo(CurrentCultureName);
+        CultureInfo.CurrentCulture = culture;
+        CultureInfo.CurrentUICulture = culture;
+        CultureInfo.DefaultThreadCurrentCulture = culture;
+        CultureInfo.DefaultThreadCurrentUICulture = culture;
+
         // 核心库的状态文案、错误消息跟随同一语言
         L10n.Language = CurrentLanguage switch
         {
@@ -66,8 +80,24 @@ public static class LocalizationManager
                 app.Resources.MergedDictionaries.Remove(existing);
             }
             app.Resources.MergedDictionaries.Add(dict);
+
+            foreach (Window window in app.Windows)
+            {
+                ApplyTypography(window);
+            }
         }
         LanguageChanged?.Invoke();
+    }
+
+    public static void ApplyTypography(Window window)
+    {
+        window.Language = XmlLanguage.GetLanguage(CurrentCultureName);
+        window.FontFamily = CurrentLanguage switch
+        {
+            "en" => new FontFamily("Segoe UI"),
+            "zh-Hant" => new FontFamily("Microsoft JhengHei UI, Microsoft YaHei UI, Segoe UI"),
+            _ => new FontFamily("Microsoft YaHei UI, Microsoft JhengHei UI, Segoe UI"),
+        };
     }
 
     private static string ResolveSystemLanguage()

@@ -27,6 +27,7 @@ public partial class SettingsWindow : Window
         _vm = new SettingsViewModel(main.Settings, main.Queue, main.ConsumePendingSettingsNotice());
         Updater = App.WindowsUpdater;
         DataContext = _vm;
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         // PasswordBox 不支持数据绑定，初值与变更都走代码同步。

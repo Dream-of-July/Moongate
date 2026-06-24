@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     {
         _vm = new MainViewModel();
         DataContext = _vm;
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         _vm.FocusUrlRequested += FocusUrlBox;

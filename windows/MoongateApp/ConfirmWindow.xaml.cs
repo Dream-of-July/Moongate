@@ -10,6 +10,7 @@ public partial class ConfirmWindow : Window
 {
     private ConfirmWindow(string message, string? detail, string confirmText, string cancelText)
     {
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         MessageText.Text = message;

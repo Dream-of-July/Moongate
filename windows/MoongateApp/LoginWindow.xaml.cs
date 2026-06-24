@@ -18,6 +18,7 @@ public partial class LoginWindow : Window
     public LoginWindow(string site)
     {
         _site = site;
+        LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
         HeadlineText.Text = Loc.F("L.Login.HeadlineFmt", SiteDisplayName(site));
