@@ -3204,7 +3204,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         // Single source of truth: the same detector the ASR planner uses to pick a timing profile.
         // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
         // never disagree about whether a clip is a song.
-        SubtitleTimingProfileDetector.detect(fileName: fileName, cues: cues) == .lyrics
+        let profile = SubtitleTimingProfileDetector.detect(fileName: fileName, cues: cues)
+        return profile == .lyrics || profile == .japaneseLyrics
     }
 
     private func sendModelMessage(

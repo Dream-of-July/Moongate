@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .pipeline import (
@@ -18,6 +19,7 @@ from .pipeline import (
     compare_report_files,
     evaluate_files,
     evaluate_reference_files,
+    evaluate_segmentation_files,
     extract_srt_words_file,
     extract_qa_verdict_records_from_markdown,
     extract_vtt_words_file,
@@ -31,6 +33,7 @@ from .pipeline import (
     select_manual_caption_suite,
     summarize_qa_verdict_records,
     summarize_qa_verdicts,
+    summarize_segmentation_suite_files,
     summarize_suite_files,
     transcribe_file,
     vad_file,
@@ -50,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--sample-id", required=True)
     prepare.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
     prepare.add_argument("--duration-seconds", type=float, help="Override manifest duration for smoke runs.")
+    prepare.add_argument("--cookies", help="Netscape cookies.txt for yt-dlp (e.g. Moongate's cookies/youtube.txt). A temp copy is used so the master jar is not rewritten.")
     prepare.add_argument("--dry-run", action="store_true")
 
     runbook = sub.add_parser("runbook", help="Generate a manifest-driven eval runbook without downloading media.")
@@ -257,6 +261,22 @@ def build_parser() -> argparse.ArgumentParser:
     suite.add_argument("--require-manifest-coverage", action="store_true")
     suite.add_argument("--required-language-group", action="append", default=[])
 
+    seg_metrics = sub.add_parser("segmentation-metrics", help="Score candidate subtitle segmentation against a reference (boundary F1 + coverage).")
+    seg_metrics.add_argument("--candidate", required=True)
+    seg_metrics.add_argument("--reference", required=True)
+    seg_metrics.add_argument("--sample-id", required=True)
+    seg_metrics.add_argument("--out", required=True)
+    seg_metrics.add_argument("--candidate-offset-seconds", type=float, default=0.0)
+    seg_metrics.add_argument("--reference-offset-seconds", type=float, default=0.0)
+    seg_metrics.add_argument("--window-start-seconds", type=float)
+    seg_metrics.add_argument("--window-end-seconds", type=float)
+    seg_metrics.add_argument("--tolerance-seconds", type=float, default=0.5)
+    seg_metrics.add_argument("--track", choices=["A", "B"], help="A=human-caption reference, B=auto-caption reference.")
+
+    seg_suite = sub.add_parser("segmentation-suite", help="Aggregate several segmentation reports into a suite summary (mean F1, pass rate, per-track).")
+    seg_suite.add_argument("--report", action="append", required=True)
+    seg_suite.add_argument("--out", required=True)
+
     return parser
 
 
@@ -274,12 +294,31 @@ def main() -> None:
         sample = next((s for s in data["samples"] if s["id"] == args.sample_id), None)
         if sample is None:
             raise SystemExit("unknown sample id: %s" % args.sample_id)
-        directory = prepare_sample(
-            sample,
-            artifacts_root=args.artifacts,
-            dry_run=args.dry_run,
-            duration_override_seconds=args.duration_seconds,
-        )
+        cookies_temp = None
+        cookies_path = None
+        if args.cookies:
+            # yt-dlp's --cookies reads AND rewrites the file on exit; use a temp copy
+            # so the shared Moongate cookie jar is never clobbered.
+            import shutil
+            import tempfile
+            fd, cookies_path = tempfile.mkstemp(prefix="seg-eval-cookies-", suffix=".txt")
+            os.close(fd)
+            shutil.copyfile(args.cookies, cookies_path)
+            cookies_temp = cookies_path
+        try:
+            directory = prepare_sample(
+                sample,
+                artifacts_root=args.artifacts,
+                dry_run=args.dry_run,
+                duration_override_seconds=args.duration_seconds,
+                cookies=cookies_path,
+            )
+        finally:
+            if cookies_temp:
+                try:
+                    os.remove(cookies_temp)
+                except OSError:
+                    pass
         print(directory)
         return
 
@@ -747,6 +786,37 @@ def main() -> None:
             args.out,
             required_language_groups=required_language_groups,
         )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "segmentation-metrics":
+        report = evaluate_segmentation_files(
+            args.candidate,
+            args.reference,
+            args.sample_id,
+            args.out,
+            candidate_offset_seconds=args.candidate_offset_seconds,
+            reference_offset_seconds=args.reference_offset_seconds,
+            window_start=args.window_start_seconds,
+            window_end=args.window_end_seconds,
+            tolerance_seconds=args.tolerance_seconds,
+            track=args.track,
+        )
+        print(json.dumps({
+            "sample_id": report["sample_id"],
+            "track": report["track"],
+            "boundary_f1": report["boundary_f1"],
+            "boundary_precision": report["boundary_precision"],
+            "boundary_recall": report["boundary_recall"],
+            "temporal_coverage": report["temporal_coverage"],
+            "segment_count_ratio": report["segment_count_ratio"],
+            "passes_segmentation_gate": report["passes_segmentation_gate"],
+            "gate_failures": report["gate_failures"],
+        }, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "segmentation-suite":
+        summary = summarize_segmentation_suite_files(args.report, args.out)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
 

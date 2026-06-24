@@ -12,6 +12,10 @@ from urllib.parse import quote
 
 from .asr import transcribe_words, transcribe_words_whisper_cpp
 from .comparison import compare_reports, summarize_suite
+from .segmentation import (
+    evaluate_segmentation,
+    summarize_suite as summarize_segmentation_reports,
+)
 from .metrics import (
     ACCEPTED_END_MAX_MS,
     ACCEPTED_END_MIN_MS,
@@ -902,16 +906,19 @@ def build_prepare_commands(
     sample: Dict[str, Any],
     output_template: str,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> List[List[str]]:
     source = sample["source"]
     start, end, _ = sample_section(sample, duration_override_seconds)
     subtitle_lang = sample.get("subtitle_lang", "en")
     media_format = sample.get("media_format", "ba[ext=m4a]/ba/best")
 
+    cookie_args = ["--cookies", cookies] if cookies else []
     common = [
         "yt-dlp",
         "--no-playlist",
         "--force-overwrites",
+        *cookie_args,
         "--download-sections",
         "*%s-%s" % (start, end),
         "-o",
@@ -3181,12 +3188,14 @@ def build_converted_subtitle_command(
     ]
 
 
-def build_full_media_fallback_command(sample: Dict[str, Any], workdir: Path) -> List[str]:
+def build_full_media_fallback_command(sample: Dict[str, Any], workdir: Path, cookies: Optional[str] = None) -> List[str]:
     media_format = sample.get("media_format", "ba[ext=m4a]/ba/best")
+    cookie_args = ["--cookies", cookies] if cookies else []
     return [
         "yt-dlp",
         "--no-playlist",
         "--force-overwrites",
+        *cookie_args,
         "-f",
         media_format,
         "-o",
@@ -3229,9 +3238,10 @@ def run_full_media_fallback(
     workdir: Path,
     dry_run: bool = False,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> Path:
     start, _, duration = sample_section(sample, duration_override_seconds)
-    run_command(build_full_media_fallback_command(sample, workdir), dry_run=dry_run)
+    run_command(build_full_media_fallback_command(sample, workdir, cookies=cookies), dry_run=dry_run)
     output_path = workdir / ("%s.section.wav" % sample["id"])
     if dry_run:
         run_command(build_trim_fallback_command(Path("<downloaded-full-media>"), output_path, start, duration), dry_run=True)
@@ -3279,6 +3289,7 @@ def prepare_sample(
     artifacts_root: str,
     dry_run: bool = False,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> Path:
     workdir = sample_workdir(artifacts_root, sample["id"])
     output_template = str(workdir / "%(id)s.%(ext)s")
@@ -3286,6 +3297,7 @@ def prepare_sample(
         sample,
         output_template,
         duration_override_seconds=duration_override_seconds,
+        cookies=cookies,
     )
     try:
         run_command(media_command, dry_run=dry_run)
@@ -3297,6 +3309,7 @@ def prepare_sample(
                 workdir,
                 dry_run=dry_run,
                 duration_override_seconds=duration_override_seconds,
+                cookies=cookies,
             )
         except subprocess.CalledProcessError as error:
             _write_prepare_blocker(sample, workdir, error)
@@ -3499,6 +3512,54 @@ def evaluate_reference_files(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
+
+
+def evaluate_segmentation_files(
+    candidate_path: str,
+    reference_path: str,
+    sample_id: str,
+    output_path: str,
+    candidate_offset_seconds: float = 0.0,
+    reference_offset_seconds: float = 0.0,
+    window_start: Optional[float] = None,
+    window_end: Optional[float] = None,
+    tolerance_seconds: float = 0.5,
+    track: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Score a candidate subtitle file's segmentation against a reference file."""
+    candidate_cues = offset_cues(_load_subtitle_cues(candidate_path), candidate_offset_seconds)
+    reference_cues = offset_cues(_load_subtitle_cues(reference_path), reference_offset_seconds)
+    report = evaluate_segmentation(
+        candidate_cues,
+        reference_cues,
+        sample_id=sample_id,
+        window_start=window_start,
+        window_end=window_end,
+        tolerance=tolerance_seconds,
+        track=track,
+    )
+    report["candidate_path"] = candidate_path
+    report["reference_path"] = reference_path
+    report["candidate_offset_seconds"] = candidate_offset_seconds
+    report["reference_offset_seconds"] = reference_offset_seconds
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def summarize_segmentation_suite_files(
+    report_paths: List[str],
+    output_path: str,
+) -> Dict[str, Any]:
+    """Aggregate per-sample segmentation reports into a suite-level summary."""
+    reports = []
+    for path in report_paths:
+        with open(path, "r", encoding="utf-8") as handle:
+            reports.append(json.load(handle))
+    summary = summarize_segmentation_reports(reports)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return summary
 
 
 def compare_report_files(

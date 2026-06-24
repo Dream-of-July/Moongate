@@ -351,6 +351,7 @@ final class ASRContractsTests: XCTestCase {
         for (name, profile) in [
             ("speech", SubtitleTimingProfile.speech),
             ("lyrics", .lyrics),
+            ("japaneseLyrics", .japaneseLyrics),
             ("anime", .anime)
         ] {
             let t = LocalASRSubtitleTimingPlanner.thresholds(for: profile)
@@ -359,12 +360,14 @@ final class ASRContractsTests: XCTestCase {
             XCTAssertEqual(t.relaxedCJKCueSeconds, try profileValue(name, "relaxedCJKCueSeconds"), "\(name).relaxedCJKCueSeconds")
             XCTAssertEqual(t.maximumLatinCueSeconds, try profileValue(name, "maximumLatinCueSeconds"), "\(name).maximumLatinCueSeconds")
             XCTAssertEqual(t.largeSpeechGapSeconds, try profileValue(name, "largeSpeechGapSeconds"), "\(name).largeSpeechGapSeconds")
+            XCTAssertEqual(t.onsetDelaySeconds, try profileValue(name, "onsetDelaySeconds"), "\(name).onsetDelaySeconds")
             XCTAssertEqual(t.holdToNextSeconds, try profileValue(name, "holdToNextSeconds"), "\(name).holdToNextSeconds")
             XCTAssertEqual(t.residualMaxStandaloneSeconds, try profileValue(name, "residualMaxStandaloneSeconds"), "\(name).residualMaxStandaloneSeconds")
             XCTAssertEqual(t.breathGapBreakSeconds, try profileValue(name, "breathGapBreakSeconds"), "\(name).breathGapBreakSeconds")
         }
         // speech 档必须等于顶层标量常量（零行为退化的结构保证）。
         let speech = LocalASRSubtitleTimingPlanner.thresholds(for: .speech)
+        XCTAssertEqual(speech.onsetDelaySeconds, WhisperCueRetimer.onsetDelaySeconds)
         XCTAssertEqual(speech.holdToNextSeconds, WhisperCueRetimer.holdToNextSeconds)
         XCTAssertEqual(speech.maximumCJKCueSeconds, LocalASRSubtitleTimingPlanner.maximumCJKCueSeconds)
         XCTAssertEqual(speech.hardMaximumCJKCueSeconds, LocalASRSubtitleTimingPlanner.hardMaximumCJKCueSeconds)
@@ -412,6 +415,14 @@ final class ASRContractsTests: XCTestCase {
     func testTimingProfileDetectorRoutesByFilenameAndShape() {
         // Filename keyword wins immediately (even with few cues).
         XCTAssertEqual(SubtitleTimingProfileDetector.detect(fileName: "Artist - Title (Official MV).mp4", cues: []), .lyrics)
+        XCTAssertEqual(
+            SubtitleTimingProfileDetector.detect(
+                fileName: "YOASOBI Official Music Video.local-asr.ja.srt",
+                cues: [],
+                languageCode: "ja"
+            ),
+            .japaneseLyrics
+        )
         XCTAssertEqual(SubtitleTimingProfileDetector.detect(fileName: "Some Anime EP.12.mkv", cues: []), .anime)
 
         // Sung-verse shape: sparse end punctuation, medium lines, frequent silent gaps.
@@ -421,7 +432,12 @@ final class ASRContractsTests: XCTestCase {
             lyricCues.append(srtCue(i + 1, t, t + 4.0, "歌詞のフレーズ \(i)"))
             t += 4.0 + 1.4 // 1.4s gap between phrases
         }
-        XCTAssertEqual(SubtitleTimingProfileDetector.detect(fileName: "live.mp4", cues: lyricCues), .lyrics)
+        XCTAssertEqual(SubtitleTimingProfileDetector.detect(fileName: "live.mp4", cues: lyricCues), .japaneseLyrics)
+        XCTAssertEqual(
+            SubtitleTimingProfileDetector.detect(fileName: "live.mp4", cues: lyricCues, languageCode: "en"),
+            .japaneseLyrics,
+            "kana-heavy lyrics should still route to Japanese lyrics even if metadata is wrong"
+        )
 
         // Lecture shape: full sentences, longer continuous lines -> speech.
         var speechCues: [SubtitleCue] = []
@@ -468,6 +484,123 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertLessThan(maxDuration(lyrics), maxDuration(speech), "lyrics profile should cap cues shorter than speech")
     }
 
+    func testJapaneseLyricsRetimerKeepsRawOnsetToAvoidLateSongCaptions() throws {
+        let transcript = ASRTranscript(
+            id: "song",
+            languageCode: "ja",
+            durationSeconds: 5.0,
+            words: [
+                ASRWord(text: "青い", startSeconds: 1.0, endSeconds: 1.55),
+                ASRWord(text: "世界", startSeconds: 1.7, endSeconds: 2.2)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+        let speech = ASRTranscriptMapper.sourceCues(from: transcript, profile: .speech)
+        let japaneseLyrics = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let speechStart = try XCTUnwrap(srtTimeToSeconds(speech[0].start))
+        let lyricsStart = try XCTUnwrap(srtTimeToSeconds(japaneseLyrics[0].start))
+        XCTAssertEqual(speechStart, 1.0 + WhisperCueRetimer.onsetDelaySeconds, accuracy: 0.0015)
+        XCTAssertEqual(lyricsStart, 1.0, accuracy: 0.0015)
+    }
+
+    func testLyricsAcousticGuardClampsIntroOutOfLeadingSilence() throws {
+        let transcript = ASRTranscript(
+            id: "gunjou-intro",
+            languageCode: "ja",
+            durationSeconds: 8.0,
+            words: [
+                ASRWord(text: "あ", startSeconds: 0.0, endSeconds: 0.63, probability: 0.14),
+                ASRWord(text: "いつ", startSeconds: 0.63, endSeconds: 1.89, probability: 0.67),
+                ASRWord(text: "もの", startSeconds: 2.60, endSeconds: 3.15, probability: 0.99),
+                ASRWord(text: "ように", startSeconds: 3.15, endSeconds: 5.04, probability: 0.96)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+        let activity = ASRAudioActivity(silenceRanges: [
+            ASRAudioActivityRange(startSeconds: 0.0, endSeconds: 2.51)
+        ])
+
+        let guarded = ASRTranscriptMapper.sourceCues(
+            from: transcript,
+            profile: .japaneseLyrics,
+            audioActivity: activity
+        )
+        let unguarded = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+
+        let guardedStart = try XCTUnwrap(srtTimeToSeconds(guarded[0].start))
+        let unguardedStart = try XCTUnwrap(srtTimeToSeconds(unguarded[0].start))
+        XCTAssertGreaterThanOrEqual(guardedStart, 2.51, "lyrics must not appear inside a leading silent prelude")
+        XCTAssertEqual(unguardedStart, 0.0, accuracy: 0.0015, "missing audio activity must preserve current timing")
+    }
+
+    func testAudioActivityParsesFfmpegSilencedetectOutput() {
+        let activity = ASRAudioActivity.parseSilencedetectOutput("""
+        [Parsed_silencedetect_0 @ 0x843041140] silence_start: 0.001
+        [Parsed_silencedetect_0 @ 0x843041140] silence_end: 2.513313 | silence_duration: 2.512312
+        [Parsed_silencedetect_0 @ 0x843041140] silence_start: 42.7
+        [Parsed_silencedetect_0 @ 0x843041140] silence_end: 44.01 | silence_duration: 1.31
+        """)
+
+        XCTAssertEqual(activity.silenceRanges.count, 2)
+        XCTAssertEqual(activity.silenceRanges[0].startSeconds, 0.001, accuracy: 0.000_001)
+        XCTAssertEqual(activity.silenceRanges[0].endSeconds, 2.513_313, accuracy: 0.000_001)
+        XCTAssertEqual(activity.silenceRanges[1].startSeconds, 42.7, accuracy: 0.000_001)
+        XCTAssertEqual(activity.silenceRanges[1].endSeconds, 44.01, accuracy: 0.000_001)
+    }
+
+    func testJapaneseLyricsDoesNotStartLineWithBareNaTail() {
+        let words = [
+            ASRWord(text: "降る", startSeconds: 0.0, endSeconds: 0.6),
+            ASRWord(text: "どこか", startSeconds: 0.8, endSeconds: 1.4),
+            ASRWord(text: "虚しい", startSeconds: 1.6, endSeconds: 2.4),
+            ASRWord(text: "よう", startSeconds: 2.6, endSeconds: 3.4),
+            ASRWord(text: "なそんな", startSeconds: 3.5, endSeconds: 4.9),
+            ASRWord(text: "気持ち", startSeconds: 5.1, endSeconds: 5.9)
+        ]
+        let transcript = ASRTranscript(id: "song", languageCode: "ja", words: words, sourceModelID: "whisper.cpp:test")
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("な") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("ような") }, joined)
+    }
+
+    func testJapaneseLyricsRebalancesNaTailBeforeSonnaPhrase() {
+        let words = [
+            ASRWord(text: "谷", startSeconds: 13.29, endSeconds: 13.68),
+            ASRWord(text: "の", startSeconds: 13.68, endSeconds: 14.07),
+            ASRWord(text: "街", startSeconds: 14.07, endSeconds: 14.46),
+            ASRWord(text: "に", startSeconds: 14.46, endSeconds: 14.85),
+            ASRWord(text: "朝", startSeconds: 14.85, endSeconds: 15.24),
+            ASRWord(text: "が", startSeconds: 15.24, endSeconds: 15.63),
+            ASRWord(text: "降", startSeconds: 15.63, endSeconds: 16.02),
+            ASRWord(text: "る", startSeconds: 16.02, endSeconds: 16.44),
+            ASRWord(text: "ど", startSeconds: 16.44, endSeconds: 16.77),
+            ASRWord(text: "こ", startSeconds: 16.77, endSeconds: 17.1),
+            ASRWord(text: "か", startSeconds: 17.1, endSeconds: 17.43),
+            ASRWord(text: "虚", startSeconds: 17.43, endSeconds: 17.76),
+            ASRWord(text: "しい", startSeconds: 17.76, endSeconds: 18.43),
+            ASRWord(text: "よう", startSeconds: 18.94, endSeconds: 19.1),
+            ASRWord(text: "な", startSeconds: 19.1, endSeconds: 19.3),
+            ASRWord(text: "そんな", startSeconds: 19.52, endSeconds: 20.43),
+            ASRWord(text: "気", startSeconds: 20.43, endSeconds: 20.76),
+            ASRWord(text: "持", startSeconds: 20.76, endSeconds: 21.09),
+            ASRWord(text: "ち", startSeconds: 21.09, endSeconds: 21.48),
+            ASRWord(text: "つ", startSeconds: 21.48, endSeconds: 21.72),
+            ASRWord(text: "ま", startSeconds: 21.72, endSeconds: 21.92),
+            ASRWord(text: "ら", startSeconds: 21.99, endSeconds: 22.2),
+            ASRWord(text: "ない", startSeconds: 22.2, endSeconds: 22.69),
+            ASRWord(text: "な", startSeconds: 22.69, endSeconds: 22.96),
+            ASRWord(text: "でも", startSeconds: 22.96, endSeconds: 23.5)
+        ]
+        let transcript = ASRTranscript(id: "song-na-sonna", languageCode: "ja", words: words, sourceModelID: "whisper.cpp:test")
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("なそんな") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("虚しいような") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.hasPrefix("そんな気持ち") }, joined)
+    }
+
     func testBreathGapBreaksLongRunAtSilence() throws {
         // Use the planner directly so we can place a breath gap exactly at a soft-ceiling junction.
         // Without the gap the junction would extend to the hard ceiling (kept whole); with a real
@@ -495,8 +628,8 @@ final class ASRContractsTests: XCTestCase {
 
     func testLyricsProfileCapsResidualStandaloneCue() throws {
         // A lone short kana cue that whisper stretches, isolated by large gaps so it stays standalone
-        // (not merged): speech may hold up to the 2.4s standalone cap; lyrics caps it at
-        // residualMaxStandaloneSeconds (0.8s) so it cannot linger.
+        // (not merged): speech may hold up to the 2.4s standalone cap; lyrics keeps it near
+        // the profile readability floor (0.9s) so it cannot linger or flash too quickly.
         let words = [
             ASRWord(text: "うた。", startSeconds: 0.0, endSeconds: 1.0),
             ASRWord(text: "ね", startSeconds: 10.0, endSeconds: 15.0),
@@ -515,7 +648,7 @@ final class ASRContractsTests: XCTestCase {
         }
         let speechDur = try XCTUnwrap(try standaloneDuration(speech))
         let lyricsDur = try XCTUnwrap(try standaloneDuration(lyrics))
-        XCTAssertLessThanOrEqual(lyricsDur, 0.8 + 0.001, "residual cue must be capped under lyrics profile")
+        XCTAssertLessThanOrEqual(lyricsDur, 0.9 + 0.001, "residual cue must be capped under lyrics profile")
         XCTAssertGreaterThan(speechDur, lyricsDur, "speech profile allows a longer standalone hold than lyrics")
     }
 
@@ -997,7 +1130,11 @@ final class ASRContractsTests: XCTestCase {
 
         XCTAssertEqual(
             ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: " ja "),
-            "title=Moon Gate Clip; language=ja"
+            "今日は、いい天気ですね。はい、そうです。; title=Moon Gate Clip; language=ja"
+        )
+        XCTAssertEqual(
+            ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: " ko "),
+            "안녕하세요. 오늘은 날씨가 좋네요. 네, 맞습니다.; title=Moon Gate Clip; language=ko"
         )
         XCTAssertEqual(
             ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: " auto "),
@@ -1006,6 +1143,11 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(
             ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: " AUTO "),
             "title=Moon Gate Clip"
+        )
+        // Latin languages keep the metadata-only prompt (no CJK exemplar).
+        XCTAssertEqual(
+            ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: "en"),
+            "title=Moon Gate Clip; language=en"
         )
         XCTAssertNil(ASRPromptBuilder.defaultPrompt(videoURL: URL(fileURLWithPath: "/tmp/   .mp4"), languageCode: "auto"))
     }
@@ -1772,6 +1914,23 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(plainEnd, 21.0 + WhisperCueRetimer.holdToNextSeconds, accuracy: 0.0015)
     }
 
+    func testLyricsAndAnimeRetimerAvoidsFlashDurationWhenGapAllows() throws {
+        let raw = retimerCue(4.0, 4.1, "梅だ", lastTokenEnd: 4.1)
+        let speech = WhisperCueRetimer.retime([raw], transcriptDurationSeconds: 10.0, profile: .speech)
+        let anime = WhisperCueRetimer.retime([raw], transcriptDurationSeconds: 10.0, profile: .anime)
+        let lyrics = WhisperCueRetimer.retime([raw], transcriptDurationSeconds: 10.0, profile: .japaneseLyrics)
+
+        func duration(_ cue: SubtitleCue) throws -> Double {
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            return end - start
+        }
+
+        XCTAssertGreaterThanOrEqual(try duration(speech[0]), LocalASRSubtitleTimingPlanner.minimumCueSeconds)
+        XCTAssertGreaterThanOrEqual(try duration(anime[0]), 0.9 - 0.0015)
+        XCTAssertGreaterThanOrEqual(try duration(lyrics[0]), 0.9 - 0.0015)
+    }
+
     func testWhisperCueRetimerRespectsDurationCapAndTranscriptLength() throws {
         // A long CJK cue may exceed the hard cap to avoid cutting off the last real word,
         // but it must still stay within the relaxed CJK cap.
@@ -1784,6 +1943,12 @@ final class ASRContractsTests: XCTestCase {
         let clamped = WhisperCueRetimer.retime([retimerCue(8.0, 20.0, "字幕")], transcriptDurationSeconds: 11.0)
         let clampedEnd = try XCTUnwrap(srtTimeToSeconds(clamped[0].end))
         XCTAssertLessThanOrEqual(clampedEnd, 11.0 + 0.0015)
+
+        // BUG-4: a final cue whose onset sits within minimumCueSeconds of the audio end must not be
+        // pushed past the transcript duration by the minimum-readable-duration floor.
+        let nearEnd = WhisperCueRetimer.retime([retimerCue(10.8, 10.9, "字幕")], transcriptDurationSeconds: 11.0)
+        let nearEndStop = try XCTUnwrap(srtTimeToSeconds(nearEnd[0].end))
+        XCTAssertLessThanOrEqual(nearEndStop, 11.0 + 0.0015)
     }
 
     func testWhisperCppJSONParserBuildsTranscriptFromTokenOffsets() throws {

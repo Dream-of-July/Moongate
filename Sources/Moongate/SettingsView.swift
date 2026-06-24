@@ -50,11 +50,12 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     }
 }
 
-/// 设置面板（sheet）：翻译服务、字幕样式、站点登录。
-/// 草稿模式：输入框绑定 draft，点「完成」才回写并保存；取消 / Esc 不落任何修改。
+/// 独立设置窗口：通用、字幕与翻译、本地语音识别、AI 服务、视频与输出、站点登录、组件与存储、更新与关于。
+/// 实时同步：draft 仅作输入缓冲，onChange 即通过 persistDraftLive 落盘，无「完成 / 取消」按钮（红灯关闭即可）。
 struct SettingsView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     typealias TestState = APIConnectionTestState
     typealias ModelFetchState = APIModelFetchState
@@ -297,6 +298,7 @@ struct SettingsView: View {
             Image(systemName: localASRSetupIcon(for: state))
                 .font(.body.weight(.semibold))
                 .foregroundStyle(localASRSetupTint(for: state))
+                .symbolEffect(.pulse, isActive: isInstalling(state) && !reduceMotion)
                 .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -350,6 +352,7 @@ struct SettingsView: View {
                 .font(.title3.weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(modelTint(entry))
+                .symbolEffect(.pulse, isActive: localASRInstallingModelID == entry.id && !reduceMotion)
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -565,6 +568,11 @@ struct SettingsView: View {
         let selectedID = draft.localASRModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !selectedID.isEmpty else { return nil }
         return unsortedLocalASRModelCatalogEntries.first { $0.id == selectedID }
+    }
+
+    private func isInstalling(_ state: LocalASRSetupState) -> Bool {
+        if case .downloading = state { return true }
+        return false
     }
 
     private func localASRSetupIcon(for state: LocalASRSetupState) -> String {
@@ -863,14 +871,16 @@ struct SettingsView: View {
             }
         }
 
+        let fm = FileManager.default
+        var copiedURL: URL?
         do {
-            let fm = FileManager.default
             let importedDirectoryURL = localASRModelStoreURL.appendingPathComponent("imported", isDirectory: true)
             try fm.createDirectory(at: importedDirectoryURL, withIntermediateDirectories: true)
             let destinationURL = uniqueImportedModelDestination(
                 directoryURL: importedDirectoryURL,
                 fileName: sanitizedImportedModelFileName(sourceURL.lastPathComponent)
             )
+            copiedURL = destinationURL
             try fm.copyItem(at: sourceURL, to: destinationURL)
             draft.localASREnabled = true
             draft.localASRModelID = importedLocalASRModelID(for: destinationURL)
@@ -879,6 +889,10 @@ struct SettingsView: View {
             storageSizes["asrModels"] = nil
             model.settingsNotice = localizer.t(L.Settings.localASRModelImportComplete, importedLocalASRModelName(destinationURL))
         } catch {
+            // 复制中途失败可能留下半截 .bin：清理掉，避免占用存储或被后续误当成坏模型。
+            if let copiedURL {
+                try? fm.removeItem(at: copiedURL)
+            }
             model.settingsNotice = localizer.t(L.Settings.localASRModelImportFailed, error.localizedDescription)
         }
     }

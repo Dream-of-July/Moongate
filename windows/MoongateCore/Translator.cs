@@ -3177,7 +3177,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         // Single source of truth: the same detector the ASR planner uses to pick a timing profile.
         // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
         // never disagree about whether a clip is a song.
-        SubtitleTimingProfileDetector.Detect(fileName, cues) == SubtitleTimingProfile.Lyrics;
+        SubtitleTimingProfileDetector.Detect(fileName, cues) is SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics;
 
     /// <summary>
     /// 字幕条内部换行折叠成一行发给模型。用空格连接（旧版用 " / " 会被模型原样抄进译文，

@@ -1,6 +1,7 @@
 import AppKit
 import MoongateCore
 import SwiftUI
+import UserNotifications
 
 @main
 struct MoongateApp: App {
@@ -169,6 +170,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             legacyGlobal: AppSettings.cookieFileURL,
             cookieDirectory: AppSettings.cookieDirectory
         )
+
+        // 队列完成通知必须先取得用户授权，否则 UNUserNotificationCenter.add(_:) 会被系统静默丢弃，
+        // 下载完成既无横幅也无提示音——这是 0.8 上线前实测到「完全没有系统通知」的根因。
+        Self.requestCompletionNotificationAuthorization()
+    }
+
+    /// 请求「下载完成」通知 + 提示音所需的系统授权。首次启动弹一次系统对话框，之后静默复用结果。
+    /// 仅在打包为 .app（有 bundle id）时请求，避免 `swift run` / 单元测试等无 main bundle 的环境下
+    /// `UNUserNotificationCenter.current()` 触发 NSInternalInconsistencyException 崩溃。
+    static func requestCompletionNotificationAuthorization() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                NSLog("Moongate: 通知授权请求失败：\(error.localizedDescription)")
+            } else if !granted {
+                NSLog("Moongate: 用户未授权完成通知；下载完成时仅在 App 前台播放提示音。")
+            }
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

@@ -20,32 +20,32 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse080Rc1ForMacAndWindows()
+    public void ReleaseVersionSurfacesUse080ForMacAndWindows()
     {
-        Assert.Contains("VERSION=\"0.8.0-rc.1\"", Read("build-windows.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0-rc.1}\"", Read("make-dmg.sh"));
-        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.8.0-rc.1}\"", Read("build.sh"));
-        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8001}\"", Read("build.sh"));
+        Assert.Contains("VERSION=\"0.8.0\"", Read("build-windows.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-dmg.sh"));
+        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("build.sh"));
+        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("build.sh"));
         Assert.Contains("<string>$APP_VERSION</string>", Read("build.sh"));
         Assert.Contains("<string>$APP_BUILD_NUMBER</string>", Read("build.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0-rc.1}\"", Read("make-pkg.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0-rc.1}\"", Read("make-sparkle-zip.sh"));
-        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8001}\"", Read("make-sparkle-zip.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0-rc.1}\"", Read("make-appcast.sh"));
-        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8001}\"", Read("make-appcast.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-pkg.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-appcast.sh"));
+        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("make-appcast.sh"));
         Assert.Contains("productbuild", Read("make-pkg.sh"));
         Assert.Contains("PKG_SIGN_IDENTITY", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"$STAGING/Applications\"", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
-        Assert.Contains("Moongate-macOS-v0.8.0-rc.1.zip", Read("README.md"));
+        Assert.Contains("Moongate-macOS-v0.8.0.zip", Read("README.md"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.8.0-rc.1", workflow);
-        Assert.Contains("default: 0.8.0-rc.1", workflow);
+        Assert.Contains("default: v0.8.0", workflow);
+        Assert.Contains("default: 0.8.0", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.8.0-rc.1\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.8.0\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -362,8 +362,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("Moongate-Windows-Setup-v0.8.0-rc.1.exe", docs);
-        Assert.Contains("Moongate-Windows-Setup-v0.8.0-rc.1.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.8.0.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.8.0.exe", readme);
     }
 
     [Fact]
@@ -378,7 +378,7 @@ public class ReleaseSurfaceTests
         var preflight = File.ReadAllText(preflightPath);
         var vmPreflight = File.ReadAllText(vmPreflightPath);
 
-        Assert.Contains("0.8.0-rc.1", preflight);
+        Assert.Contains("0.8.0", preflight);
         Assert.Contains("PROJ_DIR=\"${0:a:h:h:h}\"", preflight);
         Assert.Contains("git diff --check", preflight);
         Assert.Contains("python3 -m unittest discover -s tools/subtitle_timing_eval/tests", preflight);

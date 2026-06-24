@@ -11,7 +11,8 @@
       "hardMaximumCJKCueSeconds": 5.5,
       "relaxedCJKCueSeconds": 6.5,
       "maximumLatinCueSeconds": 9.0,
-      "largeSpeechGapSeconds": 0.65,
+      "largeSpeechGapSeconds": 0.5,
+      "onsetDelaySeconds": 0.2,
       "holdToNextSeconds": 0.7,
       "breathGapBreakSeconds": 0.35
     },
@@ -21,9 +22,21 @@
       "relaxedCJKCueSeconds": 4.5,
       "maximumLatinCueSeconds": 5.0,
       "largeSpeechGapSeconds": 0.45,
+      "onsetDelaySeconds": 0.1,
       "holdToNextSeconds": 0.35,
-      "residualMaxStandaloneSeconds": 0.8,
+      "residualMaxStandaloneSeconds": 0.9,
       "breathGapBreakSeconds": 0.25
+    },
+    "japaneseLyrics": {
+      "maximumCJKCueSeconds": 4.2,
+      "hardMaximumCJKCueSeconds": 5.2,
+      "relaxedCJKCueSeconds": 5.8,
+      "maximumLatinCueSeconds": 5.4,
+      "largeSpeechGapSeconds": 0.5,
+      "onsetDelaySeconds": 0.0,
+      "holdToNextSeconds": 0.28,
+      "residualMaxStandaloneSeconds": 0.9,
+      "breathGapBreakSeconds": 0.3
     },
     "anime": {
       "maximumCJKCueSeconds": 3.5,
@@ -31,6 +44,7 @@
       "relaxedCJKCueSeconds": 5.5,
       "maximumLatinCueSeconds": 7.0,
       "largeSpeechGapSeconds": 0.55,
+      "onsetDelaySeconds": 0.15,
       "holdToNextSeconds": 0.5,
       "residualMaxStandaloneSeconds": 1.2,
       "breathGapBreakSeconds": 0.3

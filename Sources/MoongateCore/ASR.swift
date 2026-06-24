@@ -189,6 +189,74 @@ public struct ASRTranscript: Codable, Equatable, Sendable {
     }
 }
 
+public struct ASRAudioActivityRange: Codable, Equatable, Sendable {
+    public let startSeconds: Double
+    public let endSeconds: Double
+
+    public init(startSeconds: Double, endSeconds: Double) {
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+    }
+}
+
+public struct ASRAudioActivity: Codable, Equatable, Sendable {
+    public let silenceRanges: [ASRAudioActivityRange]
+
+    public init(silenceRanges: [ASRAudioActivityRange]) {
+        self.silenceRanges = silenceRanges
+            .filter { range in
+                range.startSeconds.isFinite
+                    && range.endSeconds.isFinite
+                    && range.endSeconds > range.startSeconds
+                    && range.endSeconds >= 0
+            }
+            .sorted {
+                $0.startSeconds == $1.startSeconds
+                    ? $0.endSeconds < $1.endSeconds
+                    : $0.startSeconds < $1.startSeconds
+            }
+    }
+
+    public static func parseSilencedetectOutput(_ output: String) -> ASRAudioActivity {
+        var ranges: [ASRAudioActivityRange] = []
+        var openStart: Double?
+        for line in output.components(separatedBy: .newlines) {
+            if let start = firstNumber(in: line, after: "silence_start:") {
+                openStart = start
+                continue
+            }
+            if let end = firstNumber(in: line, after: "silence_end:"),
+               let start = openStart {
+                ranges.append(ASRAudioActivityRange(startSeconds: start, endSeconds: end))
+                openStart = nil
+            }
+        }
+        return ASRAudioActivity(silenceRanges: ranges)
+    }
+
+    func protectedLyricStart(for start: Double) -> Double {
+        let tolerance = 0.12
+        guard let range = silenceRanges.first(where: { range in
+            start >= range.startSeconds - tolerance && start < range.endSeconds
+        }) else {
+            return start
+        }
+        return max(start, range.endSeconds)
+    }
+
+    private static func firstNumber(in line: String, after marker: String) -> Double? {
+        guard let markerRange = line.range(of: marker) else { return nil }
+        let tail = line[markerRange.upperBound...]
+        guard let numberRange = tail.range(
+            of: #"[-+]?[0-9]+(?:\.[0-9]+)?"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+        return Double(tail[numberRange])
+    }
+}
+
 public struct ASRProgress: Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable {
         case modelDownload
@@ -701,7 +769,8 @@ public enum ASRTranscriptMapper {
 
     public static func sourceCues(
         from transcript: ASRTranscript,
-        profile: SubtitleTimingProfile = .speech
+        profile: SubtitleTimingProfile = .speech,
+        audioActivity: ASRAudioActivity? = nil
     ) -> [SubtitleCue] {
         let planned = LocalASRSubtitleTimingPlanner.planCues(
             from: sourceFragments(from: transcript),
@@ -714,7 +783,8 @@ public enum ASRTranscriptMapper {
         return WhisperCueRetimer.retime(
             planned,
             transcriptDurationSeconds: transcript.durationSeconds,
-            profile: profile
+            profile: profile,
+            audioActivity: audioActivity
         )
     }
 
@@ -724,11 +794,16 @@ public enum ASRTranscriptMapper {
     /// `.speech` (unchanged behaviour) when nothing matches.
     public static func sourceCues(
         from transcript: ASRTranscript,
-        fileName: String
+        fileName: String,
+        audioActivity: ASRAudioActivity? = nil
     ) -> [SubtitleCue] {
         let speechCues = sourceCues(from: transcript, profile: .speech)
-        let profile = SubtitleTimingProfileDetector.detect(fileName: fileName, cues: speechCues)
-        return profile == .speech ? speechCues : sourceCues(from: transcript, profile: profile)
+        let profile = SubtitleTimingProfileDetector.detect(
+            fileName: fileName,
+            cues: speechCues,
+            languageCode: transcript.languageCode
+        )
+        return profile == .speech ? speechCues : sourceCues(from: transcript, profile: profile, audioActivity: audioActivity)
     }
 
     public static func localASRSourceSRTURL(videoURL: URL, languageCode: String) -> URL {
@@ -741,9 +816,10 @@ public enum ASRTranscriptMapper {
     @discardableResult
     public static func writeLocalASRSourceSRT(
         transcript: ASRTranscript,
-        videoURL: URL
+        videoURL: URL,
+        audioActivity: ASRAudioActivity? = nil
     ) throws -> URL {
-        let cues = sourceCues(from: transcript, fileName: videoURL.lastPathComponent)
+        let cues = sourceCues(from: transcript, fileName: videoURL.lastPathComponent, audioActivity: audioActivity)
         guard !cues.isEmpty else { throw WhisperCppRecognizerError.emptyTranscript }
         let outputURL = localASRSourceSRTURL(videoURL: videoURL, languageCode: transcript.languageCode)
         try serializeSRT(cues).write(to: outputURL, atomically: true, encoding: .utf8)
@@ -765,6 +841,7 @@ public enum ASRTranscriptMapper {
 public enum SubtitleTimingProfile: String, Codable, Sendable, CaseIterable {
     case speech
     case lyrics
+    case japaneseLyrics
     case anime
 }
 
@@ -830,9 +907,15 @@ public enum SubtitleTimingProfileDetector {
         return true
     }
 
-    public static func detect(fileName: String, cues: [SubtitleCue]) -> SubtitleTimingProfile {
+    public static func detect(
+        fileName: String,
+        cues: [SubtitleCue],
+        languageCode: String? = nil
+    ) -> SubtitleTimingProfile {
         let lower = fileName.lowercased()
-        if lyricsFilenameKeywords.contains(where: { lower.contains($0) }) { return .lyrics }
+        if lyricsFilenameKeywords.contains(where: { lower.contains($0) }) {
+            return looksJapanese(fileName: lower, languageCode: languageCode, cues: cues) ? .japaneseLyrics : .lyrics
+        }
         guard cues.count >= 20 else {
             return animeFilenameKeywords.contains(where: { lower.contains($0) }) || containsEpisodeMarker(lower)
                 ? .anime : .speech
@@ -872,7 +955,7 @@ public enum SubtitleTimingProfileDetector {
         // Lyrics: few sentence-final punctuation marks, medium-length lines, frequent silent gaps
         // between phrases (the shape of a sung verse) — matches Translator.looksLikeLocalASRLyrics.
         if punctuatedRatio < 0.2, average >= 3.0, average <= 5.8, largeGaps >= 2 {
-            return .lyrics
+            return looksJapanese(fileName: lower, languageCode: languageCode, cues: cues) ? .japaneseLyrics : .lyrics
         }
 
         // Anime: CJK-heavy, lots of short reaction cues, sparse end punctuation.
@@ -883,6 +966,32 @@ public enum SubtitleTimingProfileDetector {
             return .anime
         }
         return .speech
+    }
+
+    private static func looksJapanese(fileName lower: String, languageCode: String?, cues: [SubtitleCue]) -> Bool {
+        if isJapaneseLanguage(languageCode) { return true }
+        if lower.contains(".ja.") || lower.contains(".ja-") || lower.contains("_ja.") || lower.contains("_ja-")
+            || lower.contains("[ja]") || lower.contains("日本語") || lower.contains("日语") || lower.contains("日語") {
+            return true
+        }
+        var kana = 0
+        var visible = 0
+        for cue in cues.prefix(40) {
+            for scalar in cue.text.unicodeScalars where !scalar.properties.isWhitespace {
+                visible += 1
+                let value = scalar.value
+                if (0x3040...0x30FF).contains(value) { kana += 1 }
+            }
+        }
+        return visible > 0 && Double(kana) / Double(visible) >= 0.18
+    }
+
+    private static func isJapaneseLanguage(_ languageCode: String?) -> Bool {
+        guard let languageCode else { return false }
+        let normalized = languageCode
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized == "ja" || normalized == "jpn" || normalized.hasPrefix("ja-")
     }
 }
 
@@ -895,6 +1004,9 @@ public struct SubtitleTimingThresholds: Equatable, Sendable {
     public let relaxedCJKCueSeconds: Double
     public let maximumLatinCueSeconds: Double
     public let largeSpeechGapSeconds: Double
+    /// Profile-specific onset nudge. Spoken subtitles use a small late bias to avoid appearing
+    /// before speech; Japanese lyrics keep raw DTW onset because sung words are often already late.
+    public let onsetDelaySeconds: Double
     public let holdToNextSeconds: Double
     /// Maximum standalone duration for a residual single-character / lone-kana cue before it is
     /// time-capped. `.speech` keeps no extra constraint (residuals are handled by droppable +
@@ -921,7 +1033,10 @@ enum LocalASRSubtitleTimingPlanner {
     private static let hardMaximumCJKUnits = 28
     private static let relaxedShortMergeMaxCJKUnits = 34
     private static let maximumLatinTokens = 14
-    private static let largeSpeechGapSeconds = 0.65
+    // 0.65→0.50 (2026-06-24, segmentation eval 方向B)：参考人工字幕把 0.4–0.65s 停顿当强边界，
+    // 原 0.65 漏断这类必断点（strong-boundary recall≈0.50）。降到 0.50 让真实停顿更早强制断句。
+    // 跨端同步：windows/MoongateCore/Asr.cs 与 Tests/fixtures/whisper-timing-constants.json。
+    private static let largeSpeechGapSeconds = 0.50
 
     /// Per-profile thresholds. `.speech` reproduces the standalone constants above exactly (zero
     /// behaviour change for the default path); `.lyrics` / `.anime` tighten ceilings and break gaps
@@ -936,6 +1051,7 @@ enum LocalASRSubtitleTimingPlanner {
                 relaxedCJKCueSeconds: relaxedCJKCueSeconds,
                 maximumLatinCueSeconds: maximumLatinCueSeconds,
                 largeSpeechGapSeconds: largeSpeechGapSeconds,
+                onsetDelaySeconds: WhisperCueRetimer.onsetDelaySeconds,
                 holdToNextSeconds: WhisperCueRetimer.holdToNextSeconds,
                 residualMaxStandaloneSeconds: .greatestFiniteMagnitude,
                 breathGapBreakSeconds: 0.35
@@ -947,9 +1063,22 @@ enum LocalASRSubtitleTimingPlanner {
                 relaxedCJKCueSeconds: 4.5,
                 maximumLatinCueSeconds: 5.0,
                 largeSpeechGapSeconds: 0.45,
+                onsetDelaySeconds: 0.1,
                 holdToNextSeconds: 0.35,
-                residualMaxStandaloneSeconds: 0.8,
+                residualMaxStandaloneSeconds: 0.9,
                 breathGapBreakSeconds: 0.25
+            )
+        case .japaneseLyrics:
+            return SubtitleTimingThresholds(
+                maximumCJKCueSeconds: 4.2,
+                hardMaximumCJKCueSeconds: 5.2,
+                relaxedCJKCueSeconds: 5.8,
+                maximumLatinCueSeconds: 5.4,
+                largeSpeechGapSeconds: 0.5,
+                onsetDelaySeconds: 0.0,
+                holdToNextSeconds: 0.28,
+                residualMaxStandaloneSeconds: 0.9,
+                breathGapBreakSeconds: 0.3
             )
         case .anime:
             return SubtitleTimingThresholds(
@@ -958,6 +1087,7 @@ enum LocalASRSubtitleTimingPlanner {
                 relaxedCJKCueSeconds: 5.5,
                 maximumLatinCueSeconds: 7.0,
                 largeSpeechGapSeconds: 0.55,
+                onsetDelaySeconds: 0.15,
                 holdToNextSeconds: 0.5,
                 residualMaxStandaloneSeconds: 1.2,
                 breathGapBreakSeconds: 0.3
@@ -978,6 +1108,16 @@ enum LocalASRSubtitleTimingPlanner {
     /// music, or stretched audio. Keeping them as cues creates multi-second 「っ」/「ー」 flashes.
     private static let droppableJapaneseResiduals: Set<String> = [
         "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゎ"
+    ]
+    private static let japaneseLyricPhraseStartPrefixes = [
+        "そんな", "こんな", "あんな", "どんな", "この", "その", "あの",
+        "これ", "それ", "あれ", "でも", "だけど"
+    ]
+    private static let japaneseLyricBareTailFragments: Set<String> = [
+        "な", "て", "で", "に", "の", "が", "は", "を", "も", "と", "よ", "ね", "さ", "ん"
+    ]
+    private static let japaneseLyricAdnominalHeads: Set<String> = [
+        "よう", "そう", "みたい"
     ]
 
     private static let japaneseLoopMinPhraseFragments = 4
@@ -1104,6 +1244,160 @@ enum LocalASRSubtitleTimingPlanner {
             index += 1
         }
         return result
+    }
+
+    /// 可读性最小时长：低于此值的 cue 在屏幕上"闪现"，影响观感。把这类过短 group 并入相邻 group
+    /// （优先并入前一条，把短句尾接到上一句末尾；否则并入后一条），前提是间隔够近且合并后不超长。
+    /// 这是观感导向的 readability 合并，独立于 CJK 孤儿合并；不引入跨端常量，C# 侧镜像同一逻辑。
+    private static let flashMinCueSeconds = 0.8
+    private static let flashMergeMaxGapSeconds = 0.6
+
+    private static func mergeFlashDurationGroups(
+        _ groups: [[SubtitleCueSourceFragment]],
+        thresholds: SubtitleTimingThresholds
+    ) -> [[SubtitleCueSourceFragment]] {
+        let groups = groups.filter { !$0.isEmpty }
+        guard groups.count > 1 else { return groups }
+        var result: [[SubtitleCueSourceFragment]] = []
+        var index = 0
+        while index < groups.count {
+            let group = groups[index]
+            let span = (group.last?.endSeconds ?? 0) - (group.first?.startSeconds ?? 0)
+            if span >= flashMinCueSeconds {
+                result.append(group)
+                index += 1
+                continue
+            }
+            // too short to read comfortably — try to absorb it into a neighbour.
+            let prev = result.last
+            let gapPrev = prev.flatMap { $0.last?.endSeconds }.map { (group.first?.startSeconds ?? 0) - $0 }
+                ?? Double.greatestFiniteMagnitude
+            let next = index + 1 < groups.count ? groups[index + 1] : nil
+            let gapNext = next.flatMap { $0.first?.startSeconds }.map { $0 - (group.last?.endSeconds ?? 0) }
+                ?? Double.greatestFiniteMagnitude
+
+            let canPrev = prev != nil && gapPrev <= flashMergeMaxGapSeconds
+                && fitsMergedCue((prev ?? []) + group, thresholds: thresholds)
+            let canNext = next != nil && gapNext <= flashMergeMaxGapSeconds
+                && fitsMergedCue(group + (next ?? []), thresholds: thresholds)
+
+            if canPrev, (!canNext || gapPrev <= gapNext) {
+                result[result.count - 1] = (prev ?? []) + group
+                index += 1
+            } else if canNext, let next {
+                result.append(group + next)
+                index += 2
+            } else {
+                result.append(group)
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private static func rebalanceJapaneseLyricPhraseStarts(
+        _ groups: [[SubtitleCueSourceFragment]],
+        thresholds: SubtitleTimingThresholds
+    ) -> [[SubtitleCueSourceFragment]] {
+        guard groups.count >= 2 else { return groups }
+        var result: [[SubtitleCueSourceFragment]] = []
+        result.reserveCapacity(groups.count)
+
+        for group in groups {
+            guard !result.isEmpty,
+                  let prefixCount = japaneseLyricContinuationPrefixCount(group),
+                  group.count > prefixCount else {
+                result.append(group)
+                continue
+            }
+
+            let prefix = Array(group.prefix(prefixCount))
+            let remainder = Array(group.dropFirst(prefixCount))
+            let previous = result.removeLast()
+            let directMerge = previous + prefix
+
+            if fitsJapaneseLyricRebalancedCue(directMerge, thresholds: thresholds) {
+                result.append(directMerge)
+                result.append(remainder)
+                continue
+            }
+
+            if let split = splitPreviousForJapaneseLyricContinuation(
+                previous,
+                prefix: prefix,
+                thresholds: thresholds
+            ) {
+                result.append(split.head)
+                result.append(split.tail + prefix)
+                result.append(remainder)
+                continue
+            }
+
+            result.append(previous)
+            result.append(group)
+        }
+        return result
+    }
+
+    private static func japaneseLyricContinuationPrefixCount(_ group: [SubtitleCueSourceFragment]) -> Int? {
+        let texts = group.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard texts.count >= 2 else { return nil }
+        if japaneseLyricBareTailFragments.contains(texts[0]),
+           startsJapaneseLyricPhrase(texts[1]) {
+            return 1
+        }
+        if texts.count >= 3,
+           japaneseLyricAdnominalHeads.contains(texts[0]),
+           texts[1] == "な",
+           startsJapaneseLyricPhrase(texts[2]) {
+            return 2
+        }
+        return nil
+    }
+
+    private static func startsJapaneseLyricPhrase(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return japaneseLyricPhraseStartPrefixes.contains { trimmed.hasPrefix($0) }
+    }
+
+    private static func fitsJapaneseLyricRebalancedCue(
+        _ fragments: [SubtitleCueSourceFragment],
+        thresholds: SubtitleTimingThresholds
+    ) -> Bool {
+        guard let first = fragments.first, let last = fragments.last else { return false }
+        let text = joinedText(fragments)
+        let duration = last.endSeconds - first.startSeconds
+        let units = SubtitleTimingPlanner.timingTokens(text).count
+        return duration <= thresholds.relaxedCJKCueSeconds
+            && units <= relaxedShortMergeMaxCJKUnits
+    }
+
+    private static func splitPreviousForJapaneseLyricContinuation(
+        _ previous: [SubtitleCueSourceFragment],
+        prefix: [SubtitleCueSourceFragment],
+        thresholds: SubtitleTimingThresholds
+    ) -> (head: [SubtitleCueSourceFragment], tail: [SubtitleCueSourceFragment])? {
+        guard previous.count >= 2 else { return nil }
+        let maxSuffixCount = min(previous.count - 1, 8)
+        var fallback: (head: [SubtitleCueSourceFragment], tail: [SubtitleCueSourceFragment])?
+        for suffixCount in 1...maxSuffixCount {
+            let head = Array(previous.dropLast(suffixCount))
+            let tail = Array(previous.suffix(suffixCount))
+            let rebalanced = tail + prefix
+            let text = joinedText(rebalanced)
+            guard !head.isEmpty,
+                  !startsWithLeadingProhibited(text),
+                  fitsJapaneseLyricRebalancedCue(rebalanced, thresholds: thresholds) else {
+                continue
+            }
+            if fallback == nil {
+                fallback = (head: head, tail: tail)
+            }
+            if containsKanji(joinedText(tail)) {
+                return (head: head, tail: tail)
+            }
+        }
+        return fallback
     }
 
     private static func fitsMergedCue(
@@ -1233,7 +1527,9 @@ enum LocalASRSubtitleTimingPlanner {
         profile: SubtitleTimingProfile = .speech
     ) -> [SubtitleCue] {
         let thresholds = thresholds(for: profile)
-        let loopSuppressed = suppressRepeatedJapaneseLoopFragments(fragments.filter { shouldKeep($0) })
+        let loopSuppressed = splitLeadingJapaneseTailFragments(
+            suppressRepeatedJapaneseLoopFragments(fragments.filter { shouldKeep($0) })
+        )
         let ordered = loopSuppressed
             .sorted {
                 $0.startSeconds == $1.startSeconds
@@ -1266,6 +1562,10 @@ enum LocalASRSubtitleTimingPlanner {
         }
         flushCurrent()
         groups = mergeShortGroups(groups, thresholds: thresholds)
+        if profile == .japaneseLyrics {
+            groups = rebalanceJapaneseLyricPhraseStarts(groups, thresholds: thresholds)
+        }
+        groups = mergeFlashDurationGroups(groups, thresholds: thresholds)
 
         var cues: [SubtitleCue] = []
         for group in groups {
@@ -1506,6 +1806,32 @@ enum LocalASRSubtitleTimingPlanner {
         if isPurePunctuation(fragment.text) { return false }
         if isDroppableJapaneseResidual(fragment.text) { return false }
         return true
+    }
+
+    private static func splitLeadingJapaneseTailFragments(
+        _ fragments: [SubtitleCueSourceFragment]
+    ) -> [SubtitleCueSourceFragment] {
+        fragments.flatMap { fragment -> [SubtitleCueSourceFragment] in
+            let text = fragment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.hasPrefix("なそ"), text.count >= 3 else { return [fragment] }
+            let duration = fragment.endSeconds - fragment.startSeconds
+            guard duration >= 0.2 else { return [fragment] }
+            let tailEnd = min(fragment.endSeconds, fragment.startSeconds + max(0.12, min(0.28, duration * 0.2)))
+            let rest = String(text.dropFirst())
+            guard !rest.isEmpty else { return [fragment] }
+            return [
+                SubtitleCueSourceFragment(
+                    startSeconds: fragment.startSeconds,
+                    endSeconds: tailEnd,
+                    text: "な"
+                ),
+                SubtitleCueSourceFragment(
+                    startSeconds: tailEnd,
+                    endSeconds: fragment.endSeconds,
+                    text: rest
+                )
+            ]
+        }
     }
 
     private static func shouldBreak(
@@ -1880,7 +2206,8 @@ public enum WhisperCueRetimer {
     /// Mixed CJK + Latin/number runs are often ASR-glued code switches; use a shorter hold so
     /// pasted English fragments do not linger across the next silence.
     public static let mixedCJKLatinHoldToNextSeconds = 0.45
-    private static let minimumCueSeconds = LocalASRSubtitleTimingPlanner.minimumCueSeconds
+    private static let baseMinimumCueSeconds = LocalASRSubtitleTimingPlanner.minimumCueSeconds
+    private static let profiledMinimumCueSeconds = 0.9
     private static let epsilon = 0.001
 
     private struct RawCue {
@@ -1895,10 +2222,12 @@ public enum WhisperCueRetimer {
     public static func retime(
         _ cues: [SubtitleCue],
         transcriptDurationSeconds: Double?,
-        profile: SubtitleTimingProfile = .speech
+        profile: SubtitleTimingProfile = .speech,
+        audioActivity: ASRAudioActivity? = nil
     ) -> [SubtitleCue] {
         guard !cues.isEmpty else { return [] }
         let thresholds = LocalASRSubtitleTimingPlanner.thresholds(for: profile)
+        let lyricAcousticGuardEnabled = profile == .lyrics || profile == .japaneseLyrics
         var raws: [RawCue] = []
         raws.reserveCapacity(cues.count)
         for cue in cues {
@@ -1933,20 +2262,29 @@ public enum WhisperCueRetimer {
             // Appearance: nudge the onset slightly later (DTW has a small early bias; the window's
             // ideal is slightly-late) so cues don't appear before speech. Bounded so the cue keeps
             // a readable minimum duration, never before the previous cue's end, never negative.
-            var start = raw.start + onsetDelaySeconds
-            start = min(start, max(raw.start, raw.end - minimumCueSeconds))
+            var start = raw.start + thresholds.onsetDelaySeconds
+            start = min(start, max(raw.start, raw.end - baseMinimumCueSeconds))
             if index > 0 { start = max(start, previousEnd) }
             start = max(start, 0)
+            if lyricAcousticGuardEnabled, let audioActivity {
+                start = audioActivity.protectedLyricStart(for: start)
+                if hasNext {
+                    start = min(start, max(raw.start, nextStart - baseMinimumCueSeconds))
+                }
+            }
 
             // Disappearance: extend the cue toward the next real onset to absorb whisper's early
             // word ends, capped at holdToNextSeconds past the last token (so a long pause cannot
             // produce a long idle hold) and at the next onset minus a guard (so cues never overlap).
-            let ceiling = hasNext ? nextStart - interCueGuardSeconds : Double.greatestFiniteMagnitude
+            // 末句没有下一个 onset，但仍不能越过整段音频时长，否则末句字幕会拖到视频结尾之后（BUG-4）。
+            let ceiling = hasNext
+                ? nextStart - interCueGuardSeconds
+                : (transcriptDurationSeconds ?? Double.greatestFiniteMagnitude)
             let hold = holdToNextSeconds(for: raw.text, thresholds: thresholds)
             var end = max(raw.end, min(ceiling, raw.lastTokenEnd + hold))
             if let duration = transcriptDurationSeconds { end = min(end, duration) }
             end = min(end, start + raw.cap)
-            end = max(end, start + minimumCueSeconds) // minimum readable duration (before overlap clamp)
+            end = max(end, start + minimumCueSeconds(for: profile)) // minimum readable duration (before overlap clamp)
             end = min(end, ceiling)                   // never overlap the next onset window
             end = min(end, nextStart)                 // hard no-overlap authority
             end = max(end, start + epsilon)           // always positive duration
@@ -1967,6 +2305,15 @@ public enum WhisperCueRetimer {
         // Mixed CJK + Latin runs are ASR-glued code switches: keep the short mixed hold regardless
         // of profile so pasted English fragments do not linger. Otherwise use the profile's hold.
         containsCJKLatinMix(text) ? min(mixedCJKLatinHoldToNextSeconds, thresholds.holdToNextSeconds) : thresholds.holdToNextSeconds
+    }
+
+    private static func minimumCueSeconds(for profile: SubtitleTimingProfile) -> Double {
+        switch profile {
+        case .speech:
+            return baseMinimumCueSeconds
+        case .lyrics, .japaneseLyrics, .anime:
+            return profiledMinimumCueSeconds
+        }
     }
 
     private static func containsCJKLatinMix(_ text: String) -> Bool {
@@ -1990,11 +2337,34 @@ public protocol LocalASRSubtitleGenerator: Sendable {
 }
 
 public enum ASRPromptBuilder {
+    /// CJK 标点范例：whisper.cpp 把 prompt 当前置上下文并沿用其风格。CJK 下模型默认几乎不产句末
+    /// 标点（日语实测 0、韩语 6），分段器因而缺句末断点、欠分段。给带标点范例后标点 0→24，
+    /// 公平对比（同次重跑 ASR）下 CJK aggregate strong-boundary recall 0.31→0.44 且无样本回退
+    /// （segmentation eval 2026-06-24，n=4）。仅 CJK 注入，Latin 路径标点本就良好、保持不变。
+    /// 跨端镜像：windows/MoongateCore/Asr.cs `AsrPromptBuilder`。
+    static func punctuationExemplar(forLanguage language: String) -> String? {
+        let lang = language.lowercased()
+        if lang.hasPrefix("ja") {
+            return "今日は、いい天気ですね。はい、そうです。"
+        }
+        if lang.hasPrefix("ko") {
+            return "안녕하세요. 오늘은 날씨가 좋네요. 네, 맞습니다."
+        }
+        if lang.hasPrefix("zh") || lang.hasPrefix("yue") || lang.hasPrefix("cmn") {
+            return "你好，今天天气不错。是的，没错。"
+        }
+        return nil
+    }
+
     public static func defaultPrompt(videoURL: URL, languageCode: String) -> String? {
         let title = videoURL.deletingPathExtension().lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
         var parts: [String] = []
+        // CJK：前置标点范例，引导 whisper.cpp 输出句末标点（分段强边界依赖它）。
+        if language.lowercased() != "auto", let exemplar = punctuationExemplar(forLanguage: language) {
+            parts.append(exemplar)
+        }
         if !title.isEmpty {
             parts.append("title=\(title)")
         }
@@ -2034,12 +2404,43 @@ public enum ASRAudioExtractorError: Error, Equatable, Sendable {
     case missingOutput(URL)
 }
 
+public struct ASRAudioActivityDetectionPlan: Equatable, Sendable {
+    public let ffmpegURL: URL
+    public let audioURL: URL
+    public let arguments: [String]
+
+    public init(ffmpegURL: URL, audioURL: URL) {
+        self.ffmpegURL = ffmpegURL
+        self.audioURL = audioURL
+        self.arguments = [
+            "-hide_banner",
+            "-nostats",
+            "-i", audioURL.path,
+            "-af", "silencedetect=noise=-35dB:d=0.2",
+            "-f", "null",
+            "-"
+        ]
+    }
+}
+
+public enum ASRAudioActivityDetectorError: Error, Equatable, Sendable {
+    case processFailed(status: Int32, stderrTail: String)
+}
+
 public protocol ASRAudioExtractor: Sendable {
     func extractAudio(
         plan: ASRAudioExtractionPlan,
         control: TaskControlToken?,
         progress: @escaping @Sendable (ASRProgress) -> Void
     ) async throws -> URL
+}
+
+public protocol ASRAudioActivityDetector: Sendable {
+    func detectActivity(
+        audioURL: URL,
+        ffmpegURL: URL,
+        control: TaskControlToken?
+    ) async throws -> ASRAudioActivity
 }
 
 public struct ProcessASRAudioExtractor: ASRAudioExtractor {
@@ -2138,6 +2539,95 @@ public struct ProcessASRAudioExtractor: ASRAudioExtractor {
     }
 }
 
+public struct ProcessASRAudioActivityDetector: ASRAudioActivityDetector {
+    public init() {}
+
+    public func detectActivity(
+        audioURL: URL,
+        ffmpegURL: URL,
+        control: TaskControlToken? = nil
+    ) async throws -> ASRAudioActivity {
+        try Task.checkCancellation()
+        try await control?.gate()
+        let plan = ASRAudioActivityDetectionPlan(ffmpegURL: ffmpegURL, audioURL: audioURL)
+        let state = ASRCommandProcessState()
+        let lines = LockedStringLines()
+        let status: Int32 = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+                let process = Process()
+                process.executableURL = plan.ffmpegURL
+                process.arguments = plan.arguments
+                process.standardInput = FileHandle.nullDevice
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
+
+                let ioGroup = DispatchGroup()
+                ioGroup.enter()
+                ioGroup.enter()
+                outPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        ioGroup.leave()
+                        return
+                    }
+                    lines.append(contentsOf: state.consume(data, stream: .stdout))
+                }
+                errPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        ioGroup.leave()
+                        return
+                    }
+                    lines.append(contentsOf: state.consume(data, stream: .stderr))
+                }
+                process.terminationHandler = { finished in
+                    let terminationStatus = finished.terminationStatus
+                    DispatchQueue.global().async {
+                        _ = ioGroup.wait(timeout: .now() + 5)
+                        outPipe.fileHandleForReading.readabilityHandler = nil
+                        errPipe.fileHandleForReading.readabilityHandler = nil
+                        lines.append(contentsOf: state.flushRemainder())
+                        control?.setActivePID(0)
+                        state.resumeOnce {
+                            continuation.resume(returning: terminationStatus)
+                        }
+                    }
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    process.terminationHandler = nil
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    ioGroup.leave()
+                    ioGroup.leave()
+                    state.resumeOnce {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                if state.register(process) {
+                    TaskControlToken.signalTree(process.processIdentifier, SIGKILL)
+                }
+                control?.setActivePID(process.processIdentifier)
+            }
+        } onCancel: {
+            state.cancel()
+        }
+        if state.isCancelled { throw CancellationError() }
+        guard status == 0 else {
+            throw ASRAudioActivityDetectorError.processFailed(status: status, stderrTail: state.stderrTail)
+        }
+        return ASRAudioActivity.parseSilencedetectOutput(lines.joined())
+    }
+}
+
 public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
     public typealias PromptProvider = @Sendable (URL, String) -> String?
 
@@ -2147,6 +2637,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
 
     private let recognizer: any SpeechRecognizer
     private let promptProvider: PromptProvider?
+    private let audioActivityDetector: any ASRAudioActivityDetector
     private let audioExtractor: any ASRAudioExtractor
 
     public init(
@@ -2155,6 +2646,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         recognizer: any SpeechRecognizer,
         modelID: String,
         promptProvider: PromptProvider? = nil,
+        audioActivityDetector: any ASRAudioActivityDetector = ProcessASRAudioActivityDetector(),
         audioExtractor: any ASRAudioExtractor = ProcessASRAudioExtractor()
     ) {
         self.ffmpegURL = ffmpegURL
@@ -2162,6 +2654,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         self.recognizer = recognizer
         self.modelID = modelID
         self.promptProvider = promptProvider
+        self.audioActivityDetector = audioActivityDetector
         self.audioExtractor = audioExtractor
     }
 
@@ -2195,9 +2688,47 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         )
         let transcript = try await recognizer.transcribe(request, control: control, progress: progress)
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 0, totalUnits: 1))
-        let outputURL = try ASRTranscriptMapper.writeLocalASRSourceSRT(transcript: transcript, videoURL: videoFile)
+        let audioActivity = try await audioActivityIfNeeded(
+            transcript: transcript,
+            videoFile: videoFile,
+            audioURL: audioURL,
+            control: control
+        )
+        let outputURL = try ASRTranscriptMapper.writeLocalASRSourceSRT(
+            transcript: transcript,
+            videoURL: videoFile,
+            audioActivity: audioActivity
+        )
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 1, totalUnits: 1))
         return outputURL
+    }
+
+    private func audioActivityIfNeeded(
+        transcript: ASRTranscript,
+        videoFile: URL,
+        audioURL: URL,
+        control: TaskControlToken?
+    ) async throws -> ASRAudioActivity? {
+        let speechCues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .speech)
+        let profile = SubtitleTimingProfileDetector.detect(
+            fileName: videoFile.lastPathComponent,
+            cues: speechCues,
+            languageCode: transcript.languageCode
+        )
+        guard profile == .lyrics || profile == .japaneseLyrics else {
+            return nil
+        }
+        do {
+            return try await audioActivityDetector.detectActivity(
+                audioURL: audioURL,
+                ffmpegURL: ffmpegURL,
+                control: control
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
     }
 
     private func audioURL(for videoFile: URL, languageCode: String) -> URL {
@@ -2982,6 +3513,24 @@ private final class ASRCommandProcessState: @unchecked Sendable {
             lines.append(String(decoding: lineData, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\r")))
         }
         return lines
+    }
+}
+
+private final class LockedStringLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func append(contentsOf lines: [String]) {
+        guard !lines.isEmpty else { return }
+        lock.lock()
+        storage.append(contentsOf: lines)
+        lock.unlock()
+    }
+
+    func joined() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.joined(separator: "\n")
     }
 }
 

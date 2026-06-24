@@ -5,7 +5,7 @@
 通向影片、字幕與本地收藏的入口。
 
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-1f1f1f?style=flat-square)
-![version](https://img.shields.io/badge/version-0.8.0--rc.1-1f1f1f?style=flat-square)
+![version](https://img.shields.io/badge/version-0.8.0-1f1f1f?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-1f1f1f?style=flat-square)
 
 貼上影片連結，選好畫質和字幕，下載即可——可選在存入本地前用 AI 摘要、翻譯或燒錄字幕。macOS 與 Windows 原生 App。
@@ -47,7 +47,7 @@
 
 App 本身僅透過 SwiftPM 引入 Sparkle 2，用於 macOS 自更新。
 
-發布 / 更新包和本機安裝建置分開：`./make-sparkle-zip.sh` 產生 Sparkle 使用的 `Moongate-macOS-v0.8.0-rc.1.zip`，上傳到對應 GitHub Release 後，再用 `./make-appcast.sh` 寫入簽名後的 `docs/appcast.xml`。`./make-dmg.sh` 仍保留為手動拖曳安裝包。
+發布 / 更新包和本機安裝建置分開：`./make-sparkle-zip.sh` 產生 Sparkle 使用的 `Moongate-macOS-v0.8.0.zip`，上傳到對應 GitHub Release 後，再用 `./make-appcast.sh` 寫入簽名後的 `docs/appcast.xml`。`./make-dmg.sh` 仍保留為手動拖曳安裝包。
 
 ### Windows
 
@@ -55,7 +55,7 @@ App 本身僅透過 SwiftPM 引入 Sparkle 2，用於 macOS 自更新。
 ./build-windows.sh
 ```
 
-產出 `Moongate-Windows-Setup-v0.8.0-rc.1.exe`（附 `.sha256`）。雙擊安裝、無需系統管理員權限，首次啟動自動下載 yt-dlp / ffmpeg / deno。詳見 [docs/WINDOWS.zh-Hant.md](docs/WINDOWS.zh-Hant.md)。
+產出 `Moongate-Windows-Setup-v0.8.0.exe`（附 `.sha256`）。雙擊安裝、無需系統管理員權限，首次啟動自動下載 yt-dlp / ffmpeg / deno。詳見 [docs/WINDOWS.zh-Hant.md](docs/WINDOWS.zh-Hant.md)。
 
 ## AI 設定
 

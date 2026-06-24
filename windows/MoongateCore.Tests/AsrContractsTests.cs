@@ -739,6 +739,7 @@ public class AsrContractsTests
         {
             ("speech", SubtitleTimingProfile.Speech),
             ("lyrics", SubtitleTimingProfile.Lyrics),
+            ("japaneseLyrics", SubtitleTimingProfile.JapaneseLyrics),
             ("anime", SubtitleTimingProfile.Anime),
         })
         {
@@ -748,12 +749,14 @@ public class AsrContractsTests
             Assert.Equal(ProfileValue(profiles, name, "relaxedCJKCueSeconds"), t.RelaxedCjkCueSeconds);
             Assert.Equal(ProfileValue(profiles, name, "maximumLatinCueSeconds"), t.MaximumLatinCueSeconds);
             Assert.Equal(ProfileValue(profiles, name, "largeSpeechGapSeconds"), t.LargeSpeechGapSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "onsetDelaySeconds"), t.OnsetDelaySeconds);
             Assert.Equal(ProfileValue(profiles, name, "holdToNextSeconds"), t.HoldToNextSeconds);
             Assert.Equal(ProfileValue(profiles, name, "residualMaxStandaloneSeconds"), t.ResidualMaxStandaloneSeconds);
             Assert.Equal(ProfileValue(profiles, name, "breathGapBreakSeconds"), t.BreathGapBreakSeconds);
         }
         // speech 档必须等于顶层标量常量（零行为退化的结构保证）。
         var speech = LocalAsrSubtitleTimingPlanner.Thresholds(SubtitleTimingProfile.Speech);
+        Assert.Equal(WhisperCueRetimer.OnsetDelaySeconds, speech.OnsetDelaySeconds);
         Assert.Equal(WhisperCueRetimer.HoldToNextSeconds, speech.HoldToNextSeconds);
         Assert.Equal(LocalAsrSubtitleTimingPlanner.MaximumCjkCueSeconds, speech.MaximumCjkCueSeconds);
         Assert.Equal(LocalAsrSubtitleTimingPlanner.HardMaximumCjkCueSeconds, speech.HardMaximumCjkCueSeconds);
@@ -818,6 +821,9 @@ public class AsrContractsTests
     public void TimingProfileDetectorRoutesByFilenameAndShape()
     {
         Assert.Equal(SubtitleTimingProfile.Lyrics, SubtitleTimingProfileDetector.Detect("Artist - Title (Official MV).mp4", []));
+        Assert.Equal(
+            SubtitleTimingProfile.JapaneseLyrics,
+            SubtitleTimingProfileDetector.Detect("YOASOBI Official Music Video.local-asr.ja.srt", [], "ja"));
         Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("Some Anime EP.12.mkv", []));
 
         var lyricCues = new List<SubtitleCue>();
@@ -827,7 +833,8 @@ public class AsrContractsTests
             lyricCues.Add(SrtCue(i + 1, t, t + 4.0, $"歌詞のフレーズ {i}"));
             t += 4.0 + 1.4;
         }
-        Assert.Equal(SubtitleTimingProfile.Lyrics, SubtitleTimingProfileDetector.Detect("live.mp4", lyricCues));
+        Assert.Equal(SubtitleTimingProfile.JapaneseLyrics, SubtitleTimingProfileDetector.Detect("live.mp4", lyricCues));
+        Assert.Equal(SubtitleTimingProfile.JapaneseLyrics, SubtitleTimingProfileDetector.Detect("live.mp4", lyricCues, "en"));
 
         var speechCues = new List<SubtitleCue>();
         t = 0.0;
@@ -879,6 +886,145 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void JapaneseLyricsRetimerKeepsRawOnsetToAvoidLateSongCaptions()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "song",
+            LanguageCode = "ja",
+            DurationSeconds = 5.0,
+            Words =
+            [
+                new AsrWord { Text = "青い", StartSeconds = 1.0, EndSeconds = 1.55 },
+                new AsrWord { Text = "世界", StartSeconds = 1.7, EndSeconds = 2.2 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var speech = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Speech);
+        var japaneseLyrics = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var speechStart = SrtTools.SrtTimeToSeconds(speech[0].Start)!.Value;
+        var lyricsStart = SrtTools.SrtTimeToSeconds(japaneseLyrics[0].Start)!.Value;
+        Assert.Equal(1.0 + WhisperCueRetimer.OnsetDelaySeconds, speechStart, precision: 3);
+        Assert.Equal(1.0, lyricsStart, precision: 3);
+    }
+
+    [Fact]
+    public void LyricsAcousticGuardClampsIntroOutOfLeadingSilence()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-intro",
+            LanguageCode = "ja",
+            DurationSeconds = 8.0,
+            Words =
+            [
+                new AsrWord { Text = "あ", StartSeconds = 0.0, EndSeconds = 0.63, Probability = 0.14 },
+                new AsrWord { Text = "いつ", StartSeconds = 0.63, EndSeconds = 1.89, Probability = 0.67 },
+                new AsrWord { Text = "もの", StartSeconds = 2.60, EndSeconds = 3.15, Probability = 0.99 },
+                new AsrWord { Text = "ように", StartSeconds = 3.15, EndSeconds = 5.04, Probability = 0.96 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var activity = new AsrAudioActivity([
+            new AsrAudioActivityRange(0.0, 2.51),
+        ]);
+
+        var guarded = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics, activity);
+        var unguarded = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+
+        var guardedStart = SrtTools.SrtTimeToSeconds(guarded[0].Start)!.Value;
+        var unguardedStart = SrtTools.SrtTimeToSeconds(unguarded[0].Start)!.Value;
+        Assert.True(guardedStart >= 2.51, "lyrics must not appear inside a leading silent prelude");
+        Assert.Equal(0.0, unguardedStart, precision: 3);
+    }
+
+    [Fact]
+    public void AudioActivityParsesFfmpegSilencedetectOutput()
+    {
+        var activity = AsrAudioActivity.ParseSilencedetectOutput("""
+        [Parsed_silencedetect_0 @ 0x843041140] silence_start: 0.001
+        [Parsed_silencedetect_0 @ 0x843041140] silence_end: 2.513313 | silence_duration: 2.512312
+        [Parsed_silencedetect_0 @ 0x843041140] silence_start: 42.7
+        [Parsed_silencedetect_0 @ 0x843041140] silence_end: 44.01 | silence_duration: 1.31
+        """);
+
+        Assert.Equal(2, activity.SilenceRanges.Count);
+        Assert.Equal(0.001, activity.SilenceRanges[0].StartSeconds, precision: 6);
+        Assert.Equal(2.513313, activity.SilenceRanges[0].EndSeconds, precision: 6);
+        Assert.Equal(42.7, activity.SilenceRanges[1].StartSeconds, precision: 6);
+        Assert.Equal(44.01, activity.SilenceRanges[1].EndSeconds, precision: 6);
+    }
+
+    [Fact]
+    public void JapaneseLyricsDoesNotStartLineWithBareNaTail()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "song",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "降る", StartSeconds = 0.0, EndSeconds = 0.6 },
+                new AsrWord { Text = "どこか", StartSeconds = 0.8, EndSeconds = 1.4 },
+                new AsrWord { Text = "虚しい", StartSeconds = 1.6, EndSeconds = 2.4 },
+                new AsrWord { Text = "よう", StartSeconds = 2.6, EndSeconds = 3.4 },
+                new AsrWord { Text = "なそんな", StartSeconds = 3.5, EndSeconds = 4.9 },
+                new AsrWord { Text = "気持ち", StartSeconds = 5.1, EndSeconds = 5.9 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("な", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("ような", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void JapaneseLyricsRebalancesNaTailBeforeSonnaPhrase()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "song-na-sonna",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "谷", StartSeconds = 13.29, EndSeconds = 13.68 },
+                new AsrWord { Text = "の", StartSeconds = 13.68, EndSeconds = 14.07 },
+                new AsrWord { Text = "街", StartSeconds = 14.07, EndSeconds = 14.46 },
+                new AsrWord { Text = "に", StartSeconds = 14.46, EndSeconds = 14.85 },
+                new AsrWord { Text = "朝", StartSeconds = 14.85, EndSeconds = 15.24 },
+                new AsrWord { Text = "が", StartSeconds = 15.24, EndSeconds = 15.63 },
+                new AsrWord { Text = "降", StartSeconds = 15.63, EndSeconds = 16.02 },
+                new AsrWord { Text = "る", StartSeconds = 16.02, EndSeconds = 16.44 },
+                new AsrWord { Text = "ど", StartSeconds = 16.44, EndSeconds = 16.77 },
+                new AsrWord { Text = "こ", StartSeconds = 16.77, EndSeconds = 17.1 },
+                new AsrWord { Text = "か", StartSeconds = 17.1, EndSeconds = 17.43 },
+                new AsrWord { Text = "虚", StartSeconds = 17.43, EndSeconds = 17.76 },
+                new AsrWord { Text = "しい", StartSeconds = 17.76, EndSeconds = 18.43 },
+                new AsrWord { Text = "よう", StartSeconds = 18.94, EndSeconds = 19.1 },
+                new AsrWord { Text = "な", StartSeconds = 19.1, EndSeconds = 19.3 },
+                new AsrWord { Text = "そんな", StartSeconds = 19.52, EndSeconds = 20.43 },
+                new AsrWord { Text = "気", StartSeconds = 20.43, EndSeconds = 20.76 },
+                new AsrWord { Text = "持", StartSeconds = 20.76, EndSeconds = 21.09 },
+                new AsrWord { Text = "ち", StartSeconds = 21.09, EndSeconds = 21.48 },
+                new AsrWord { Text = "つ", StartSeconds = 21.48, EndSeconds = 21.72 },
+                new AsrWord { Text = "ま", StartSeconds = 21.72, EndSeconds = 21.92 },
+                new AsrWord { Text = "ら", StartSeconds = 21.99, EndSeconds = 22.2 },
+                new AsrWord { Text = "ない", StartSeconds = 22.2, EndSeconds = 22.69 },
+                new AsrWord { Text = "な", StartSeconds = 22.69, EndSeconds = 22.96 },
+                new AsrWord { Text = "でも", StartSeconds = 22.96, EndSeconds = 23.5 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("なそんな", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("虚しいような", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.StartsWith("そんな気持ち", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void LyricsProfileCapsResidualStandaloneCue()
     {
         var transcript = new AsrTranscript
@@ -909,7 +1055,7 @@ public class AsrContractsTests
         var lyricsDur = StandaloneDuration(lyrics);
         Assert.NotNull(speechDur);
         Assert.NotNull(lyricsDur);
-        Assert.True(lyricsDur!.Value <= 0.8 + 0.001, "residual cue must be capped under lyrics profile");
+        Assert.True(lyricsDur!.Value <= 0.9 + 0.001, "residual cue must be capped under lyrics profile");
         Assert.True(speechDur!.Value > lyricsDur.Value, "speech profile allows a longer standalone hold than lyrics");
     }
 
@@ -1013,14 +1159,20 @@ public class AsrContractsTests
         var video = Path.Combine(Path.GetTempPath(), "Moon Gate Clip.mp4");
 
         Assert.Equal(
-            "title=Moon Gate Clip; language=ja",
+            "今日は、いい天気ですね。はい、そうです。; title=Moon Gate Clip; language=ja",
             AsrPromptBuilder.DefaultPrompt(video, " ja "));
+        Assert.Equal(
+            "안녕하세요. 오늘은 날씨가 좋네요. 네, 맞습니다.; title=Moon Gate Clip; language=ko",
+            AsrPromptBuilder.DefaultPrompt(video, " ko "));
         Assert.Equal(
             "title=Moon Gate Clip",
             AsrPromptBuilder.DefaultPrompt(video, " auto "));
         Assert.Equal(
             "title=Moon Gate Clip",
             AsrPromptBuilder.DefaultPrompt(video, " AUTO "));
+        Assert.Equal(
+            "title=Moon Gate Clip; language=en",
+            AsrPromptBuilder.DefaultPrompt(video, "en"));
         Assert.Null(AsrPromptBuilder.DefaultPrompt(Path.Combine(Path.GetTempPath(), "   .mp4"), "auto"));
     }
 
@@ -1215,6 +1367,30 @@ public class AsrContractsTests
         Assert.Equal("00:00:00,300", cues[0].Start);
         Assert.Equal("00:00:02,500", cues[0].End);
         Assert.DoesNotContain(cues, cue => cue.Text.Contains("[_", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerMergesReadableFlashDurationGroups()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "flash-readable",
+            LanguageCode = "en",
+            Words =
+            [
+                new AsrWord { Text = "Hello.", StartSeconds = 0.0, EndSeconds = 1.0 },
+                new AsrWord { Text = "OK.", StartSeconds = 1.2, EndSeconds = 1.4 },
+                new AsrWord { Text = "World.", StartSeconds = 1.6, EndSeconds = 2.7 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+
+        Assert.DoesNotContain(cues, cue => cue.Text == "OK.");
+        Assert.Contains(cues, cue => cue.Text.Contains("OK.", StringComparison.Ordinal));
+        Assert.True(cues.Count < 3, joined);
     }
 
     [Fact]
@@ -1836,6 +2012,22 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LyricsAndAnimeRetimerAvoidsFlashDurationWhenGapAllows()
+    {
+        var raw = RetimerCue(4.0, 4.1, "梅だ", 4.1);
+        var speech = WhisperCueRetimer.Retime([raw], 10.0, SubtitleTimingProfile.Speech);
+        var anime = WhisperCueRetimer.Retime([raw], 10.0, SubtitleTimingProfile.Anime);
+        var lyrics = WhisperCueRetimer.Retime([raw], 10.0, SubtitleTimingProfile.JapaneseLyrics);
+
+        static double Duration(SubtitleCue cue) =>
+            SrtTools.SrtTimeToSeconds(cue.End)!.Value - SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+
+        Assert.True(Duration(speech[0]) >= LocalAsrSubtitleTimingPlanner.MinimumCueSeconds);
+        Assert.True(Duration(anime[0]) >= 0.9 - 0.0015);
+        Assert.True(Duration(lyrics[0]) >= 0.9 - 0.0015);
+    }
+
+    [Fact]
     public void WhisperCueRetimerRespectsDurationCapAndTranscriptLength()
     {
         var longCjk = WhisperCueRetimer.Retime([RetimerCue(10.0, 30.0, "字幕字幕字幕字幕")], null);
@@ -1845,6 +2037,11 @@ public class AsrContractsTests
 
         var clamped = WhisperCueRetimer.Retime([RetimerCue(8.0, 20.0, "字幕")], 11.0);
         Assert.True(SrtTools.SrtTimeToSeconds(clamped[0].End)!.Value <= 11.0 + 0.0015);
+
+        // BUG-4: a final cue whose onset sits within MinimumCueSeconds of the audio end must not be
+        // pushed past the transcript duration by the minimum-readable-duration floor.
+        var nearEnd = WhisperCueRetimer.Retime([RetimerCue(10.8, 10.9, "字幕")], 11.0);
+        Assert.True(SrtTools.SrtTimeToSeconds(nearEnd[0].End)!.Value <= 11.0 + 0.0015);
     }
 
     [Fact]

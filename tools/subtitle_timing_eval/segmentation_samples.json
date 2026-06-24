@@ -1,0 +1,825 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "Segmentation-quality eval manifest. Media/audio/large caption text are NOT committed; they live under the git-ignored artifacts/subtitle_timing_eval/ cache.",
+    "Track A: download audio -> whisper.cpp -> asr_words.json -> moongate-cli local-asr-srt -> candidate; reference = human/proofread caption segmentation.",
+    "Track B: fetch YouTube auto caption VTT -> vtt-words -> moongate-cli local-asr-srt (same segmenter) -> candidate; reference = clean human-sampled segmentation (auto VTT itself is NOT a fair boundary target).",
+    "source may be a stable YouTube URL or a yt-dlp ytsearch1: query resolved at run time and recorded in the report."
+  ],
+  "segmentation_goal": {
+    "id": "youtube_caption_segmentation_quality",
+    "description": "Boundary F1 (offset-aligned) >= 0.90 with temporal coverage >= 0.90 and segment_count_ratio in [0.80,1.25], per track.",
+    "metric_doc": "tools/subtitle_timing_eval/SEGMENTATION_EVAL.md",
+    "target_counts": {
+      "track_A_human_caption": 50,
+      "track_B_auto_caption": 50
+    }
+  },
+  "batch_progress": {
+    "seeded_from_samples_json": 32,
+    "track_A_seeded": 27,
+    "track_B_seeded": 5,
+    "offline_ready": 17,
+    "remaining_to_reach_100": 68,
+    "fill_procedure": "Add public, research-permissible YouTube entries (stable URL or ytsearch1:) with track + section; then run prepare->asr/vtt-words->local-asr-srt->segmentation-metrics. Skip any video with copyright/region/login/ToS uncertainty."
+  },
+  "coverage_goal": {
+    "id": "segmentation_language_coverage",
+    "description": "Language groups covered by the segmentation eval seed set.",
+    "required_language_groups": [
+      "de",
+      "en",
+      "es",
+      "fr",
+      "it",
+      "ja",
+      "ko",
+      "pt",
+      "translated",
+      "yue",
+      "zh"
+    ]
+  },
+  "samples": [
+    {
+      "id": "starship_test_like_you_fly_en",
+      "title": "Starship - Test Like You Fly",
+      "source": "https://www.youtube.com/watch?v=ANe_HW4X8oc",
+      "category": "english_interview",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 40,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "long_pause_short_feedback",
+        "rolling_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "ted_school_creativity_en",
+      "title": "TED talk: Do schools kill creativity?",
+      "source": "https://www.youtube.com/watch?v=iG9CE55wbtY",
+      "category": "english_lecture",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "tedx_twenty_hours_en",
+      "title": "TEDx talk: The first 20 hours",
+      "source": "https://www.youtube.com/watch?v=5MgBikgcWnY",
+      "category": "english_tutorial",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 90,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech",
+        "semantic_boundaries"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "youtube_first_upload_en",
+      "title": "Me at the zoo",
+      "source": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "category": "english_vlog",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 0,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "short_clip",
+        "short_feedback"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "music_lyrics_english",
+      "title": "English music lyrics stress case",
+      "source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "category": "music_lyrics",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 35,
+        "duration_seconds": 180
+      },
+      "stressors": [
+        "music",
+        "lyrics"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "music_lyrics_chinese",
+      "title": "Chinese music lyrics stress case (run-time selected, needs human lyric reference)",
+      "source": "ytsearch1:中文 歌曲 歌词 字幕 official MV",
+      "category": "music_lyrics",
+      "language_group": "zh",
+      "subtitle_lang": "zh",
+      "spoken_languages": [
+        "zh"
+      ],
+      "section": {
+        "start_seconds": 20,
+        "duration_seconds": 180
+      },
+      "stressors": [
+        "music",
+        "lyrics",
+        "cjk_no_spaces",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "music_lyrics_japanese",
+      "title": "Japanese song lyrics stress case (run-time selected, needs human lyric reference)",
+      "source": "ytsearch1:日本語 歌 歌詞 字幕 official music video",
+      "category": "music_lyrics",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": [
+        "ja"
+      ],
+      "section": {
+        "start_seconds": 20,
+        "duration_seconds": 180
+      },
+      "stressors": [
+        "music",
+        "lyrics",
+        "cjk_no_spaces",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "chinese_animation_zh",
+      "title": "Chinese-dub animation short with manual captions (run-time selected, needs human reference)",
+      "source": "ytsearch1:国创 动画 中文配音 字幕",
+      "category": "animation",
+      "language_group": "zh",
+      "subtitle_lang": "zh",
+      "spoken_languages": [
+        "zh"
+      ],
+      "section": {
+        "start_seconds": 30,
+        "duration_seconds": 180
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "short_feedback",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "tedx_nagoyau_happiness_ja",
+      "title": "TEDxNagoyaU: Japanese talk with manual captions",
+      "source": "https://www.youtube.com/watch?v=SaalrFGgTIw",
+      "category": "japanese_talk",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": [
+        "ja"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "japanese_auto_vlog_ja",
+      "title": "Easy Japanese vlog with YouTube automatic rolling captions",
+      "source": "https://www.youtube.com/watch?v=5pYk7pxgwac",
+      "category": "japanese_auto_caption",
+      "language_group": "ja",
+      "subtitle_lang": "ja-orig",
+      "spoken_languages": [
+        "ja"
+      ],
+      "section": {
+        "start_seconds": 0,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "automatic_captions",
+        "cjk_no_spaces",
+        "rolling_captions",
+        "long_pause_short_feedback",
+        "vtt_word_timing"
+      ],
+      "track": "B",
+      "reference_kind": "youtube_auto_caption",
+      "candidate_source": "youtube_auto_vtt_words",
+      "offline_ready": false
+    },
+    {
+      "id": "koupen_chan_umeboshi_ja",
+      "title": "TV anime Koupen-chan episode 62: Umeboshi",
+      "source": "https://www.youtube.com/watch?v=q4Fgq49ivbA",
+      "category": "japanese_animation",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": [
+        "ja"
+      ],
+      "section": {
+        "start_seconds": 0,
+        "duration_seconds": 112
+      },
+      "stressors": [
+        "local_asr_regression",
+        "cjk_no_spaces",
+        "short_feedback",
+        "music",
+        "lyrics",
+        "marker_tokens",
+        "flash_cues"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "tedx_yonsei_visual_language_ko",
+      "title": "TEDxYonseiUniversity: Korean talk with manual captions",
+      "source": "https://www.youtube.com/watch?v=7euUE1s6GKo",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": [
+        "ko"
+      ],
+      "section": {
+        "start_seconds": 203,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "tedx_kwangwoon_only_one_ko",
+      "title": "TEDxKwangwoon: My life and to be the Only One",
+      "source": "https://www.youtube.com/watch?v=sp1MA8jpNe8",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": [
+        "ko"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "sebasi_praise_method_ko",
+      "title": "Sebasi: How Koreans should give praise",
+      "source": "https://www.youtube.com/watch?v=3Ktf6NkgXtI",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": [
+        "ko"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "sebasi_english_self_study_ko",
+      "title": "Sebasi: How to study English alone with YouTube",
+      "source": "https://www.youtube.com/watch?v=TBlTBDbpu2M",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": [
+        "ko"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions",
+        "code_switching"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "korean_auto_ko",
+      "title": "Korean automatic captions with rolling carry and long idle holds",
+      "source": "https://www.youtube.com/watch?v=C4Vxt492DAc",
+      "category": "korean_talk",
+      "language_group": "ko",
+      "subtitle_lang": "ko",
+      "spoken_languages": [
+        "ko"
+      ],
+      "section": {
+        "start_seconds": 0,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "automatic_captions",
+        "cjk_no_spaces",
+        "rolling_captions",
+        "long_pause_short_feedback",
+        "vtt_word_timing"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "the_do_show_jimmy_o_yang_yue",
+      "title": "The Do Show: Jimmy O. Yang Cantonese interview",
+      "source": "https://www.youtube.com/watch?v=4403CZzUfwI",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": [
+        "yue",
+        "en"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "code_switching",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "cantonese_uk_yue",
+      "title": "Cantonese talk: preserving Hong Kong Cantonese in the UK",
+      "source": "https://www.youtube.com/watch?v=oc0uynThYDQ",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": [
+        "yue"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "cantonese_ai_subanana_yue",
+      "title": "Cantonese AI subtitle workflow demo with zh-HK captions",
+      "source": "https://www.youtube.com/watch?v=nH7RX67QZ38",
+      "category": "cantonese_chinese",
+      "language_group": "yue",
+      "subtitle_lang": "zh-HK",
+      "spoken_languages": [
+        "yue"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "automatic_captions",
+        "cjk_no_spaces",
+        "no_vtt_word_timing",
+        "long_pause_short_feedback"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "tedx_taipei_dont_work_too_hard_zh",
+      "title": "TEDxTaipei: Don't Work Too Hard",
+      "source": "https://www.youtube.com/watch?v=t7ZI9c6Ze7E",
+      "category": "mandarin_talk",
+      "language_group": "zh",
+      "subtitle_lang": "zh-TW",
+      "spoken_languages": [
+        "zh"
+      ],
+      "section": {
+        "start_seconds": 120,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "cjk_no_spaces",
+        "long_pause_short_feedback",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "chinese_auto_zh",
+      "title": "Taiwanese Mandarin vlog with YouTube automatic captions",
+      "source": "https://www.youtube.com/watch?v=4Gq1hsmpWs8",
+      "category": "mandarin_auto_caption",
+      "language_group": "zh",
+      "subtitle_lang": "zh-TW",
+      "spoken_languages": [
+        "zh"
+      ],
+      "section": {
+        "start_seconds": 50,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "automatic_captions",
+        "cjk_no_spaces",
+        "long_pause_short_feedback",
+        "no_vtt_word_timing"
+      ],
+      "track": "B",
+      "reference_kind": "youtube_auto_caption",
+      "candidate_source": "youtube_auto_vtt_words",
+      "offline_ready": true
+    },
+    {
+      "id": "spanish_talk_public_es",
+      "title": "Spanish talk with native captions",
+      "source": "ytsearch1:TEDx Spanish talk Spanish subtitles",
+      "category": "spanish_talk",
+      "language_group": "es",
+      "subtitle_lang": "es",
+      "spoken_languages": [
+        "es"
+      ],
+      "section": {
+        "start_seconds": 90,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "mtedx_portuguese_weakness_pt",
+      "title": "Eu quero poder ser fraca | Stephanie Ribeiro | TEDxSaoPauloSalon",
+      "source": "https://www.youtube.com/watch?v=2EpIZVU-N3Y",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt",
+      "spoken_languages": [
+        "pt"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "manual_captions"
+      ],
+      "caption_kind": "manual",
+      "reference_source": "mTEDx/OpenSLR SLR100 eval.pt",
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "portuguese_tedx_lages_pt",
+      "title": "Traduzir, transcrever e compartilhar história para um mundo melhor | Raissa Mendes | TEDxLages",
+      "source": "https://www.youtube.com/watch?v=lAz028cjuLs",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt-BR",
+      "spoken_languages": [
+        "pt"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "french_auto_fr",
+      "title": "Super Easy French 167: French market talk with automatic captions",
+      "source": "https://www.youtube.com/watch?v=3jdRN1LZvSg",
+      "category": "french_talk",
+      "language_group": "fr",
+      "subtitle_lang": "fr-orig",
+      "spoken_languages": [
+        "fr"
+      ],
+      "section": {
+        "start_seconds": 90,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "rolling_captions",
+        "automatic_captions"
+      ],
+      "track": "B",
+      "reference_kind": "youtube_auto_caption",
+      "candidate_source": "youtube_auto_vtt_words",
+      "offline_ready": false
+    },
+    {
+      "id": "french_talk_public_fr",
+      "title": "French TEDx talk with human captions",
+      "source": "https://www.youtube.com/watch?v=2E_Kx-MBlEA",
+      "category": "french_talk",
+      "language_group": "fr",
+      "subtitle_lang": "fr",
+      "spoken_languages": [
+        "fr"
+      ],
+      "section": {
+        "start_seconds": 90,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "mtedx_german_flight_de",
+      "title": "Alter Falter! Was Flugzeuge und Regalbretter gemeinsam haben | Yves Klett | TEDxStuttgart",
+      "source": "https://www.youtube.com/watch?v=QYYTMoQSAHk",
+      "category": "german_talk",
+      "language_group": "de",
+      "subtitle_lang": "de",
+      "spoken_languages": [
+        "de"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "dense_speech",
+        "manual_captions"
+      ],
+      "caption_kind": "manual",
+      "reference_source": "mTEDx/OpenSLR SLR100 eval.de",
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "italian_auto_it",
+      "title": "Italian talk with YouTube automatic captions",
+      "source": "https://www.youtube.com/watch?v=1D1QvZYVIkU",
+      "category": "italian_talk",
+      "language_group": "it",
+      "subtitle_lang": "it-orig",
+      "spoken_languages": [
+        "it"
+      ],
+      "section": {
+        "start_seconds": 360,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "rolling_captions",
+        "automatic_captions",
+        "vtt_word_timing"
+      ],
+      "track": "B",
+      "reference_kind": "youtube_auto_caption",
+      "candidate_source": "youtube_auto_vtt_words",
+      "offline_ready": false
+    },
+    {
+      "id": "italian_talk_public_it",
+      "title": "Italian TEDx talk with human captions",
+      "source": "https://www.youtube.com/watch?v=Wr2YJoQeYsE",
+      "category": "italian_talk",
+      "language_group": "it",
+      "subtitle_lang": "it",
+      "spoken_languages": [
+        "it"
+      ],
+      "section": {
+        "start_seconds": 90,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "dense_speech",
+        "romance_word_boundaries",
+        "manual_captions"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "news_explainer_en",
+      "title": "English news explainer with fast narration",
+      "source": "https://www.youtube.com/watch?v=Qf6uZe4SDuY",
+      "category": "news_explainer",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "dense_speech",
+        "semantic_boundaries"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": false
+    },
+    {
+      "id": "short_social_fast_en",
+      "title": "Fast social video speech",
+      "source": "https://www.youtube.com/watch?v=kmm2w1hwEvY",
+      "category": "short_social",
+      "language_group": "en",
+      "subtitle_lang": "en",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 0,
+        "duration_seconds": 120
+      },
+      "stressors": [
+        "fast_cuts",
+        "short_clip"
+      ],
+      "track": "A",
+      "reference_kind": "human_caption",
+      "candidate_source": "whisper_asr_words",
+      "offline_ready": true
+    },
+    {
+      "id": "english_to_chinese_auto_translate",
+      "title": "TED English source with Chinese translated subtitles",
+      "source": "https://www.youtube.com/watch?v=iG9CE55wbtY",
+      "category": "auto_translate",
+      "language_group": "translated",
+      "subtitle_lang": "zh-CN",
+      "alignment_mode": "overlap",
+      "spoken_languages": [
+        "en"
+      ],
+      "section": {
+        "start_seconds": 60,
+        "duration_seconds": 300
+      },
+      "stressors": [
+        "translated_timing",
+        "dense_speech",
+        "manual_captions"
+      ],
+      "track": "B",
+      "reference_kind": "youtube_auto_caption",
+      "candidate_source": "youtube_auto_vtt_words",
+      "offline_ready": true
+    }
+  ]
+}

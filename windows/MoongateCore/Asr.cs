@@ -102,6 +102,64 @@ public sealed record AsrTranscript
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
+public sealed record AsrAudioActivityRange(double StartSeconds, double EndSeconds);
+
+public sealed class AsrAudioActivity
+{
+    public IReadOnlyList<AsrAudioActivityRange> SilenceRanges { get; }
+
+    public AsrAudioActivity(IReadOnlyList<AsrAudioActivityRange> silenceRanges)
+    {
+        SilenceRanges = silenceRanges
+            .Where(range => double.IsFinite(range.StartSeconds)
+                && double.IsFinite(range.EndSeconds)
+                && range.EndSeconds > range.StartSeconds
+                && range.EndSeconds >= 0)
+            .OrderBy(range => range.StartSeconds)
+            .ThenBy(range => range.EndSeconds)
+            .ToList();
+    }
+
+    public static AsrAudioActivity ParseSilencedetectOutput(string output)
+    {
+        var ranges = new List<AsrAudioActivityRange>();
+        double? openStart = null;
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (FirstNumber(line, "silence_start:") is { } start)
+            {
+                openStart = start;
+                continue;
+            }
+            if (FirstNumber(line, "silence_end:") is { } end && openStart is { } rangeStart)
+            {
+                ranges.Add(new AsrAudioActivityRange(rangeStart, end));
+                openStart = null;
+            }
+        }
+        return new AsrAudioActivity(ranges);
+    }
+
+    internal double ProtectedLyricStart(double start)
+    {
+        const double tolerance = 0.12;
+        var range = SilenceRanges.FirstOrDefault(range =>
+            start >= range.StartSeconds - tolerance && start < range.EndSeconds);
+        return range is null ? start : Math.Max(start, range.EndSeconds);
+    }
+
+    private static double? FirstNumber(string line, string marker)
+    {
+        var markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0) return null;
+        var tail = line[(markerIndex + marker.Length)..];
+        var match = Regex.Match(tail, @"[-+]?[0-9]+(?:\.[0-9]+)?");
+        return match.Success && double.TryParse(match.Value, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
+    }
+}
+
 public enum AsrProgressPhase
 {
     ModelDownload,
@@ -551,21 +609,26 @@ public static class AsrTranscriptMapper
 
     public static IReadOnlyList<SubtitleCue> SourceCues(
         AsrTranscript transcript,
-        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech) =>
+        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech,
+        AsrAudioActivity? audioActivity = null) =>
         WhisperCueRetimer.Retime(
             LocalAsrSubtitleTimingPlanner.PlanCues(SourceFragments(transcript), transcript.DurationSeconds, profile),
             transcript.DurationSeconds,
-            profile);
+            profile,
+            audioActivity);
 
     /// <summary>
     /// Detect the content-type timing profile from the filename and a first-pass (Speech) cue
     /// shape, then re-plan with the matching profile. Mirrors Swift sourceCues(from:fileName:).
     /// </summary>
-    public static IReadOnlyList<SubtitleCue> SourceCues(AsrTranscript transcript, string fileName)
+    public static IReadOnlyList<SubtitleCue> SourceCues(
+        AsrTranscript transcript,
+        string fileName,
+        AsrAudioActivity? audioActivity = null)
     {
         var speechCues = SourceCues(transcript, SubtitleTimingProfile.Speech);
-        var profile = SubtitleTimingProfileDetector.Detect(fileName, speechCues);
-        return profile == SubtitleTimingProfile.Speech ? speechCues : SourceCues(transcript, profile);
+        var profile = SubtitleTimingProfileDetector.Detect(fileName, speechCues, transcript.LanguageCode);
+        return profile == SubtitleTimingProfile.Speech ? speechCues : SourceCues(transcript, profile, audioActivity);
     }
 
     public static string LocalAsrSourceSrtPath(string videoFile, string languageCode)
@@ -576,9 +639,12 @@ public static class AsrTranscriptMapper
         return Path.Combine(directory, $"{stem}.local-asr.{language}.srt");
     }
 
-    public static string WriteLocalAsrSourceSrt(AsrTranscript transcript, string videoFile)
+    public static string WriteLocalAsrSourceSrt(
+        AsrTranscript transcript,
+        string videoFile,
+        AsrAudioActivity? audioActivity = null)
     {
-        var cues = SourceCues(transcript, Path.GetFileName(videoFile));
+        var cues = SourceCues(transcript, Path.GetFileName(videoFile), audioActivity);
         if (cues.Count == 0)
         {
             throw new WhisperCppRecognizerException(WhisperCppRecognizerError.EmptyTranscript);
@@ -607,6 +673,7 @@ public enum SubtitleTimingProfile
 {
     Speech,
     Lyrics,
+    JapaneseLyrics,
     Anime,
 }
 
@@ -678,10 +745,13 @@ public static class SubtitleTimingProfileDetector
         return true;
     }
 
-    public static SubtitleTimingProfile Detect(string fileName, IReadOnlyList<SubtitleCue> cues)
+    public static SubtitleTimingProfile Detect(string fileName, IReadOnlyList<SubtitleCue> cues, string? languageCode = null)
     {
         var lower = fileName.ToLowerInvariant();
-        if (LyricsFilenameKeywords.Any(lower.Contains)) return SubtitleTimingProfile.Lyrics;
+        if (LyricsFilenameKeywords.Any(lower.Contains))
+        {
+            return LooksJapanese(lower, languageCode, cues) ? SubtitleTimingProfile.JapaneseLyrics : SubtitleTimingProfile.Lyrics;
+        }
         if (cues.Count < 20)
         {
             return AnimeFilenameKeywords.Any(lower.Contains) || ContainsEpisodeMarker(lower)
@@ -727,7 +797,7 @@ public static class SubtitleTimingProfileDetector
         // between phrases (the shape of a sung verse) — matches Translator.LooksLikeLocalAsrLyrics.
         if (punctuatedRatio < 0.2 && average >= 3.0 && average <= 5.8 && largeGaps >= 2)
         {
-            return SubtitleTimingProfile.Lyrics;
+            return LooksJapanese(lower, languageCode, cues) ? SubtitleTimingProfile.JapaneseLyrics : SubtitleTimingProfile.Lyrics;
         }
 
         var cjkRatio = totalChars > 0 ? (double)cjkChars / totalChars : 0;
@@ -738,6 +808,38 @@ public static class SubtitleTimingProfileDetector
             return SubtitleTimingProfile.Anime;
         }
         return SubtitleTimingProfile.Speech;
+    }
+
+    private static bool LooksJapanese(string lowerFileName, string? languageCode, IReadOnlyList<SubtitleCue> cues)
+    {
+        if (IsJapaneseLanguage(languageCode)) return true;
+        if (lowerFileName.Contains(".ja.") || lowerFileName.Contains(".ja-")
+            || lowerFileName.Contains("_ja.") || lowerFileName.Contains("_ja-")
+            || lowerFileName.Contains("[ja]")
+            || lowerFileName.Contains("日本語") || lowerFileName.Contains("日语") || lowerFileName.Contains("日語"))
+        {
+            return true;
+        }
+
+        var kana = 0;
+        var visible = 0;
+        foreach (var cue in cues.Take(40))
+        {
+            foreach (var ch in cue.Text)
+            {
+                if (char.IsWhiteSpace(ch)) continue;
+                visible++;
+                if (ch is >= '\u3040' and <= '\u30FF') kana++;
+            }
+        }
+        return visible > 0 && (double)kana / visible >= 0.18;
+    }
+
+    private static bool IsJapaneseLanguage(string? languageCode)
+    {
+        if (string.IsNullOrWhiteSpace(languageCode)) return false;
+        var normalized = languageCode.Trim().ToLowerInvariant();
+        return normalized == "ja" || normalized == "jpn" || normalized.StartsWith("ja-", StringComparison.Ordinal);
     }
 }
 
@@ -753,6 +855,7 @@ public readonly record struct SubtitleTimingThresholds(
     double RelaxedCjkCueSeconds,
     double MaximumLatinCueSeconds,
     double LargeSpeechGapSeconds,
+    double OnsetDelaySeconds,
     double HoldToNextSeconds,
     double ResidualMaxStandaloneSeconds,
     double BreathGapBreakSeconds);
@@ -771,7 +874,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private const int HardMaximumCjkUnits = 28;
     private const int RelaxedShortMergeMaxCjkUnits = 34;
     private const int MaximumLatinTokens = 14;
-    private const double LargeSpeechGapSeconds = 0.65;
+    // 0.65->0.50 (2026-06-24, segmentation eval direction B): mirror of Swift largeSpeechGapSeconds;
+    // human captions treat 0.4-0.65s pauses as strong boundaries the old 0.65 missed. Keep in sync
+    // with Sources/MoongateCore/ASR.swift and Tests/fixtures/whisper-timing-constants.json.
+    private const double LargeSpeechGapSeconds = 0.50;
 
     // Per-profile thresholds. `Speech` reproduces the standalone constants above exactly (zero
     // behaviour change for the default path); `Lyrics` / `Anime` tighten ceilings and break gaps
@@ -785,15 +891,27 @@ public static partial class LocalAsrSubtitleTimingPlanner
             RelaxedCjkCueSeconds: 4.5,
             MaximumLatinCueSeconds: 5.0,
             LargeSpeechGapSeconds: 0.45,
+            OnsetDelaySeconds: 0.1,
             HoldToNextSeconds: 0.35,
-            ResidualMaxStandaloneSeconds: 0.8,
+            ResidualMaxStandaloneSeconds: 0.9,
             BreathGapBreakSeconds: 0.25),
+        SubtitleTimingProfile.JapaneseLyrics => new SubtitleTimingThresholds(
+            MaximumCjkCueSeconds: 4.2,
+            HardMaximumCjkCueSeconds: 5.2,
+            RelaxedCjkCueSeconds: 5.8,
+            MaximumLatinCueSeconds: 5.4,
+            LargeSpeechGapSeconds: 0.5,
+            OnsetDelaySeconds: 0.0,
+            HoldToNextSeconds: 0.28,
+            ResidualMaxStandaloneSeconds: 0.9,
+            BreathGapBreakSeconds: 0.3),
         SubtitleTimingProfile.Anime => new SubtitleTimingThresholds(
             MaximumCjkCueSeconds: 3.5,
             HardMaximumCjkCueSeconds: 5.0,
             RelaxedCjkCueSeconds: 5.5,
             MaximumLatinCueSeconds: 7.0,
             LargeSpeechGapSeconds: 0.55,
+            OnsetDelaySeconds: 0.15,
             HoldToNextSeconds: 0.5,
             ResidualMaxStandaloneSeconds: 1.2,
             BreathGapBreakSeconds: 0.3),
@@ -803,6 +921,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             RelaxedCjkCueSeconds: RelaxedCjkCueSeconds,
             MaximumLatinCueSeconds: MaximumLatinCueSeconds,
             LargeSpeechGapSeconds: LargeSpeechGapSeconds,
+            OnsetDelaySeconds: WhisperCueRetimer.OnsetDelaySeconds,
             HoldToNextSeconds: WhisperCueRetimer.HoldToNextSeconds,
             ResidualMaxStandaloneSeconds: double.MaxValue,
             BreathGapBreakSeconds: 0.35),
@@ -865,6 +984,19 @@ public static partial class LocalAsrSubtitleTimingPlanner
     [
         "っ", "ー", "〜", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゎ",
     ];
+    private static readonly string[] JapaneseLyricPhraseStartPrefixes =
+    [
+        "そんな", "こんな", "あんな", "どんな", "この", "その", "あの",
+        "これ", "それ", "あれ", "でも", "だけど",
+    ];
+    private static readonly HashSet<string> JapaneseLyricBareTailFragments =
+    [
+        "な", "て", "で", "に", "の", "が", "は", "を", "も", "と", "よ", "ね", "さ", "ん",
+    ];
+    private static readonly HashSet<string> JapaneseLyricAdnominalHeads =
+    [
+        "よう", "そう", "みたい",
+    ];
 
     private const int JapaneseLoopMinPhraseFragments = 4;
     private const int JapaneseLoopMaxPhraseFragments = 12;
@@ -878,6 +1010,8 @@ public static partial class LocalAsrSubtitleTimingPlanner
     // and is merged into the temporally-closest neighbour, within this same-utterance gap.
     private const int LoneMergeMaxVisibleChars = 3;
     private const double LoneMergeMaxGapSeconds = 1.0;
+    private const double FlashMinCueSeconds = 0.8;
+    private const double FlashMergeMaxGapSeconds = 0.6;
 
     [GeneratedRegex(@"\[_[A-Z]+(?:_[0-9]+)?_?\]")]
     private static partial Regex WhisperMarkerRegex();
@@ -896,9 +1030,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
         SubtitleTimingProfile profile = SubtitleTimingProfile.Speech)
     {
         var thresholds = Thresholds(profile);
-        var loopSuppressed = SuppressRepeatedJapaneseLoopFragments(fragments
-            .Where(ShouldKeep)
-            .ToList());
+        var loopSuppressed = SplitLeadingJapaneseTailFragments(
+            SuppressRepeatedJapaneseLoopFragments(fragments
+                .Where(ShouldKeep)
+                .ToList()));
         var ordered = loopSuppressed
             .OrderBy(fragment => fragment.StartSeconds)
             .ThenBy(fragment => fragment.EndSeconds)
@@ -936,6 +1071,11 @@ public static partial class LocalAsrSubtitleTimingPlanner
         }
         FlushCurrent();
         groups = MergeShortGroups(groups, thresholds);
+        if (profile == SubtitleTimingProfile.JapaneseLyrics)
+        {
+            groups = RebalanceJapaneseLyricPhraseStarts(groups, thresholds);
+        }
+        groups = MergeFlashDurationGroups(groups, thresholds);
 
         var cues = new List<SubtitleCue>();
         for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
@@ -1263,6 +1403,171 @@ public static partial class LocalAsrSubtitleTimingPlanner
         return duration <= thresholds.MaximumLatinCueSeconds;
     }
 
+    private static List<List<SubtitleCueSourceFragment>> MergeFlashDurationGroups(
+        List<List<SubtitleCueSourceFragment>> groups,
+        SubtitleTimingThresholds thresholds)
+    {
+        groups = groups.Where(group => group.Count > 0).ToList();
+        if (groups.Count <= 1) return groups;
+        var result = new List<List<SubtitleCueSourceFragment>>();
+        var index = 0;
+        while (index < groups.Count)
+        {
+            var group = groups[index];
+            var span = group[^1].EndSeconds - group[0].StartSeconds;
+            if (span >= FlashMinCueSeconds)
+            {
+                result.Add(group);
+                index += 1;
+                continue;
+            }
+
+            var previous = result.Count > 0 ? result[^1] : null;
+            var gapPrev = previous is not null
+                ? group[0].StartSeconds - previous[^1].EndSeconds
+                : double.MaxValue;
+            var next = index + 1 < groups.Count ? groups[index + 1] : null;
+            var gapNext = next is not null
+                ? next[0].StartSeconds - group[^1].EndSeconds
+                : double.MaxValue;
+
+            var canPrevious = previous is not null
+                && gapPrev <= FlashMergeMaxGapSeconds
+                && FitsMergedCue([.. previous, .. group], thresholds);
+            var canNext = next is not null
+                && gapNext <= FlashMergeMaxGapSeconds
+                && FitsMergedCue([.. group, .. next], thresholds);
+
+            if (canPrevious && (!canNext || gapPrev <= gapNext) && previous is not null)
+            {
+                result[^1] = [.. previous, .. group];
+                index += 1;
+            }
+            else if (canNext && next is not null)
+            {
+                result.Add([.. group, .. next]);
+                index += 2;
+            }
+            else
+            {
+                result.Add(group);
+                index += 1;
+            }
+        }
+        return result;
+    }
+
+    private static List<List<SubtitleCueSourceFragment>> RebalanceJapaneseLyricPhraseStarts(
+        List<List<SubtitleCueSourceFragment>> groups,
+        SubtitleTimingThresholds thresholds)
+    {
+        if (groups.Count < 2) return groups;
+        var result = new List<List<SubtitleCueSourceFragment>>(groups.Count);
+        foreach (var group in groups)
+        {
+            var prefixCount = JapaneseLyricContinuationPrefixCount(group);
+            if (result.Count == 0 || prefixCount is null || group.Count <= prefixCount.Value)
+            {
+                result.Add(group);
+                continue;
+            }
+
+            var prefix = group.Take(prefixCount.Value).ToList();
+            var remainder = group.Skip(prefixCount.Value).ToList();
+            var previous = result[^1];
+            result.RemoveAt(result.Count - 1);
+            var directMerge = previous.Concat(prefix).ToList();
+
+            if (FitsJapaneseLyricRebalancedCue(directMerge, thresholds))
+            {
+                result.Add(directMerge);
+                result.Add(remainder);
+                continue;
+            }
+
+            var split = SplitPreviousForJapaneseLyricContinuation(previous, prefix, thresholds);
+            if (split is not null)
+            {
+                result.Add(split.Value.Head);
+                result.Add(split.Value.Tail.Concat(prefix).ToList());
+                result.Add(remainder);
+                continue;
+            }
+
+            result.Add(previous);
+            result.Add(group);
+        }
+        return result;
+    }
+
+    private static int? JapaneseLyricContinuationPrefixCount(IReadOnlyList<SubtitleCueSourceFragment> group)
+    {
+        var texts = group.Select(fragment => fragment.Text.Trim()).ToList();
+        if (texts.Count < 2) return null;
+        if (JapaneseLyricBareTailFragments.Contains(texts[0]) && StartsJapaneseLyricPhrase(texts[1]))
+        {
+            return 1;
+        }
+        if (texts.Count >= 3
+            && JapaneseLyricAdnominalHeads.Contains(texts[0])
+            && texts[1] == "な"
+            && StartsJapaneseLyricPhrase(texts[2]))
+        {
+            return 2;
+        }
+        return null;
+    }
+
+    private static bool StartsJapaneseLyricPhrase(string text)
+    {
+        var trimmed = text.Trim();
+        return JapaneseLyricPhraseStartPrefixes.Any(prefix => trimmed.StartsWith(prefix, StringComparison.Ordinal));
+    }
+
+    private static bool FitsJapaneseLyricRebalancedCue(
+        IReadOnlyList<SubtitleCueSourceFragment> fragments,
+        SubtitleTimingThresholds thresholds)
+    {
+        if (fragments.Count == 0) return false;
+        var text = JoinedText(fragments);
+        var duration = fragments[^1].EndSeconds - fragments[0].StartSeconds;
+        var units = SubtitleTimingPlanner.TimingTokens(text).Count;
+        return duration <= thresholds.RelaxedCjkCueSeconds && units <= RelaxedShortMergeMaxCjkUnits;
+    }
+
+    private readonly record struct JapaneseLyricContinuationSplit(
+        List<SubtitleCueSourceFragment> Head,
+        List<SubtitleCueSourceFragment> Tail);
+
+    private static JapaneseLyricContinuationSplit? SplitPreviousForJapaneseLyricContinuation(
+        IReadOnlyList<SubtitleCueSourceFragment> previous,
+        IReadOnlyList<SubtitleCueSourceFragment> prefix,
+        SubtitleTimingThresholds thresholds)
+    {
+        if (previous.Count < 2) return null;
+        var maxSuffixCount = Math.Min(previous.Count - 1, 8);
+        JapaneseLyricContinuationSplit? fallback = null;
+        for (var suffixCount = 1; suffixCount <= maxSuffixCount; suffixCount++)
+        {
+            var head = previous.Take(previous.Count - suffixCount).ToList();
+            var tail = previous.Skip(previous.Count - suffixCount).ToList();
+            var rebalanced = tail.Concat(prefix).ToList();
+            var text = JoinedText(rebalanced);
+            if (head.Count == 0
+                || StartsWithLeadingProhibited(text)
+                || !FitsJapaneseLyricRebalancedCue(rebalanced, thresholds))
+            {
+                continue;
+            }
+            fallback ??= new JapaneseLyricContinuationSplit(head, tail);
+            if (ContainsKanji(JoinedText(tail)))
+            {
+                return new JapaneseLyricContinuationSplit(head, tail);
+            }
+        }
+        return fallback;
+    }
+
     internal static double MaximumCueSecondsFor(string text) =>
         MaximumCueSecondsFor(text, Thresholds(SubtitleTimingProfile.Speech));
 
@@ -1350,6 +1655,39 @@ public static partial class LocalAsrSubtitleTimingPlanner
         if (IsPurePunctuation(fragment.Text)) return false;
         if (IsDroppableJapaneseResidual(fragment.Text)) return false;
         return true;
+    }
+
+    private static List<SubtitleCueSourceFragment> SplitLeadingJapaneseTailFragments(
+        IReadOnlyList<SubtitleCueSourceFragment> fragments)
+    {
+        var output = new List<SubtitleCueSourceFragment>(fragments.Count);
+        foreach (var fragment in fragments)
+        {
+            var text = fragment.Text.Trim();
+            if (!text.StartsWith("なそ", StringComparison.Ordinal) || text.Length < 3)
+            {
+                output.Add(fragment);
+                continue;
+            }
+            var duration = fragment.EndSeconds - fragment.StartSeconds;
+            if (duration < 0.2)
+            {
+                output.Add(fragment);
+                continue;
+            }
+            var tailEnd = Math.Min(
+                fragment.EndSeconds,
+                fragment.StartSeconds + Math.Max(0.12, Math.Min(0.28, duration * 0.2)));
+            var rest = text[1..];
+            if (rest.Length == 0)
+            {
+                output.Add(fragment);
+                continue;
+            }
+            output.Add(new SubtitleCueSourceFragment(fragment.StartSeconds, tailEnd, "な"));
+            output.Add(new SubtitleCueSourceFragment(tailEnd, fragment.EndSeconds, rest));
+        }
+        return output;
     }
 
     private static bool ShouldBreak(
@@ -1674,16 +2012,19 @@ public static class WhisperCueRetimer
     public const double HoldToNextSeconds = 0.7;
     public const double MixedCjkLatinHoldToNextSeconds = 0.45;
     private const double MinimumCueSeconds = LocalAsrSubtitleTimingPlanner.MinimumCueSeconds;
+    private const double ProfiledMinimumCueSeconds = 0.9;
     private const double Epsilon = 0.001;
 
     public static IReadOnlyList<SubtitleCue> Retime(
         IReadOnlyList<SubtitleCue> cues,
         double? transcriptDurationSeconds,
-        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech)
+        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech,
+        AsrAudioActivity? audioActivity = null)
     {
         if (cues.Count == 0) return cues;
 
         var thresholds = LocalAsrSubtitleTimingPlanner.Thresholds(profile);
+        var lyricAcousticGuardEnabled = profile is SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics;
         var starts = new double[cues.Count];
         var ends = new double[cues.Count];
         var lastTokenEnds = new double[cues.Count];
@@ -1713,19 +2054,30 @@ public static class WhisperCueRetimer
             // Appearance: nudge the onset slightly later (DTW has a small early bias; window ideal
             // is slightly-late) so cues don't appear before speech. Bounded to keep a readable
             // minimum duration, never before the previous cue's end, never negative.
-            var start = starts[i] + OnsetDelaySeconds;
+            var start = starts[i] + thresholds.OnsetDelaySeconds;
             start = Math.Min(start, Math.Max(starts[i], ends[i] - MinimumCueSeconds));
             if (i > 0) start = Math.Max(start, previousEnd);
             start = Math.Max(start, 0);
+            if (lyricAcousticGuardEnabled && audioActivity is not null)
+            {
+                start = audioActivity.ProtectedLyricStart(start);
+                if (hasNext)
+                {
+                    start = Math.Min(start, Math.Max(starts[i], nextStart - MinimumCueSeconds));
+                }
+            }
 
             // Disappearance: extend toward the next real onset to absorb whisper's early word ends,
             // capped at HoldToNextSeconds past the last token and at the next onset minus a guard.
-            var ceiling = hasNext ? nextStart - InterCueGuardSeconds : double.PositiveInfinity;
+            // 末句没有下一个 onset，但仍不能越过整段音频时长，否则末句字幕会拖到视频结尾之后（BUG-4）。
+            var ceiling = hasNext
+                ? nextStart - InterCueGuardSeconds
+                : (transcriptDurationSeconds is { } durationCeiling ? durationCeiling : double.PositiveInfinity);
             var hold = HoldToNextSecondsFor(cues[i].Text, thresholds);
             var end = Math.Max(ends[i], Math.Min(ceiling, lastTokenEnds[i] + hold));
             if (transcriptDurationSeconds is { } duration) end = Math.Min(end, duration);
             end = Math.Min(end, start + caps[i]);
-            end = Math.Max(end, start + MinimumCueSeconds); // minimum readable duration (before overlap clamp)
+            end = Math.Max(end, start + MinimumCueSecondsFor(profile)); // minimum readable duration (before overlap clamp)
             end = Math.Min(end, ceiling);                   // never overlap the next onset window
             end = Math.Min(end, nextStart);                 // hard no-overlap authority
             end = Math.Max(end, start + Epsilon);           // always positive duration
@@ -1744,6 +2096,9 @@ public static class WhisperCueRetimer
     private static double HoldToNextSecondsFor(string text, SubtitleTimingThresholds thresholds) =>
         ContainsCjkLatinMix(text) ? Math.Min(MixedCjkLatinHoldToNextSeconds, thresholds.HoldToNextSeconds) : thresholds.HoldToNextSeconds;
 
+    private static double MinimumCueSecondsFor(SubtitleTimingProfile profile) =>
+        profile == SubtitleTimingProfile.Speech ? MinimumCueSeconds : ProfiledMinimumCueSeconds;
+
     private static bool ContainsCjkLatinMix(string text) =>
         SubtitleTimingPlanner.ContainsCjkText(text)
         && text.Any(ch => ch <= 0x7F && char.IsLetterOrDigit(ch));
@@ -1761,11 +2116,40 @@ public interface ILocalAsrSubtitleGenerator
 
 public static class AsrPromptBuilder
 {
+    // CJK punctuation exemplar: whisper.cpp continues in the prompt's style. CJK output
+    // otherwise carries almost no sentence punctuation (Japanese: 0, Korean: 6), starving
+    // the segmenter of sentence boundaries. A punctuated example raises emitted punctuation
+    // (0->24) and CJK aggregate strong-boundary recall 0.31->0.44 with no per-sample
+    // regression in a fair same-run comparison (segmentation eval 2026-06-24, n=4).
+    // CJK only; Latin already punctuates well. Mirror of Swift ASRPromptBuilder.
+    public static string? PunctuationExemplar(string languageCode)
+    {
+        var lang = languageCode.Trim().ToLowerInvariant();
+        if (lang.StartsWith("ja", StringComparison.Ordinal))
+            return "今日は、いい天気ですね。はい、そうです。";
+        if (lang.StartsWith("ko", StringComparison.Ordinal))
+            return "안녕하세요. 오늘은 날씨가 좋네요. 네, 맞습니다.";
+        if (lang.StartsWith("zh", StringComparison.Ordinal)
+            || lang.StartsWith("yue", StringComparison.Ordinal)
+            || lang.StartsWith("cmn", StringComparison.Ordinal))
+            return "你好，今天天气不错。是的，没错。";
+        return null;
+    }
+
     public static string? DefaultPrompt(string videoPath, string languageCode)
     {
         var title = Path.GetFileNameWithoutExtension(videoPath).Trim();
         var language = languageCode.Trim();
         var parts = new List<string>();
+        // CJK: lead with a punctuated exemplar so whisper.cpp emits sentence punctuation.
+        if (!string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            var exemplar = PunctuationExemplar(language);
+            if (exemplar != null)
+            {
+                parts.Add(exemplar);
+            }
+        }
         if (title.Length > 0)
         {
             parts.Add($"title={title}");
@@ -1811,6 +2195,33 @@ public enum AsrAudioExtractorError
     MissingOutput,
 }
 
+public sealed record AsrAudioActivityDetectionPlan
+{
+    public required string FfmpegPath { get; init; }
+    public required string AudioPath { get; init; }
+    public required IReadOnlyList<string> Arguments { get; init; }
+
+    public static AsrAudioActivityDetectionPlan Create(string ffmpegPath, string audioPath) => new()
+    {
+        FfmpegPath = ffmpegPath,
+        AudioPath = audioPath,
+        Arguments =
+        [
+            "-hide_banner",
+            "-nostats",
+            "-i", audioPath,
+            "-af", "silencedetect=noise=-35dB:d=0.2",
+            "-f", "null",
+            "-",
+        ],
+    };
+}
+
+public enum AsrAudioActivityDetectorError
+{
+    ProcessFailed,
+}
+
 public sealed class AsrAudioExtractorException(
     AsrAudioExtractorError reason,
     string? path = null,
@@ -1824,12 +2235,32 @@ public sealed class AsrAudioExtractorException(
     public string? StderrTail { get; } = stderrTail;
 }
 
+public sealed class AsrAudioActivityDetectorException(
+    AsrAudioActivityDetectorError reason,
+    int? status = null,
+    string? stderrTail = null)
+    : Exception(reason.ToString())
+{
+    public AsrAudioActivityDetectorError Reason { get; } = reason;
+    public int? Status { get; } = status;
+    public string? StderrTail { get; } = stderrTail;
+}
+
 public interface IAsrAudioExtractor
 {
     Task<string> ExtractAudioAsync(
         AsrAudioExtractionPlan plan,
         TaskControlToken? control,
         Action<AsrProgress> progress,
+        CancellationToken ct = default);
+}
+
+public interface IAsrAudioActivityDetector
+{
+    Task<AsrAudioActivity> DetectActivityAsync(
+        string audioPath,
+        string ffmpegPath,
+        TaskControlToken? control,
         CancellationToken ct = default);
 }
 
@@ -1873,6 +2304,33 @@ public sealed class ProcessAsrAudioExtractor : IAsrAudioExtractor
     }
 }
 
+public sealed class ProcessAsrAudioActivityDetector : IAsrAudioActivityDetector
+{
+    public async Task<AsrAudioActivity> DetectActivityAsync(
+        string audioPath,
+        string ffmpegPath,
+        TaskControlToken? control,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
+        var plan = AsrAudioActivityDetectionPlan.Create(ffmpegPath, audioPath);
+        var result = await ProcessRunner.RunProcessAsync(
+            plan.FfmpegPath,
+            plan.Arguments,
+            timeout: null,
+            ct: ct).ConfigureAwait(false);
+        if (result.Status != 0)
+        {
+            throw new AsrAudioActivityDetectorException(
+                AsrAudioActivityDetectorError.ProcessFailed,
+                status: result.Status,
+                stderrTail: result.Stderr);
+        }
+        return AsrAudioActivity.ParseSilencedetectOutput(result.Stdout + "\n" + result.Stderr);
+    }
+}
+
 public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGenerator
 {
     private readonly string _ffmpegPath;
@@ -1880,6 +2338,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
     private readonly ISpeechRecognizer _recognizer;
     private readonly string _modelId;
     private readonly Func<string, string, string?>? _promptProvider;
+    private readonly IAsrAudioActivityDetector _audioActivityDetector;
     private readonly IAsrAudioExtractor _audioExtractor;
 
     public WhisperCppLocalAsrSubtitleGenerator(
@@ -1888,6 +2347,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         ISpeechRecognizer recognizer,
         string modelId,
         Func<string, string, string?>? promptProvider = null,
+        IAsrAudioActivityDetector? audioActivityDetector = null,
         IAsrAudioExtractor? audioExtractor = null)
     {
         _ffmpegPath = ffmpegPath;
@@ -1895,6 +2355,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         _recognizer = recognizer;
         _modelId = modelId;
         _promptProvider = promptProvider;
+        _audioActivityDetector = audioActivityDetector ?? new ProcessAsrAudioActivityDetector();
         _audioExtractor = audioExtractor ?? new ProcessAsrAudioExtractor();
     }
 
@@ -1933,9 +2394,34 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         };
         var transcript = await _recognizer.TranscribeAsync(request, progress, control, ct).ConfigureAwait(false);
         progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 0, TotalUnits = 1 });
-        var output = AsrTranscriptMapper.WriteLocalAsrSourceSrt(transcript, videoFile);
+        var activity = await AudioActivityIfNeededAsync(transcript, videoFile, audioPath, control, ct).ConfigureAwait(false);
+        var output = AsrTranscriptMapper.WriteLocalAsrSourceSrt(transcript, videoFile, activity);
         progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 1, TotalUnits = 1 });
         return output;
+    }
+
+    private async Task<AsrAudioActivity?> AudioActivityIfNeededAsync(
+        AsrTranscript transcript,
+        string videoFile,
+        string audioPath,
+        TaskControlToken? control,
+        CancellationToken ct)
+    {
+        var speechCues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Speech);
+        var profile = SubtitleTimingProfileDetector.Detect(Path.GetFileName(videoFile), speechCues, transcript.LanguageCode);
+        if (profile is not (SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics)) return null;
+        try
+        {
+            return await _audioActivityDetector.DetectActivityAsync(audioPath, _ffmpegPath, control, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private string AudioPath(string videoFile, string languageCode) =>
