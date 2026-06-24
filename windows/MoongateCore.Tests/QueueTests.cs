@@ -1109,6 +1109,40 @@ public class QueueManagerTests
         Assert.Contains(translated, item.ResultFiles);
     }
 
+    /// <summary>BUG-C 回归：auto 本地字幕源复用“检测语言”命名的已有 SRT，不重跑 ASR。</summary>
+    [Fact]
+    public async Task LocalAsrAutoLanguage_ReusesExistingDetectedLanguageSrtWithoutRunningAsr()
+    {
+        // 真实 whisper 的 auto 源产物名用“检测到的语言”（如 .local-asr.ja.srt），不会是 .local-asr.auto.srt。
+        // 当下载结果里已存在这样的 SRT 时，auto 源必须复用它，而不是因 auto≠ja 后缀不匹配而重新抽音频 / 重跑 whisper。
+        var engine = new FakeEngine();
+        var translator = new FakeTranslator();
+        var asr = new FakeLocalAsrGenerator();
+        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+        var autoLocal = SubtitleChoice.Create(
+            "auto",
+            "Auto local ASR",
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "local");
+
+        var id = queue.Enqueue(
+            Info("a"),
+            Request("a", subtitleTracks: [autoLocal]),
+            ChineseSubtitleMode.SrtOnly,
+            Settings());
+        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+        // 模拟上一轮以检测到的 ja 语言生成的 .local-asr.ja.srt 随下载结果带回。
+        engine.Calls[0].Complete(
+            "/tmp/downloads/v [a].mp4",
+            "/tmp/downloads/v [a].local-asr.ja.srt");
+        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+
+        // 关键：auto 源通配命中已存在的 ja 字幕，generator 不被调用，翻译直接用该 SRT。
+        Assert.Equal(0, asr.CallCount);
+        Assert.Equal("/tmp/downloads/v [a].local-asr.ja.srt", translator.LastInput);
+    }
+
     /// <summary>直压模式：没有字幕文件时跳过烧录并提示。</summary>
     [Fact]
     public async Task BurnOriginalMode_NoSubtitle_SkipsWithNotice()

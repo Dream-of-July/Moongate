@@ -197,6 +197,19 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(startBody.contains("hydrateCredentials()"))
     }
 
+    func testCompleteOnboardingHydratesCredentialsBeforeBuildingDraft() throws {
+        // 回归保护：completeOnboarding 发生在首次启动、任何 parse/download 之前，此时凭证尚未 hydrate。
+        // 若以启动期（readCredentials:false）的空 Token settings 为 draft 直接 save()，
+        // writeTokensToStore() 会把空值当“删除”抹掉 Keychain 既有 Token（重跑 onboarding / settings 被重置时）。
+        // 因此必须先 hydrate，且必须在取 draft 之前，draft 才能继承真实 Token。
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(prefix: "func completeOnboarding", in: source))
+        XCTAssertTrue(body.contains("hydrateCredentials()"), "completeOnboarding 必须先 hydrateCredentials()")
+        let hydrateIndex = try XCTUnwrap(body.range(of: "hydrateCredentials()")?.lowerBound)
+        let draftIndex = try XCTUnwrap(body.range(of: "var draft = settings")?.lowerBound)
+        XCTAssertTrue(hydrateIndex < draftIndex, "hydrateCredentials() 必须在 var draft = settings 之前")
+    }
+
     func testReadySelectionAlwaysIncludesLocalASRTracksAndGatesDownloadOnReadiness() throws {
         let source = try viewModelSource()
         let availableBody = try XCTUnwrap(functionBody(prefix: "func availableSubtitleChoices", in: source))

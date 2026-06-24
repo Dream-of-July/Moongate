@@ -144,6 +144,9 @@ public sealed class UpdateChecker
     /// <summary>仓库 releases 页（失败兜底引导用户手动下载）。</summary>
     public string ReleasesPageUrl => $"https://github.com/{Owner}/{Repo}/releases";
 
+    /// <summary>仓库主页（关于页「在 GitHub 打开」按钮跳转，对齐 macOS repoURL）。</summary>
+    public string RepoPageUrl => $"https://github.com/{Owner}/{Repo}";
+
     /// <summary>
     /// 自动静默检查的节流判断（UPDATE-WIN-004）：设置页可频繁打开，但不应每次都请求 GitHub。
     /// 手动检查不走此函数，始终允许。

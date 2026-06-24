@@ -2570,10 +2570,16 @@ public static class TranslationApi
 
 // MARK: - ConfiguredTranslator
 
+/// <summary>
+/// 第一层规划判定的视频内容类型（canonical content type）。这个枚举<b>就是</b> advice 的内容类型字段——
+/// 我们不再单独引入 contentType，Preset 同时承担「翻译风格」「重分段断句风格（SegmentChunk）」两个角色。
+/// 新增内容类型时只加成员并在第一层 prompt 选项里列出即可。与 Swift TranslationPromptPreset 同构。
+/// </summary>
 public enum TranslationPromptPreset
 {
     General,
     SongLyrics,
+    Anime,
     InterviewConversation,
     TutorialHowTo,
     LectureCourse,
@@ -2585,11 +2591,86 @@ public enum TranslationPromptPreset
     GamingEntertainment,
 }
 
+internal sealed record TranslationPromptPresetProfile(
+    string PlanningHint,
+    string SegmentationGuidance,
+    string TranslationGuidance,
+    IReadOnlyList<string> QualityAnchors)
+{
+    public static TranslationPromptPresetProfile For(TranslationPromptPreset preset) => preset switch
+    {
+        TranslationPromptPreset.General => new(
+            "普通或混合内容；无法高置信归入其它类型时选择，翻译应准确自然、保守使用上下文。",
+            "你是通用字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整语义和自然停顿重新断行；不要把专名、数字、固定短语或语法核心切断。每个完整语气单元输出为一行，格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容没有强类型风格。翻译时优先准确、自然和清楚，保守使用上下文；不要把摘要、人物或术语里没有对应原文的信息加进译文。",
+            ["准确", "自然", "清楚", "保守"]),
+        TranslationPromptPreset.SongLyrics => new(
+            "歌曲、歌词、MV、现场演唱或翻唱；常有意象、旋律、重复、副歌、短句呼吸和较少完整标点。",
+            "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
+            ["诗意", "意象", "节奏", "副歌", "可吟唱"]),
+        TranslationPromptPreset.Anime => new(
+            "动漫、动画、番剧或角色对白；常有角色称呼、敬语、口癖、语气词、短反馈和夸张情绪。",
+            "你是动漫/动画对白断句助手。下面是一段逐字、缺少标点的动画对白自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按对白的自然停顿断行：每句台词或每个完整语气单元输出为一行，保留短反馈、语气词、感叹和喜剧停顿的节奏；不要把日语词语、助词、活用尾、角色称呼或固定短语切断。格式严格为 编号|台词（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像动漫或动画对白。翻译时优先保持每个角色的声线、称呼、敬语、口癖和语气词前后一致；对白要自然像真人说话，短反馈要利落，情绪要到位。人名、招式、设定、角色关系等专名要稳定统一，不要给同一角色忽男忽女或忽敬忽简的称呼。",
+            ["角色", "称呼", "口癖", "敬语", "对白"]),
+        TranslationPromptPreset.InterviewConversation => new(
+            "访谈、播客、圆桌或多人对话；常有问答、打断、犹豫、转折和真实口语。",
+            "你是访谈对话断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按说话人的完整问答、转折和自然停顿断行；保留犹豫、补充和短反馈，但不要把同一个观点拆到难以理解。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。多人对话要尽量保持称呼、立场和语气差异。",
+            ["访谈", "口语", "问答", "转折", "真实交流"]),
+        TranslationPromptPreset.TutorialHowTo => new(
+            "教程、操作演示、软件/硬件步骤说明；常有按钮名、条件、动作顺序和可跟做步骤。",
+            "你是教程字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按步骤、条件、按钮名、对象和动作顺序断行；不要把一个操作条件或按钮名拆开。格式严格为 编号|步骤句（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名、菜单名和动作顺序清楚可执行；语气保持简洁直接，技术词前后统一，读者应能照着字幕完成操作。",
+            ["步骤", "按钮名", "动作顺序", "可执行", "技术词"]),
+        TranslationPromptPreset.LectureCourse => new(
+            "课程、讲座、严肃科普或知识讲解；常有概念、定义、逻辑层级、因果关系和专业术语。",
+            "你是课程/科普字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按完整语义、术语边界、定义、因果和逻辑层级断行；不要把关键概念、数字单位或论证关系拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像课程、讲座或严肃科普。翻译时应专业、严肃、清楚，优先保留概念层次、术语一致性、逻辑推进、因果关系和论证结构；表达可以更易懂，但不要把讲者的铺垫、限定条件和重点压扁。",
+            ["专业", "严肃", "逻辑", "术语", "因果"]),
+        TranslationPromptPreset.NewsExplainer => new(
+            "新闻、评论、政策/财经/科技解释型视频；常有事实、数字、时间、地点、因果和立场边界。",
+            "你是新闻解释字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按事实单元、时间、地点、数字、因果和引用边界断行；不要把数字单位、机构名或时间表达拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间、地点、引用关系和因果关系要稳，避免额外立场，也不要把不确定信息翻成确定结论。",
+            ["客观", "数字", "时间", "事实", "因果"]),
+        TranslationPromptPreset.ReviewProduct => new(
+            "产品评测、体验分享、开箱或对比；常有规格、型号、功能、优缺点、价格和主观体验。",
+            "你是产品评测字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按规格、型号、功能点、比较关系、优缺点和结论断行；不要把产品名、版本号、价格或单位拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名、价格、单位和结论要清楚一致，既不要广告化，也不要把主观体验翻成绝对事实。",
+            ["体验", "规格", "型号", "优缺点", "比较"]),
+        TranslationPromptPreset.VlogLifestyle => new(
+            "vlog、生活记录、旅行、日常分享；常有个人视角、场景转换、轻松口吻和即时感受。",
+            "你是 vlog 字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按场景、个人感受、自然口吻和轻松停顿断行；短句可以保留日常说话节奏，但不要切断主谓关系。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感、个人语气和即时感受；不要过度正式，短句可以保持日常说话的节奏，但仍要读起来顺。",
+            ["口吻", "日常", "场景感", "个人语气", "自然"]),
+        TranslationPromptPreset.ShortSocial => new(
+            "短视频或社交平台内容；常有快节奏、梗、反差、情绪推进、短句和强转折。",
+            "你是短视频字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，保留节奏、梗、反差和情绪推进；可以让包袱和短反馈单独成行，但不得牺牲语义完整，不要把关键信息切碎。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，让包袱落得更准，但不能生造原文没有的信息，也不要为了快而牺牲语义完整。",
+            ["节奏", "梗", "反差", "情绪推进", "语义完整"]),
+        TranslationPromptPreset.DocumentaryNarrative => new(
+            "纪录片、叙事旁白或历史/自然/社会主题；常有画面感、时间线、因果和克制叙述。",
+            "你是纪录片旁白断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按叙事节奏、画面转换、时间线、因果和完整信息单元断行；不要把关键事实、地点、年代或人物关系拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像纪录片或叙事旁白。翻译时保持专业、严肃、克制，保留画面感、时间线、因果和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。",
+            ["严肃", "叙事", "画面感", "时间线", "因果"]),
+        TranslationPromptPreset.GamingEntertainment => new(
+            "游戏、直播、娱乐解说或实况反应；常有即时反应、玩笑、机制术语、角色名和场面节奏。",
+            "你是游戏/娱乐字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按即时反应、游戏机制、玩笑、场面节奏和完整语气单元断行；不要把游戏名、角色名、技能名、数值或机制术语拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段内容更像游戏或娱乐解说。翻译时保留现场感、即时反应、玩笑、术语和场面节奏；游戏名、角色名、技能名、机制名和数值要一致，语气可以更有现场感，但不要把梗翻成看不懂的硬直译。",
+            ["现场感", "术语", "即时反应", "玩笑", "机制"]),
+        _ => For(TranslationPromptPreset.General),
+    };
+}
+
 public sealed record TranslationPromptAdvice(
     string Summary,
     string Context,
     IReadOnlyList<string> Terms,
-    TranslationPromptPreset Preset);
+    TranslationPromptPreset Preset,
+    string SourceLanguageCode = "unknown",
+    IReadOnlyList<string>? Characters = null,
+    IReadOnlyList<string>? TranslationNotes = null);
 
 /// <summary>
 /// 通过设置里选择的协议翻译字幕。服务地址、模型、凭证全部来自 AppSettings。
@@ -2615,7 +2696,13 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         TranslationPromptAdvice? advice = null)
     {
         // 点名源语言能让模型针对日语/韩语等谓语后置、修饰语前置的语言主动调整语序；未知源语言时退回不点名的措辞。
-        var sourceLanguageDisplayName = TranslationLanguage.SourceDisplayName(sourceLanguageCode);
+        // 管线/文件名确定的源语言优先；缺值时用第一层规划判定的 advice.SourceLanguageCode 兜底点名。
+        var resolvedSourceLanguageCode = !string.IsNullOrWhiteSpace(sourceLanguageCode)
+            ? sourceLanguageCode
+            : advice is { SourceLanguageCode: not "unknown" and { Length: > 0 } }
+                ? advice.SourceLanguageCode
+                : sourceLanguageCode;
+        var sourceLanguageDisplayName = TranslationLanguage.SourceDisplayName(resolvedSourceLanguageCode);
         var sourceClause = sourceLanguageDisplayName is { Length: > 0 }
             ? $"正在把{sourceLanguageDisplayName}字幕翻译成{targetLanguageDisplayName}"
             : $"把用户给出的字幕翻译成{targetLanguageDisplayName}";
@@ -2628,7 +2715,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             "3) 数字、百分比、单位、版本号和型号要按完整表达理解。若相邻行把小数或单位拆开，如「99.」+「8%」、「0.」+「1%」、「Sun's」+「energy」，译文要合成自然中文，不要翻成「99点」/「8%」两段，也不要让某行停在「太阳的」。\n" +
             "4) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。圆括号、方括号里的音效/旁注（如「(笑声)」「[音乐]」）若已残留在原文中，按原样保留对应译文，不要展开描写。";
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
-        if (TranslationLanguage.NormalizedScript(sourceLanguageCode ?? "") == "ja")
+        if (TranslationLanguage.NormalizedScript(resolvedSourceLanguageCode ?? "") == "ja")
         {
             prompt += "\n\n日文→中文重排示例（务必按中文语序，不要留悬空成分）：\n" +
                 "- 「左隣、あなたの」「横顔を月が照らした」→「你坐在我的左侧」「月光映照着你的侧脸」（领属词上移，别让某行停在「你的」）\n" +
@@ -2644,31 +2731,18 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         {
             prompt += "\n专名参考：\n" + string.Join("\n", advice.Terms.Select(term => "- " + term));
         }
-        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。";
-        prompt += advice.Preset switch
+        if (advice.Characters is { Count: > 0 } characters)
         {
-            TranslationPromptPreset.SongLyrics =>
-                "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。",
-            TranslationPromptPreset.InterviewConversation =>
-                "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。",
-            TranslationPromptPreset.TutorialHowTo =>
-                "\n这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名和动作顺序清楚可跟做；语气保持简洁直接，技术词前后统一。",
-            TranslationPromptPreset.LectureCourse =>
-                "\n这段内容更像课程或讲座。翻译时优先保留概念层次、因果关系和术语一致性；表达可以更清楚，但不要把讲者的铺垫和重点压扁。",
-            TranslationPromptPreset.NewsExplainer =>
-                "\n这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间和因果关系要稳，避免额外立场。",
-            TranslationPromptPreset.ReviewProduct =>
-                "\n这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名和结论要清楚一致。",
-            TranslationPromptPreset.VlogLifestyle =>
-                "\n这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感和个人语气；不要过度正式，短句可以保持日常说话的节奏。",
-            TranslationPromptPreset.ShortSocial =>
-                "\n这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，但不要生造原文没有的信息。",
-            TranslationPromptPreset.DocumentaryNarrative =>
-                "\n这段内容更像纪录片或叙事旁白。翻译时保留画面感、时间线和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。",
-            TranslationPromptPreset.GamingEntertainment =>
-                "\n这段内容更像游戏或娱乐解说。翻译时保留即时反应、玩笑、术语和场面节奏；游戏名、角色名、机制名要一致，语气可以更有现场感。",
-            _ => "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。",
-        };
+            prompt += "\n人物/角色（保持称呼、口吻、敬语一致）：\n" + string.Join("\n", characters.Select(c => "- " + c));
+        }
+        if (advice.TranslationNotes is { Count: > 0 } translationNotes)
+        {
+            prompt += "\n翻译注意：\n" + string.Join("\n", translationNotes.Select(n => "- " + n));
+        }
+        var profile = TranslationPromptPresetProfile.For(advice.Preset);
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。先通读整段上下文再逐编号翻译，不要因为字幕被切成多行就丢失数字、主谓关系、角色称呼或歌词的上下文承接。";
+        prompt += "\n类型策略：" + profile.TranslationGuidance;
+        prompt += "\n质量锚点：" + string.Join("、", profile.QualityAnchors) + "。";
         return prompt;
     }
 
@@ -2695,24 +2769,19 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 ? s.GetString()?.Trim() ?? "" : "";
             var context = root.TryGetProperty("context", out var contextElement) && contextElement.ValueKind == JsonValueKind.String
                 ? contextElement.GetString()?.Trim() ?? "" : "";
-            var terms = new List<string>();
-            if (root.TryGetProperty("terms", out var termsElement) && termsElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var termElement in termsElement.EnumerateArray())
-                {
-                    if (termElement.ValueKind != JsonValueKind.String) continue;
-                    var term = termElement.GetString()?.Trim() ?? "";
-                    if (term.Length == 0) continue;
-                    terms.Add(term);
-                    if (terms.Count >= 8) break;
-                }
-            }
+            var terms = ReadAdviceStringArray(root, "terms");
+            var characters = ReadAdviceStringArray(root, "characters");
+            var translationNotes = ReadAdviceStringArray(root, "translationNotes");
+            var sourceLanguageCode = NormalizeSourceLanguageCode(
+                root.TryGetProperty("sourceLanguageCode", out var slc) && slc.ValueKind == JsonValueKind.String
+                    ? slc.GetString() : null);
             var presetRaw = root.TryGetProperty("preset", out var p) && p.ValueKind == JsonValueKind.String
                 ? p.GetString() ?? "" : "";
             if (summary.Length == 0) return null;
             var preset = presetRaw.Trim() switch
             {
                 "songLyrics" => TranslationPromptPreset.SongLyrics,
+                "anime" => TranslationPromptPreset.Anime,
                 "interviewConversation" => TranslationPromptPreset.InterviewConversation,
                 "tutorialHowTo" => TranslationPromptPreset.TutorialHowTo,
                 "lectureCourse" => TranslationPromptPreset.LectureCourse,
@@ -2724,12 +2793,43 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 "gamingEntertainment" => TranslationPromptPreset.GamingEntertainment,
                 _ => TranslationPromptPreset.General,
             };
-            return new TranslationPromptAdvice(summary, context, terms, preset);
+            return new TranslationPromptAdvice(summary, context, terms, preset, sourceLanguageCode, characters, translationNotes);
         }
         catch (JsonException)
         {
             return null;
         }
+    }
+
+    /// <summary>列表清洗：trim、去空、最多 8 条。terms/characters/translationNotes 共用，对应 Swift normalizedList。</summary>
+    private static List<string> ReadAdviceStringArray(JsonElement root, string name)
+    {
+        var result = new List<string>();
+        if (root.TryGetProperty(name, out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in arr.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String) continue;
+                var value = element.GetString()?.Trim() ?? "";
+                if (value.Length == 0) continue;
+                result.Add(value);
+                if (result.Count >= 8) break;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 第一层只允许从这组源语言里选；其余（含空、地区码、整词如 "japanese"）一律落到 "unknown"，
+    /// 避免把不可识别的串喂给第二层的源语言点名逻辑。对应 Swift normalizedSourceLanguageCode。
+    /// </summary>
+    private static readonly HashSet<string> AllowedSourceLanguageCodes =
+        new(StringComparer.Ordinal) { "ja", "en", "zh", "yue", "ko", "es", "fr", "it" };
+
+    private static string NormalizeSourceLanguageCode(string? value)
+    {
+        var trimmed = value?.Trim().ToLowerInvariant() ?? "";
+        return AllowedSourceLanguageCodes.Contains(trimmed) ? trimmed : "unknown";
     }
 
     public ConfiguredTranslator(AppSettings settings, HttpMessageHandler? handler = null)
@@ -2776,10 +2876,18 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
         // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
         var isLocalAsrSource = Path.GetFileName(srtFile).ToLowerInvariant().Contains(".local-asr.");
+        var advice = await MakeTranslationPromptAdviceAsync(cues, ct).ConfigureAwait(false);
+        if (advice is null && isLocalAsrSource)
+        {
+            advice = LocalAsrLyricsFallbackAdvice(Path.GetFileName(srtFile), cues);
+        }
         if ((_settings.SmartTranslationPromptsEnabled || isLocalAsrSource)
             && (sourceLooksLikeAutoCaption || LooksLikeAutoCaption(cues)))
         {
-            var reseg = await ResegmentForReadabilityAsync(cues, ct).ConfigureAwait(false);
+            var reseg = await ResegmentForReadabilityAsync(
+                cues,
+                advice?.Preset ?? TranslationPromptPreset.General,
+                ct).ConfigureAwait(false);
             if (isLocalAsrSource && reseg.Count != cues.Count)
             {
                 try { await File.WriteAllTextAsync(srtFile, SrtTools.SerializeSrt(reseg), ct).ConfigureAwait(false); }
@@ -2789,7 +2897,6 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         }
         // 源语言从文件名推断（如 "video.ja.srt" → "ja"），用于给提示词点名源语言并触发日语重排示例。
         var sourceLanguageCode = TranslationLanguage.SourceLanguageIdentifierFromSubtitleFile(srtFile);
-        var advice = await MakeTranslationPromptAdviceAsync(cues, ct).ConfigureAwait(false);
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
@@ -3004,15 +3111,18 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 "增強模式需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
                 "Enhanced mode requires a summary model that can generate text. Configure a summary model in AI summary settings."));
         }
+        var presetHints = TranslationPresetPlanningHints();
         var system =
-            "你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：" +
-            "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"preset\":\"general|songLyrics|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\"}。" +
-            "summary 写整体内容；context 写会影响翻译的背景，不要编造字幕没有支持的信息；terms 只放字幕里出现或能高置信识别的专名、人物、组织、作品名、品牌、术语，不确定官方译名时保留原文写法并说明不确定。" +
-            "preset 选择最贴近的一个：歌曲/歌词/MV 用 songLyrics；访谈播客对话用 interviewConversation；教程操作演示用 tutorialHowTo；课程讲座用 lectureCourse；新闻评论解释用 newsExplainer；产品评测体验用 reviewProduct；vlog 生活记录用 vlogLifestyle；短视频社交平台内容用 shortSocial；纪录片旁白叙事用 documentaryNarrative；游戏或娱乐解说用 gamingEntertainment；无法判断用 general。不要输出 Markdown。";
+            "你是字幕内容规划器。先通读样本，理解这段视频的源语言、内容类型、人物和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：" +
+            "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"sourceLanguageCode\":\"ja|en|zh|yue|ko|es|fr|it|unknown\",\"preset\":\"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"characters\":[\"人物/角色/身份：简要说明，最多8个\"],\"translationNotes\":[\"影响翻译的注意事项，最多8条\"]}。" +
+            "summary 写整体内容；context 写会影响翻译的背景；sourceLanguageCode 从给定集合里选最贴近的，拿不准就写 unknown；characters 写登场人物或角色及其身份、与他人的关系或称呼习惯；translationNotes 写具体的翻译策略，如敬语、角色口癖、专名保留、歌词意象、数字单位、上下文承接等。" +
+            "所有字段都不得编造：terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段就写 unknown 或留空数组，绝不要凭空生成人物、剧情或译名。" +
+            "preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：\n" +
+            presetHints;
         var userContent = $"目标译文语言：{TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage)}\n" +
             "字幕内容分析样本：\n" + SubtitleAnalysisSample(cues);
         var reply = await TranslationApi.SendConfiguredMessageAsync(
-            _settings.ForSummary(), system, userContent, maxTokens: 1200, _handler, ct).ConfigureAwait(false);
+            _settings.ForSummary(), system, userContent, maxTokens: 1500, _handler, ct).ConfigureAwait(false);
         return ParseTranslationPromptAdvice(reply.Text)
             ?? throw MoongateException.TranslateFailed(L10n.T(
                 "增强模式分析返回格式异常，请重试或关闭增强模式。",
@@ -3020,11 +3130,54 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 "Enhanced mode analysis returned an invalid format. Try again or turn off enhanced mode."));
     }
 
+    private static string TranslationPresetPlanningHints() =>
+        string.Join("\n", Enum.GetValues<TranslationPromptPreset>()
+            .Select(preset => $"- {PresetWireValue(preset)}：{TranslationPromptPresetProfile.For(preset).PlanningHint}"));
+
+    private static string PresetWireValue(TranslationPromptPreset preset) => preset switch
+    {
+        TranslationPromptPreset.SongLyrics => "songLyrics",
+        TranslationPromptPreset.Anime => "anime",
+        TranslationPromptPreset.InterviewConversation => "interviewConversation",
+        TranslationPromptPreset.TutorialHowTo => "tutorialHowTo",
+        TranslationPromptPreset.LectureCourse => "lectureCourse",
+        TranslationPromptPreset.NewsExplainer => "newsExplainer",
+        TranslationPromptPreset.ReviewProduct => "reviewProduct",
+        TranslationPromptPreset.VlogLifestyle => "vlogLifestyle",
+        TranslationPromptPreset.ShortSocial => "shortSocial",
+        TranslationPromptPreset.DocumentaryNarrative => "documentaryNarrative",
+        TranslationPromptPreset.GamingEntertainment => "gamingEntertainment",
+        _ => "general",
+    };
+
     private static string SubtitleAnalysisSample(IReadOnlyList<SubtitleCue> cues)
     {
         var text = string.Join("\n", cues.Take(120).Select(c => Flattened(c.Text)));
         return text.Length > 6000 ? text[..6000] + "…（已截断）" : text;
     }
+
+    private static TranslationPromptAdvice? LocalAsrLyricsFallbackAdvice(
+        string fileName,
+        IReadOnlyList<SubtitleCue> cues)
+    {
+        if (!LooksLikeLocalAsrLyrics(fileName, cues)) return null;
+        var stem = Path.GetFileNameWithoutExtension(fileName)
+            .Replace(".local-asr.", " ", StringComparison.OrdinalIgnoreCase)
+            .Replace("_", " ", StringComparison.Ordinal)
+            .Trim();
+        var summary = stem.Length == 0 ? "歌曲歌词" : $"{stem} 的歌曲歌词";
+        return new TranslationPromptAdvice(
+            summary,
+            "本地 ASR 识别的 MV、歌曲或歌词字幕；按歌词行、乐句和副歌重复来理解。",
+            [],
+            TranslationPromptPreset.SongLyrics);
+    }
+
+    private static bool LooksLikeLocalAsrLyrics(string fileName, IReadOnlyList<SubtitleCue> cues) =>
+        // Single source of truth: the same detector the ASR planner uses to pick a timing profile.
+        // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
+        // never disagree about whether a clip is a song.
+        SubtitleTimingProfileDetector.Detect(fileName, cues) is SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics;
 
     /// <summary>
     /// 字幕条内部换行折叠成一行发给模型。用空格连接（旧版用 " / " 会被模型原样抄进译文，
@@ -3265,17 +3418,16 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// 命中输出上限（max_tokens）时把这块的 cue 数减半递归重试；最小到 1 条仍截断则用原文兜底。
     /// </summary>
     private async Task<List<string>> SegmentChunkAsync(
-        IReadOnlyList<SubtitleCue> cues, int start, int count, CancellationToken ct)
+        IReadOnlyList<SubtitleCue> cues,
+        int start,
+        int count,
+        TranslationPromptPreset preset,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var transcript = string.Join(" ",
             Enumerable.Range(start, count).Select(c => Flattened(cues[c].Text)));
-        const string systemPreamble =
-            "你是字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。" +
-            "请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整句子重新断行，" +
-            "每个完整句子输出为一行，格式严格为 编号|句子（编号从 1 递增）。" +
-            "只能输出这些行，不要解释。\n待断句文本：\n";
-        var system = systemPreamble + transcript;
+        var system = TranslationPromptPresetProfile.For(preset).SegmentationGuidance + "\n待断句文本：\n" + transcript;
 
         var reply = await TranslationApi.SendConfiguredMessageAsync(
             _settings, system, transcript, maxTokens: 4000, _handler, ct).ConfigureAwait(false);
@@ -3288,8 +3440,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 return [Flattened(cues[start].Text)];
             }
             var half = count / 2;
-            var first = await SegmentChunkAsync(cues, start, half, ct).ConfigureAwait(false);
-            var second = await SegmentChunkAsync(cues, start + half, count - half, ct).ConfigureAwait(false);
+            var first = await SegmentChunkAsync(cues, start, half, preset, ct).ConfigureAwait(false);
+            var second = await SegmentChunkAsync(cues, start + half, count - half, preset, ct).ConfigureAwait(false);
             return [.. first, .. second];
         }
 
@@ -3348,6 +3500,12 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// </summary>
     public async Task<List<SubtitleCue>> ResegmentForReadabilityAsync(
         IReadOnlyList<SubtitleCue> cues, CancellationToken ct)
+        => await ResegmentForReadabilityAsync(cues, TranslationPromptPreset.General, ct).ConfigureAwait(false);
+
+    public async Task<List<SubtitleCue>> ResegmentForReadabilityAsync(
+        IReadOnlyList<SubtitleCue> cues,
+        TranslationPromptPreset preset,
+        CancellationToken ct)
     {
         if (cues.Count == 0) return [];
 
@@ -3356,7 +3514,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         for (var start = 0; start < cues.Count; start += ResegmentChunkCues)
         {
             var count = Math.Min(ResegmentChunkCues, cues.Count - start);
-            var chunk = await SegmentChunkAsync(cues, start, count, ct).ConfigureAwait(false);
+            var chunk = await SegmentChunkAsync(cues, start, count, preset, ct).ConfigureAwait(false);
             sentences.AddRange(chunk);
         }
 
@@ -3482,7 +3640,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
 
     /// <summary>
     /// 把过长段（时长超限且 token 足够多）在 token 边界均分成若干份；否则原样返回单段。
-    /// 各份时间用边界 token 的本地插值，文本按词数等比切分（测试只校验份数与首尾时间）。
+    /// 各份时间用边界 token 的本地插值；无空格 CJK 文本按字符切，避免每份重复整句。
     /// </summary>
     private static List<Segment> SplitLongSegment(
         IReadOnlyList<SubtitleCue> cues, List<FlatToken> flat, Segment seg)
@@ -3496,7 +3654,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
 
         var parts = (int)Math.Ceiling(duration / ResegmentMaxSegmentSeconds);
         parts = Math.Max(2, Math.Min(parts, tokenCount)); // 至少 2 份，至多每份 1 token
-        var words = seg.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var textParts = SplitSegmentText(seg.Text, parts);
         var output = new List<Segment>();
         for (var p = 0; p < parts; p++)
         {
@@ -3505,10 +3663,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             if (tEnd <= tStart) tEnd = tStart + 1;
             if (p == parts - 1) tEnd = seg.TokenEnd;
 
-            var wStart = (int)((long)words.Length * p / parts);
-            var wEnd = p == parts - 1 ? words.Length : (int)((long)words.Length * (p + 1) / parts);
-            if (wEnd < wStart) wEnd = wStart;
-            var text = string.Join(' ', words[wStart..wEnd]).Trim();
+            var text = p < textParts.Count ? textParts[p].Trim() : seg.Text;
 
             output.Add(new Segment
             {
@@ -3520,5 +3675,33 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             });
         }
         return output;
+    }
+
+    private static List<string> SplitSegmentText(string text, int parts)
+    {
+        if (parts <= 1) return [text];
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length >= parts)
+        {
+            var wordParts = new List<string>();
+            for (var part = 0; part < parts; part++)
+            {
+                var start = (int)((long)words.Length * part / parts);
+                var end = part == parts - 1 ? words.Length : (int)((long)words.Length * (part + 1) / parts);
+                wordParts.Add(start < end ? string.Join(' ', words[start..end]) : "");
+            }
+            return wordParts;
+        }
+
+        var characters = text.Where(ch => !char.IsWhiteSpace(ch)).Select(ch => ch.ToString()).ToArray();
+        if (characters.Length < parts) return [text];
+        var charParts = new List<string>();
+        for (var part = 0; part < parts; part++)
+        {
+            var start = (int)((long)characters.Length * part / parts);
+            var end = part == parts - 1 ? characters.Length : (int)((long)characters.Length * (part + 1) / parts);
+            charParts.Add(start < end ? string.Concat(characters[start..end]) : "");
+        }
+        return charParts;
     }
 }

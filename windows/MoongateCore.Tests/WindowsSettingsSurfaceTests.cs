@@ -315,7 +315,7 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("<sys:String x:Key=\"L.SettingsNav.LocalSpeech\">本機語音識別</sys:String>", zhHant);
         foreach (var key in navKeys)
         {
-            // UpdatesAbout 用复合 Header（带「有可用更新」红点），其余仍是简单 Header 属性。
+            // UpdatesAbout 用复合 Header（带「有可用更新」红色数字 1 角标），其余仍是简单 Header 属性。
             // 两种形式都引用了对应的本地化 key，分组信息架构不变。
             if (key == "L.SettingsNav.UpdatesAbout")
             {
@@ -393,6 +393,11 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("L.Settings.AboutAppName", xaml);
         Assert.Contains("L.Settings.AboutSource", xaml);
         Assert.Contains("Updater.CurrentVersion", xaml);
+        // 关于区不再重复版本号：版本号只在「更新」区出现一次（对齐 macOS，避免两个版本号）。
+        Assert.Equal(1, xaml.Split("Updater.CurrentVersion").Length - 1);
+        // 关于区提供「查看 GitHub 仓库」按钮（对齐 macOS openRepoPage）。
+        Assert.Contains("L.Settings.AboutOpenRepo", xaml);
+        Assert.Contains("OnOpenRepoClick", xaml);
 
         foreach (var resource in new[] { zh, en, zhHant })
         {
@@ -401,6 +406,7 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Settings.AboutSection\"", resource);
             Assert.Contains("x:Key=\"L.Settings.AboutAppName\"", resource);
             Assert.Contains("x:Key=\"L.Settings.AboutSource\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.AboutOpenRepo\"", resource);
         }
     }
 
@@ -720,5 +726,40 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("public APIEndpointActions SummaryEndpoint", source);
         Assert.Contains("() => RequestSettings(_summaryProvider, SummaryBaseUrl, SummaryModel, SummaryAuthToken)", source);
         Assert.Contains("TranslationFollowsDefault = false", source);
+    }
+
+    [Fact]
+    public void WindowsLocalSpeechTabImportsModelAndHidesAdvancedPathsByDefault()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "SettingsViewModel.cs");
+        var codeBehind = Read("windows", "MoongateApp", "SettingsWindow.xaml.cs");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+
+        // 导入本地模型：可见按钮 + 文件对话框处理器 + 拷贝到托管 imported 目录、启用并设自定义 ID。
+        Assert.Contains("L.Settings.LocalASRImportModel", xaml);
+        Assert.Contains("Click=\"OnImportLocalAsrModelClick\"", xaml);
+        Assert.Contains("private void OnImportLocalAsrModelClick", codeBehind);
+        Assert.Contains("OpenFileDialog", codeBehind);
+        Assert.Contains("public void ImportLocalAsrModel(string sourcePath)", viewModel);
+        Assert.Contains("\"imported\"", viewModel);
+        Assert.Contains("\"custom:\"", viewModel);
+        Assert.Contains("LocalAsrEnabled = true;", viewModel);
+
+        // cpp runtime/模型路径默认收起（高级折叠，对齐 macOS），用 BoolToVis 切换、不引入未做深色模板的 Expander。
+        Assert.Contains("public bool ShowAdvancedLocalAsr", viewModel);
+        Assert.Contains("IsChecked=\"{Binding ShowAdvancedLocalAsr}\"", xaml);
+        Assert.Contains("Visibility=\"{Binding ShowAdvancedLocalAsr, Converter={StaticResource BoolToVis}}\"", xaml);
+        Assert.DoesNotContain("<Expander", xaml);
+
+        foreach (var resource in new[] { en, zh, zhHant })
+        {
+            Assert.Contains("x:Key=\"L.Settings.AdvancedDetails\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRImportModel\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRModelImportComplete\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRImportFailed\"", resource);
+        }
     }
 }

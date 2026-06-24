@@ -211,6 +211,10 @@ final class MacOSQueueBoundaryTests: XCTestCase {
 
         XCTAssertTrue(helperBody.contains("isLocalASRSubtitle"))
         XCTAssertTrue(helperBody.contains("langCode(ofSubtitle:"))
+        // BUG-C 回归：auto/空 语言码必须通配命中任意 .local-asr.*.srt（产物名用检测到的语言，不是 auto），
+        // 否则完成项以 auto 重跑会重复抽音频 / 重跑 whisper。
+        XCTAssertTrue(helperBody.contains("wildcard"))
+        XCTAssertTrue(helperBody.contains("\"auto\""))
         XCTAssertTrue(prepareBody.contains("if let existing = Self.existingLocalASRSubtitle"))
         XCTAssertLessThan(
             try XCTUnwrap(prepareBody.range(of: "if let existing = Self.existingLocalASRSubtitle")).lowerBound,

@@ -9,7 +9,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.8.0-rc.1"
+  !define APPVERSION "0.8.0"
 !endif
 !ifndef ICON_PATH
   !define ICON_PATH "windows/assets/app-nsis.ico"
@@ -29,6 +29,10 @@ OutFile "${OUTFILE}"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
 SetCompressor /SOLID lzma
+
+; 更新安装（命令行带 /UPDATEPID）时置 "1"：安装成功后在静默模式下自动重启 App，
+; 实现「下载后自动覆盖并重启」。普通交互安装保持 0，由 MUI_FINISHPAGE_RUN 处理是否运行。
+Var UpdateRelaunch
 
 !define MUI_ICON "${ICON_PATH}"
 !define MUI_UNICON "${ICON_PATH}"
@@ -74,6 +78,8 @@ Section "$(SecCore)" SecCoreId
   ${GetParameters} $R0
   ${GetOptions} $R0 "/UPDATEPID=" $R1
   ${If} $R1 != ""
+    ; 记为「更新安装」：安装成功后自动重启 App（见 .onInstSuccess）。
+    StrCpy $UpdateRelaunch "1"
     ; OpenProcess(SYNCHRONIZE=0x00100000, FALSE, pid)
     ; If this fails, the launching app may already have exited. That is safe:
     ; only abort when we successfully get a handle and the process does not exit.
@@ -85,13 +91,13 @@ Section "$(SecCore)" SecCoreId
       ${If} $R3 == ${WAIT_OBJECT_0}
         ; Safe to continue replacing files.
       ${ElseIf} $R3 == ${WAIT_TIMEOUT}
-        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitTimeout)"
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitTimeout)" /SD IDOK
         Abort
       ${ElseIf} $R3 == ${WAIT_FAILED}
-        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)"
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)" /SD IDOK
         Abort
       ${Else}
-        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)"
+        MessageBox MB_ICONSTOP|MB_OK "$(UpdateWaitFailed)" /SD IDOK
         Abort
       ${EndIf}
     ${EndIf}
@@ -126,6 +132,16 @@ SectionEnd
 Section "$(SecDesktop)" SecDesktopId
   CreateShortCut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
 SectionEnd
+
+; 更新安装成功后自动重启 App：仅在「静默 + /UPDATEPID」（即由 App 触发的自动更新）时执行，
+; 实现「下载后自动覆盖并重启」。普通交互安装不在此重启——由 MUI_FINISHPAGE_RUN 的「立即运行」
+; 复选框处理，避免与之冲突造成双重启动。
+Function .onInstSuccess
+  ${If} $UpdateRelaunch == "1"
+  ${AndIf} ${Silent}
+    Exec '"$INSTDIR\${EXENAME}"'
+  ${EndIf}
+FunctionEnd
 
 Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"

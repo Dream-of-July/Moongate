@@ -15,14 +15,14 @@ The Windows app is a separate native implementation under `windows/`:
 One-time deps: `brew install dotnet makensis`
 
 ```bash
-./build-windows.sh            # outputs ~/Downloads/Moongate-Windows-Setup-v0.8.0-rc.1.exe and .sha256
+./build-windows.sh            # outputs ~/Downloads/Moongate-Windows-Setup-v0.8.0.exe and .sha256
 ```
 
 Flow: core-library unit tests (must all pass) → `dotnet publish` win-x64 self-contained (no .NET needed on the user's machine) → NSIS packaging.
 
 ## What Windows users get
 
-1. Double-click `Moongate-Windows-Setup-v0.8.0-rc.1.exe` → installs to the default user directory (no UAC prompt).
+1. Double-click `Moongate-Windows-Setup-v0.8.0.exe` → installs to the default user directory (no UAC prompt).
 2. First launch auto-downloads yt-dlp / ffmpeg (GyanD full build, includes libass) / deno from pinned official sources into `%LOCALAPPDATA%\Moongate\bin`, verifying SHA-256 (needs network; you can re-download or reinstall yt-dlp from settings).
 3. From there it matches macOS: paste a link → pick quality and subtitles → download / translate / burn-in, with multi-file jobs auto-foldered.
 4. Site login uses WebView2 (bundled on Windows 11; the app guides installation if it's missing).

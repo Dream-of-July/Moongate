@@ -186,6 +186,10 @@
     <sys:String x:Key="L.Settings.LocalASRSection">本地语音识别</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">允许调用本地 whisper.cpp 识别</sys:String>
     <sys:String x:Key="L.Settings.LocalASRHelp">重新识别音频，速度更慢，但部分语言/专名可能更好。Moongate 不会自动下载模型。</sys:String>
+    <sys:String x:Key="L.Settings.AdvancedDetails">高级说明</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRImportModel">导入模型…</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelImportComplete">{0} 已导入并启用</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRImportFailed">无法导入所选模型文件。</sys:String>
     <sys:String x:Key="L.Settings.LocalASRRuntimePath">whisper.cpp 可执行文件</sys:String>
     <sys:String x:Key="L.Settings.LocalASRFindRuntime">查找 whisper-cli</sys:String>
     <sys:String x:Key="L.Settings.LocalASRRuntimeFound">已找到 whisper-cli：{0}</sys:String>
@@ -294,6 +298,7 @@
     <sys:String x:Key="L.Settings.AboutSection">关于</sys:String>
     <sys:String x:Key="L.Settings.AboutAppName">月之门</sys:String>
     <sys:String x:Key="L.Settings.AboutSource">源码与发布：GitHub 上的 Dream-of-July/moongate。</sys:String>
+    <sys:String x:Key="L.Settings.AboutOpenRepo">查看 GitHub 仓库</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">设置保存失败：{0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">确定要清除所有登录吗？</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsDetail">清除后需要重新登录才能下载会员/受限视频。</sys:String>

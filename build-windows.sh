@@ -7,7 +7,7 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
-VERSION="0.8.0-rc.1"
+VERSION="0.8.0"
 OUT="${1:-$HOME/Downloads/Moongate-Windows-Setup-v$VERSION.exe}"
 MOONGATE_WHISPER_CPP_RUNTIME_DIR="${MOONGATE_WHISPER_CPP_RUNTIME_DIR:-}"
 

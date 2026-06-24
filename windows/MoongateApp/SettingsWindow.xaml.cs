@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using Microsoft.Win32;
 using Moongate.Core;
 
 namespace Moongate.App;
@@ -252,6 +253,32 @@ public partial class SettingsWindow : Window
         catch (Exception error)
         {
             _vm.Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+    }
+
+    private void OnOpenRepoClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(Updater.RepoPageUrl) { UseShellExecute = true });
+        }
+        catch (Exception error)
+        {
+            _vm.Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
+    }
+
+    private void OnImportLocalAsrModelClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = Loc.S("L.Settings.LocalASRImportModel"),
+            Filter = "Whisper ggml model (*.bin)|*.bin|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) == true)
+        {
+            _vm.ImportLocalAsrModel(dialog.FileName);
         }
     }
 }

@@ -25,6 +25,7 @@ from subtitle_timing_eval.pipeline import (
     build_suite_runbook,
     build_translation_timing_proxy_srt,
     collect_eval_status,
+    collect_local_asr_suite_status,
     collect_manual_suite_status,
     extract_srt_words,
     extract_vtt_words,
@@ -1058,6 +1059,90 @@ class PipelineTests(unittest.TestCase):
         self.assertAlmostEqual(row["reading_speed_chars_per_second"], 6 / 1.4, places=2)
         self.assertFalse(row["weak_boundary"])
         self.assertTrue(row["accepted"])
+
+    def test_evaluate_files_records_human_reference_path_for_local_asr_reports(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = root / "local-asr.en.srt"
+            reference = root / "human.en.srt"
+            words = root / "srt_words.human.json"
+            report_path = root / "report.json"
+            candidate.write_text(
+                "1\n00:00:00,200 --> 00:00:01,000\nHello there.\n",
+                encoding="utf-8",
+            )
+            reference.write_text(
+                "1\n00:00:00,180 --> 00:00:01,020\nHello there.\n",
+                encoding="utf-8",
+            )
+            words.write_text(json.dumps({
+                "words": [
+                    {"start": 0.18, "end": 0.52, "text": "Hello"},
+                    {"start": 0.54, "end": 1.02, "text": "there"},
+                ]
+            }), encoding="utf-8")
+
+            report = pipeline.evaluate_files(
+                str(candidate),
+                str(words),
+                sample_id="local_asr_human_words",
+                output_path=str(report_path),
+                reference_path=str(reference),
+            )
+
+        self.assertEqual(report["candidate_path"], str(candidate))
+        self.assertEqual(report["asr_words_path"], str(words))
+        self.assertEqual(report["reference_path"], str(reference))
+        self.assertGreaterEqual(report["summary"]["accepted_ratio"], 0.9)
+
+    def test_local_asr_gate_rejects_vtt_and_self_reference_evidence(self):
+        # The local-ASR suite gate must only accept local-asr SRT scored against a HUMAN .srt
+        # reference — never a platform .vtt auto-caption, never self-comparison, never vtt-derived
+        # word evidence. This locks the "no self-referential whisper-words" requirement.
+        def write_comparison(root: Path, candidate_name: str, reference_name: str, words_name=None):
+            candidate = root / candidate_name
+            reference = root / reference_name
+            candidate.write_text("1\n00:00:00,200 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+            reference.write_text("1\n00:00:00,180 --> 00:00:01,020\nHello.\n", encoding="utf-8")
+            optimized = {"candidate_path": str(candidate), "reference_path": str(reference)}
+            if words_name is not None:
+                words = root / words_name
+                words.write_text(json.dumps({"words": [{"start": 0.18, "end": 0.52, "text": "Hello"}]}), encoding="utf-8")
+                optimized["asr_words_path"] = str(words)
+            (root / "optimized.report.json").write_text(json.dumps(optimized), encoding="utf-8")
+            comparison_path = root / "comparison.json"
+            comparison_path.write_text("{}", encoding="utf-8")
+            return {"_path": str(comparison_path)}
+
+        # Accept: local-asr candidate vs a human .srt reference.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            comparison = write_comparison(Path(temp_dir), "clip.local-asr.en.srt", "human.en.srt", "srt_words.human.json")
+            self.assertTrue(pipeline._comparison_uses_local_asr(comparison, {}))
+
+        # Reject: reference is a platform VTT auto-caption (the banned self-referential evidence).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            comparison = write_comparison(Path(temp_dir), "clip.local-asr.en.srt", "auto.en.vtt.srt")
+            self.assertFalse(pipeline._comparison_uses_local_asr(comparison, {}))
+
+        # Reject: candidate is not a local-asr SRT (e.g. an old VTT-derived candidate).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            comparison = write_comparison(Path(temp_dir), "auto.en.srt", "human.en.srt")
+            self.assertFalse(pipeline._comparison_uses_local_asr(comparison, {}))
+
+        # Reject: self-comparison (candidate == reference).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = root / "clip.local-asr.en.srt"
+            candidate.write_text("1\n00:00:00,200 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+            (root / "optimized.report.json").write_text(
+                json.dumps({"candidate_path": str(candidate), "reference_path": str(candidate)}), encoding="utf-8")
+            (root / "comparison.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(pipeline._comparison_uses_local_asr({"_path": str(root / "comparison.json")}, {}))
+
+        # Reject: word-level evidence comes from the platform VTT, not local ASR.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            comparison = write_comparison(Path(temp_dir), "clip.local-asr.en.srt", "human.en.srt", "vtt_words.json")
+            self.assertFalse(pipeline._comparison_uses_local_asr(comparison, {}))
 
     def test_reference_metrics_cli_writes_human_reference_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3789,6 +3874,283 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(status["passes_manual_suite_gate"])
         self.assertEqual(status["preservation_language_groups"], ["en"])
         self.assertEqual(status["missing_strict_timing_language_groups"], ["en"])
+
+    def test_collect_local_asr_suite_status_rejects_non_local_asr_timing_evidence(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected_count": 1,
+            "selected": [{"id": "english", "suite_language": "en"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            (english_dir / "manual.clean.srt").write_text("manual\n", encoding="utf-8")
+            (english_dir / "comparison.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+            (english_dir / "baseline.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [],
+            }), encoding="utf-8")
+            (english_dir / "optimized.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "candidate_path": str(english_dir / "manual.clean.srt"),
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "summary": {"accepted_ratio": 1.0},
+                "cues": [],
+            }), encoding="utf-8")
+
+            status = collect_local_asr_suite_status(manifest, selection, temp_dir)
+
+        self.assertFalse(status["passes_local_asr_suite_gate"])
+        self.assertEqual(status["missing_samples"], ["english"])
+        self.assertEqual(status["missing_local_asr_samples"], ["english"])
+
+    def test_collect_local_asr_suite_status_requires_local_asr_media_words_and_comparison(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected_count": 1,
+            "selected": [{"id": "english", "suite_language": "en"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            english_dir = Path(temp_dir) / "english"
+            english_dir.mkdir()
+            local_srt = english_dir / "local-asr.0-120.en.srt"
+            reference_srt = english_dir / "english.en.srt"
+            local_srt.write_text("local\n", encoding="utf-8")
+            reference_srt.write_text("reference\n", encoding="utf-8")
+            (english_dir / "asr_words.0-120.whisper-cpp.json").write_text("{}", encoding="utf-8")
+            (english_dir / "english.section.wav").write_bytes(b"RIFF")
+            (english_dir / "comparison.0-120.whisper-cpp.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+            (english_dir / "baseline.0-120.whisper-cpp.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [],
+            }), encoding="utf-8")
+            (english_dir / "optimized.0-120.whisper-cpp.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "candidate_path": str(local_srt),
+                "reference_path": str(reference_srt),
+                "asr_words_path": str(english_dir / "asr_words.0-120.whisper-cpp.json"),
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "summary": {"accepted_ratio": 1.0},
+                "cues": [],
+            }), encoding="utf-8")
+
+            status = collect_local_asr_suite_status(manifest, selection, temp_dir)
+
+        self.assertTrue(status["passes_local_asr_suite_gate"])
+        self.assertEqual(status["local_asr_language_groups"], ["en"])
+        self.assertEqual(status["samples"]["english"]["local_asr_candidate"], str(local_srt))
+
+    def _write_passing_local_asr_sample(self, root: Path, sample_id: str, srt_name: str) -> Path:
+        sample_dir = root / sample_id
+        sample_dir.mkdir()
+        local_srt = sample_dir / srt_name
+        reference_srt = sample_dir / f"{sample_id}.en.srt"
+        local_srt.write_text("local\n", encoding="utf-8")
+        reference_srt.write_text("reference\n", encoding="utf-8")
+        (sample_dir / "asr_words.0-120.whisper-cpp.json").write_text("{}", encoding="utf-8")
+        (sample_dir / f"{sample_id}.section.wav").write_bytes(b"RIFF")
+        (sample_dir / "comparison.0-120.whisper-cpp.json").write_text(json.dumps({
+            "sample_id": sample_id,
+            "language_group": "en",
+            "gate_mode": "timing",
+            "optimized": {"passes_timing_gate": True, "summary": {"accepted_ratio": 1.0}, "gate_failures": []},
+        }), encoding="utf-8")
+        (sample_dir / "baseline.0-120.whisper-cpp.report.json").write_text(json.dumps({
+            "sample_id": sample_id, "window_start_seconds": 0, "window_end_seconds": 120, "cues": [],
+        }), encoding="utf-8")
+        (sample_dir / "optimized.0-120.whisper-cpp.report.json").write_text(json.dumps({
+            "sample_id": sample_id,
+            "candidate_path": str(local_srt),
+            "reference_path": str(reference_srt),
+            "asr_words_path": str(sample_dir / "asr_words.0-120.whisper-cpp.json"),
+            "window_start_seconds": 0, "window_end_seconds": 120,
+            "summary": {"accepted_ratio": 1.0}, "cues": [],
+        }), encoding="utf-8")
+        return local_srt
+
+    def test_collect_local_asr_suite_status_requires_category_coverage(self):
+        # english_interview must satisfy the english_talk bucket; music_lyrics has no passing sample,
+        # so the suite gate must fail and report the missing required category.
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "category_coverage_goal": {"required_categories": ["english_talk", "music_lyrics"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_interview",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {"ready": True, "requested_count": 1, "selected_count": 1,
+                     "selected": [{"id": "english", "suite_language": "en"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_passing_local_asr_sample(Path(temp_dir), "english", "local-asr.0-120.en.srt")
+            status = collect_local_asr_suite_status(manifest, selection, temp_dir)
+
+        self.assertEqual(status["covered_categories"], ["english_talk"])
+        self.assertEqual(status["missing_required_categories"], ["music_lyrics"])
+        self.assertFalse(status["passes_local_asr_suite_gate"])
+
+    def test_collect_local_asr_suite_status_accepts_dotted_local_asr_filename(self):
+        # Artifacts named "<stem>.local-asr.<lang>.srt" (verbatim Swift/C# output) must be discovered
+        # by the dual glob, not only the bare "local-asr*.srt" eval-copy tail.
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "category_coverage_goal": {"required_categories": ["english_talk"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_lecture",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {"ready": True, "requested_count": 1, "selected_count": 1,
+                     "selected": [{"id": "english", "suite_language": "en"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_srt = self._write_passing_local_asr_sample(Path(temp_dir), "english", "english.local-asr.en.srt")
+            status = collect_local_asr_suite_status(manifest, selection, temp_dir)
+
+        self.assertIn(str(local_srt), status["samples"]["english"]["local_asr_artifacts"]["local_asr_srt"])
+        self.assertEqual(status["missing_required_categories"], [])
+        self.assertTrue(status["passes_local_asr_suite_gate"])
+
+    def test_collect_local_asr_suite_status_accepts_artifact_root_relative_report_paths(self):
+        manifest = {
+            "coverage_goal": {"required_language_groups": ["en"]},
+            "samples": [
+                {
+                    "id": "english",
+                    "source": "https://www.youtube.com/watch?v=en",
+                    "category": "english_talk",
+                    "language_group": "en",
+                    "subtitle_lang": "en",
+                    "spoken_languages": ["en"],
+                    "section": {"duration_seconds": 120},
+                    "stressors": ["manual_captions"],
+                },
+            ],
+        }
+        selection = {
+            "ready": True,
+            "requested_count": 1,
+            "selected_count": 1,
+            "selected": [{"id": "english", "suite_language": "en"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            english_dir = root / "english"
+            english_dir.mkdir()
+            local_srt = english_dir / "local-asr.0-120.en.srt"
+            reference_srt = english_dir / "english.en.srt"
+            words_path = english_dir / "asr_words.0-120.whisper-cpp.json"
+            local_srt.write_text("local\n", encoding="utf-8")
+            reference_srt.write_text("reference\n", encoding="utf-8")
+            words_path.write_text("{}", encoding="utf-8")
+            (english_dir / "english.section.wav").write_bytes(b"RIFF")
+            (english_dir / "comparison.0-120.whisper-cpp.json").write_text(json.dumps({
+                "sample_id": "english",
+                "language_group": "en",
+                "gate_mode": "timing",
+                "optimized": {
+                    "passes_timing_gate": True,
+                    "summary": {"accepted_ratio": 1.0},
+                    "gate_failures": [],
+                },
+            }), encoding="utf-8")
+            (english_dir / "baseline.0-120.whisper-cpp.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "cues": [],
+            }), encoding="utf-8")
+            (english_dir / "optimized.0-120.whisper-cpp.report.json").write_text(json.dumps({
+                "sample_id": "english",
+                "candidate_path": "english/local-asr.0-120.en.srt",
+                "reference_path": "english/english.en.srt",
+                "asr_words_path": "english/asr_words.0-120.whisper-cpp.json",
+                "window_start_seconds": 0,
+                "window_end_seconds": 120,
+                "summary": {"accepted_ratio": 1.0},
+                "cues": [],
+            }), encoding="utf-8")
+
+            status = collect_local_asr_suite_status(manifest, selection, temp_dir)
+
+        self.assertTrue(status["passes_local_asr_suite_gate"])
+        self.assertEqual(status["samples"]["english"]["local_asr_candidate"], str(local_srt))
 
     def test_manual_suite_status_cli_writes_scoped_status_and_can_require_ready(self):
         with tempfile.TemporaryDirectory() as temp_dir:

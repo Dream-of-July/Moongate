@@ -1,0 +1,53 @@
+{
+  "_comment": "跨端 whisper 字幕时序常量的唯一真值。Swift(WhisperCueRetimer / LocalASRSubtitleTimingPlanner)与 C#(WhisperCueRetimer / LocalAsrSubtitleTimingPlanner)各有一条测试断言本端常量等于此处的值。任何一端改动常量都会让该端测试失败，强制同步另一端与本文件——把 parity 从“巧合一致”变成“结构强制”(ARCH-3)。profiles 段是内容类型 timing profile（speech/lyrics/anime）的每档阈值，两端 thresholds(for:) 表逐档断言等于此处；speech 档必须等于顶层标量常量（零行为退化）。residualMaxStandaloneSeconds=1e308 表示 speech 档不额外约束（用 Double.greatestFiniteMagnitude / double.MaxValue 表示）。",
+  "minimumCueSeconds": 0.3,
+  "onsetDelaySeconds": 0.2,
+  "interCueGuardSeconds": 0.08,
+  "holdToNextSeconds": 0.7,
+  "mixedCjkLatinHoldToNextSeconds": 0.45,
+  "profiles": {
+    "speech": {
+      "maximumCJKCueSeconds": 4.5,
+      "hardMaximumCJKCueSeconds": 5.5,
+      "relaxedCJKCueSeconds": 6.5,
+      "maximumLatinCueSeconds": 9.0,
+      "largeSpeechGapSeconds": 0.5,
+      "onsetDelaySeconds": 0.2,
+      "holdToNextSeconds": 0.7,
+      "breathGapBreakSeconds": 0.35
+    },
+    "lyrics": {
+      "maximumCJKCueSeconds": 3.0,
+      "hardMaximumCJKCueSeconds": 4.0,
+      "relaxedCJKCueSeconds": 4.5,
+      "maximumLatinCueSeconds": 5.0,
+      "largeSpeechGapSeconds": 0.45,
+      "onsetDelaySeconds": 0.1,
+      "holdToNextSeconds": 0.35,
+      "residualMaxStandaloneSeconds": 0.9,
+      "breathGapBreakSeconds": 0.25
+    },
+    "japaneseLyrics": {
+      "maximumCJKCueSeconds": 4.2,
+      "hardMaximumCJKCueSeconds": 5.2,
+      "relaxedCJKCueSeconds": 5.8,
+      "maximumLatinCueSeconds": 5.4,
+      "largeSpeechGapSeconds": 0.5,
+      "onsetDelaySeconds": 0.0,
+      "holdToNextSeconds": 0.28,
+      "residualMaxStandaloneSeconds": 0.9,
+      "breathGapBreakSeconds": 0.3
+    },
+    "anime": {
+      "maximumCJKCueSeconds": 3.5,
+      "hardMaximumCJKCueSeconds": 5.0,
+      "relaxedCJKCueSeconds": 5.5,
+      "maximumLatinCueSeconds": 7.0,
+      "largeSpeechGapSeconds": 0.55,
+      "onsetDelaySeconds": 0.15,
+      "holdToNextSeconds": 0.5,
+      "residualMaxStandaloneSeconds": 1.2,
+      "breathGapBreakSeconds": 0.3
+    }
+  }
+}

@@ -102,6 +102,7 @@ public sealed class UpdateService : ObservableObject
     }
 
     public string ReleasesPageUrl => _checker.ReleasesPageUrl;
+    public string RepoPageUrl => _checker.RepoPageUrl;
 
     /// <summary>
     /// 安装前最后一道闸：返回 false 则中止安装（不退出、不启动安装器）。
@@ -204,14 +205,15 @@ public sealed class UpdateService : ObservableObject
                 return;
             }
             State = Phase.Installing;
-            // 运行安装器（NSIS，每用户安装会就地覆盖并可重启）。传入当前 PID，安装器会先等待
-            // 本进程完全退出再覆盖安装目录，避免「安装器已启动但旧 App 仍占用文件」的竞态。
+            // 运行安装器（NSIS，每用户安装就地覆盖）。`/S` 静默安装：用户无需再点一遍安装向导，
+            // 满足「下载后自动覆盖并重启」。传入当前 PID，安装器先等本进程完全退出再覆盖目录，
+            // 避免「安装器已启动但旧 App 仍占用文件」的竞态；安装成功后安装器在静默+更新场景下自动重启 App。
             // 标记为更新退出：主窗口关窗确认不再拦截这次退出（专用状态，避免互相打架）。
             App.MarkUpdateShutdown();
             Process.Start(new ProcessStartInfo(installerPath)
             {
                 UseShellExecute = true,
-                Arguments = $"/UPDATEPID={Environment.ProcessId}",
+                Arguments = $"/S /UPDATEPID={Environment.ProcessId}",
             });
             Application.Current.Shutdown();
         }

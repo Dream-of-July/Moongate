@@ -30,7 +30,7 @@ $robocopyArgs = @(
     $SourceRoot,
     $DestinationRoot,
     "/MIR",
-    "/XD", ".git", ".build", ".build-codex", ".swiftpm", ".agents", ".claude", ".codex", "artifacts", "bin", "obj",
+    "/XD", ".git", ".build", ".build-*", ".build-codex", ".swiftpm", ".agents", ".claude", ".codex", "artifacts", "bin", "obj",
     "/XF", ".DS_Store"
 )
 

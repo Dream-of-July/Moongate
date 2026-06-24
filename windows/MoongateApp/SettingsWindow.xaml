@@ -207,23 +207,36 @@
                                           IsChecked="{Binding LocalAsrEnabled}"/>
                                 <TextBlock Text="{DynamicResource L.Settings.LocalASRHelp}"
                                            Style="{StaticResource Caption}" Margin="0,5,0,10"/>
-                                <DockPanel>
-                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRRuntimePath}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrRuntimePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRRuntimePath}"/>
-                                </DockPanel>
-                                <Button Content="{DynamicResource L.Settings.LocalASRFindRuntime}"
+                                <!-- 导入本地 Whisper 模型（对齐 macOS importLocalASRModel）：拷贝到托管目录、启用本地识别并填好模型路径。 -->
+                                <Button Content="{DynamicResource L.Settings.LocalASRImportModel}"
                                         Style="{StaticResource SecondaryButton}"
                                         HorizontalAlignment="Left"
-                                        Margin="112,8,0,0"
-                                        Command="{Binding AdoptLocalAsrRuntimeCommand}"/>
-                                <DockPanel Margin="0,8,0,0">
-                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRModelPath}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelPath}"/>
-                                </DockPanel>
-                                <DockPanel Margin="0,8,0,0">
-                                    <TextBlock Text="{DynamicResource L.Settings.LocalASRModelID}" Width="112" VerticalAlignment="Center"/>
-                                    <TextBox Padding="6,4" Text="{Binding LocalAsrModelId, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelID}"/>
-                                </DockPanel>
+                                        Click="OnImportLocalAsrModelClick"/>
+                                <!-- cpp runtime/模型路径默认收起（对齐 macOS「高级」折叠，不直接展示）。
+                                     用已主题化的 CheckBox + BoolToVis 切换，避免引入未做深色模板的 Expander。 -->
+                                <CheckBox Content="{DynamicResource L.Settings.AdvancedDetails}"
+                                          IsChecked="{Binding ShowAdvancedLocalAsr}"
+                                          Margin="0,10,0,0"/>
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding ShowAdvancedLocalAsr, Converter={StaticResource BoolToVis}}">
+                                    <DockPanel>
+                                        <TextBlock Text="{DynamicResource L.Settings.LocalASRRuntimePath}" Width="112" VerticalAlignment="Center"/>
+                                        <TextBox Padding="6,4" Text="{Binding LocalAsrRuntimePath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRRuntimePath}"/>
+                                    </DockPanel>
+                                    <Button Content="{DynamicResource L.Settings.LocalASRFindRuntime}"
+                                            Style="{StaticResource SecondaryButton}"
+                                            HorizontalAlignment="Left"
+                                            Margin="112,8,0,0"
+                                            Command="{Binding AdoptLocalAsrRuntimeCommand}"/>
+                                    <DockPanel Margin="0,8,0,0">
+                                        <TextBlock Text="{DynamicResource L.Settings.LocalASRModelPath}" Width="112" VerticalAlignment="Center"/>
+                                        <TextBox Padding="6,4" Text="{Binding LocalAsrModelPath, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelPath}"/>
+                                    </DockPanel>
+                                    <DockPanel Margin="0,8,0,0">
+                                        <TextBlock Text="{DynamicResource L.Settings.LocalASRModelID}" Width="112" VerticalAlignment="Center"/>
+                                        <TextBox Padding="6,4" Text="{Binding LocalAsrModelId, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="{DynamicResource L.Settings.LocalASRModelID}"/>
+                                    </DockPanel>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -702,10 +715,13 @@
             <TabItem>
                 <TabItem.Header>
                     <DockPanel LastChildFill="True">
-                        <!-- 有可用更新时左侧栏显示红点（对齐 macOS 侧栏角标） -->
-                        <Border DockPanel.Dock="Right" Width="8" Height="8" CornerRadius="4" Margin="6,0,0,0"
+                        <!-- 有可用更新时显示红色数字“1”角标（App Store 式，七月明确要求数字 1；对齐 macOS 侧栏角标） -->
+                        <Border DockPanel.Dock="Right" Width="16" Height="16" CornerRadius="8" Margin="6,0,0,0"
                                 VerticalAlignment="Center" Background="{DynamicResource ErrorBrush}"
-                                Visibility="{Binding Updater.IsAvailable, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}"/>
+                                Visibility="{Binding Updater.IsAvailable, ElementName=Root, Converter={StaticResource BoolToVis}, Mode=OneWay}">
+                            <TextBlock Text="1" Foreground="White" FontSize="11" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
                         <TextBlock Text="{DynamicResource L.SettingsNav.UpdatesAbout}" VerticalAlignment="Center"/>
                     </DockPanel>
                 </TabItem.Header>
@@ -796,16 +812,17 @@
                 <TextBlock Text="{DynamicResource L.Settings.AboutSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,0"/>
                 <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
                     <StackPanel>
-                        <DockPanel>
-                            <TextBlock DockPanel.Dock="Right"
-                                       Text="{Binding Updater.CurrentVersion, ElementName=Root, StringFormat=v{0}, Mode=OneWay}"
-                                       Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center"/>
-                            <TextBlock Text="{DynamicResource L.Settings.AboutAppName}" FontWeight="SemiBold"/>
-                        </DockPanel>
+                        <!-- 版本号只在上方「更新」区展示一次，关于区聚焦应用标识与仓库链接（对齐 macOS，避免两个版本号）。 -->
+                        <TextBlock Text="{DynamicResource L.Settings.AboutAppName}" FontWeight="SemiBold"/>
                         <TextBlock Text="{DynamicResource L.Settings.AboutSource}"
                                    Style="{StaticResource Caption}"
                                    TextWrapping="Wrap"
                                    Margin="0,6,0,0"/>
+                        <Button Content="{DynamicResource L.Settings.AboutOpenRepo}"
+                                Style="{StaticResource SecondaryButton}"
+                                HorizontalAlignment="Left"
+                                Margin="0,10,0,0"
+                                Click="OnOpenRepoClick"/>
                     </StackPanel>
                 </Border>
                     </StackPanel>

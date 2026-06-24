@@ -186,6 +186,10 @@
     <sys:String x:Key="L.Settings.LocalASRSection">Local speech recognition</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">Allow local whisper.cpp recognition</sys:String>
     <sys:String x:Key="L.Settings.LocalASRHelp">Re-recognizes the audio. It is slower, may help with some languages or names, and Moongate will not download a model automatically.</sys:String>
+    <sys:String x:Key="L.Settings.AdvancedDetails">Advanced details</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRImportModel">Import model...</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRModelImportComplete">{0} has been imported and enabled</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRImportFailed">Could not import the selected model file.</sys:String>
     <sys:String x:Key="L.Settings.LocalASRRuntimePath">whisper.cpp executable</sys:String>
     <sys:String x:Key="L.Settings.LocalASRFindRuntime">Find whisper-cli</sys:String>
     <sys:String x:Key="L.Settings.LocalASRRuntimeFound">Found whisper-cli: {0}</sys:String>
@@ -294,6 +298,7 @@
     <sys:String x:Key="L.Settings.AboutSection">About</sys:String>
     <sys:String x:Key="L.Settings.AboutAppName">Moongate</sys:String>
     <sys:String x:Key="L.Settings.AboutSource">Source and releases: Dream-of-July/moongate on GitHub.</sys:String>
+    <sys:String x:Key="L.Settings.AboutOpenRepo">View GitHub Repository</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">Failed to save settings: {0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">Clear all sign-ins?</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsDetail">You will need to sign in again to download member-only or restricted videos.</sys:String>

@@ -635,6 +635,10 @@ public sealed class SettingsViewModel : ObservableObject
     private string _localAsrModelId;
     public string LocalAsrModelId { get => _localAsrModelId; set => SetProperty(ref _localAsrModelId, value); }
 
+    // 仅 UI 折叠状态（不持久化）：cpp runtime/模型路径默认收起，对齐 macOS「高级」折叠。
+    private bool _showAdvancedLocalAsr;
+    public bool ShowAdvancedLocalAsr { get => _showAdvancedLocalAsr; set => SetProperty(ref _showAdvancedLocalAsr, value); }
+
     private IReadOnlyList<AsrModelCatalogEntry> _localAsrModelCatalogEntries = [];
     public IReadOnlyList<AsrModelCatalogEntry> LocalAsrModelCatalogEntries
     {
@@ -684,6 +688,44 @@ public sealed class SettingsViewModel : ObservableObject
 
         LocalAsrRuntimePath = runtime.ExecutablePath;
         Notice = string.Format(Loc.S("L.Settings.LocalASRRuntimeFound"), runtime.ExecutablePath);
+    }
+
+    /// <summary>导入本地 Whisper（ggml）模型：拷贝到托管目录的 imported 子目录，启用本地识别并填好路径/ID。
+    /// 对齐 macOS importLocalASRModel——拷贝而非仅引用原路径，避免用户移动/删除源文件后模型失效。
+    /// 自定义 ID 用 "custom:&lt;文件名&gt;"，生成器工厂对非推荐 ID 走手动文件路径分支。</summary>
+    public void ImportLocalAsrModel(string sourcePath)
+    {
+        try
+        {
+            if (!File.Exists(sourcePath))
+            {
+                Notice = Loc.S("L.Settings.LocalASRImportFailed");
+                return;
+            }
+            var importedDir = Path.Combine(LocalAsrModelStoreDirectory, "imported");
+            Directory.CreateDirectory(importedDir);
+            var fileName = Path.GetFileName(sourcePath);
+            var destination = Path.Combine(importedDir, fileName);
+            // 同名去重：追加序号，避免覆盖既有导入模型。
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            var ext = Path.GetExtension(fileName);
+            var counter = 1;
+            while (File.Exists(destination))
+            {
+                destination = Path.Combine(importedDir, $"{stem}-{counter}{ext}");
+                counter++;
+            }
+            File.Copy(sourcePath, destination);
+
+            LocalAsrEnabled = true;
+            LocalAsrModelPath = destination;
+            LocalAsrModelId = "custom:" + Path.GetFileNameWithoutExtension(destination);
+            Notice = string.Format(Loc.S("L.Settings.LocalASRModelImportComplete"), Path.GetFileName(destination));
+        }
+        catch (Exception error)
+        {
+            Notice = Loc.F("L.Common.OperationFailedFmt", error.Message);
+        }
     }
 
     private void RefreshLocalAsrModelCatalog()

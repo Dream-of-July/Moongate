@@ -2577,9 +2577,13 @@ private func subtitleOutputStem(_ fileName: String) -> String {
 
 // MARK: - ConfiguredTranslator
 
-public enum TranslationPromptPreset: String, Codable, Sendable, Equatable {
+/// 第一层规划判定的视频内容类型（canonical content type）。这个枚举**就是** advice 的内容类型字段——
+/// 我们不再单独引入 `contentType`，preset 同时承担「翻译风格」「重分段断句风格（segmentChunk）」两个角色。
+/// 新增内容类型时只加 case 并在第一层 prompt 选项里列出即可。
+public enum TranslationPromptPreset: String, Codable, Sendable, Equatable, CaseIterable {
     case general
     case songLyrics
+    case anime
     case interviewConversation
     case tutorialHowTo
     case lectureCourse
@@ -2591,21 +2595,137 @@ public enum TranslationPromptPreset: String, Codable, Sendable, Equatable {
     case gamingEntertainment
 }
 
+public struct TranslationPromptPresetProfile: Equatable, Sendable {
+    public let planningHint: String
+    public let segmentationGuidance: String
+    public let translationGuidance: String
+    public let qualityAnchors: [String]
+}
+
+extension TranslationPromptPreset {
+    public var profile: TranslationPromptPresetProfile {
+        switch self {
+        case .general:
+            return TranslationPromptPresetProfile(
+                planningHint: "普通或混合内容；无法高置信归入其它类型时选择，翻译应准确自然、保守使用上下文。",
+                segmentationGuidance: "你是通用字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整语义和自然停顿重新断行；不要把专名、数字、固定短语或语法核心切断。每个完整语气单元输出为一行，格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容没有强类型风格。翻译时优先准确、自然和清楚，保守使用上下文；不要把摘要、人物或术语里没有对应原文的信息加进译文。",
+                qualityAnchors: ["准确", "自然", "清楚", "保守"]
+            )
+        case .songLyrics:
+            return TranslationPromptPresetProfile(
+                planningHint: "歌曲、歌词、MV、现场演唱或翻唱；常有意象、旋律、重复、副歌、短句呼吸和较少完整标点。",
+                segmentationGuidance: "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
+                qualityAnchors: ["诗意", "意象", "节奏", "副歌", "可吟唱"]
+            )
+        case .anime:
+            return TranslationPromptPresetProfile(
+                planningHint: "动漫、动画、番剧或角色对白；常有角色称呼、敬语、口癖、语气词、短反馈和夸张情绪。",
+                segmentationGuidance: "你是动漫/动画对白断句助手。下面是一段逐字、缺少标点的动画对白自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按对白的自然停顿断行：每句台词或每个完整语气单元输出为一行，保留短反馈、语气词、感叹和喜剧停顿的节奏；不要把日语词语、助词、活用尾、角色称呼或固定短语切断。格式严格为 编号|台词（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像动漫或动画对白。翻译时优先保持每个角色的声线、称呼、敬语、口癖和语气词前后一致；对白要自然像真人说话，短反馈要利落，情绪要到位。人名、招式、设定、角色关系等专名要稳定统一，不要给同一角色忽男忽女或忽敬忽简的称呼。",
+                qualityAnchors: ["角色", "称呼", "口癖", "敬语", "对白"]
+            )
+        case .interviewConversation:
+            return TranslationPromptPresetProfile(
+                planningHint: "访谈、播客、圆桌或多人对话；常有问答、打断、犹豫、转折和真实口语。",
+                segmentationGuidance: "你是访谈对话断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按说话人的完整问答、转折和自然停顿断行；保留犹豫、补充和短反馈，但不要把同一个观点拆到难以理解。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。多人对话要尽量保持称呼、立场和语气差异。",
+                qualityAnchors: ["访谈", "口语", "问答", "转折", "真实交流"]
+            )
+        case .tutorialHowTo:
+            return TranslationPromptPresetProfile(
+                planningHint: "教程、操作演示、软件/硬件步骤说明；常有按钮名、条件、动作顺序和可跟做步骤。",
+                segmentationGuidance: "你是教程字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按步骤、条件、按钮名、对象和动作顺序断行；不要把一个操作条件或按钮名拆开。格式严格为 编号|步骤句（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名、菜单名和动作顺序清楚可执行；语气保持简洁直接，技术词前后统一，读者应能照着字幕完成操作。",
+                qualityAnchors: ["步骤", "按钮名", "动作顺序", "可执行", "技术词"]
+            )
+        case .lectureCourse:
+            return TranslationPromptPresetProfile(
+                planningHint: "课程、讲座、严肃科普或知识讲解；常有概念、定义、逻辑层级、因果关系和专业术语。",
+                segmentationGuidance: "你是课程/科普字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按完整语义、术语边界、定义、因果和逻辑层级断行；不要把关键概念、数字单位或论证关系拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像课程、讲座或严肃科普。翻译时应专业、严肃、清楚，优先保留概念层次、术语一致性、逻辑推进、因果关系和论证结构；表达可以更易懂，但不要把讲者的铺垫、限定条件和重点压扁。",
+                qualityAnchors: ["专业", "严肃", "逻辑", "术语", "因果"]
+            )
+        case .newsExplainer:
+            return TranslationPromptPresetProfile(
+                planningHint: "新闻、评论、政策/财经/科技解释型视频；常有事实、数字、时间、地点、因果和立场边界。",
+                segmentationGuidance: "你是新闻解释字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按事实单元、时间、地点、数字、因果和引用边界断行；不要把数字单位、机构名或时间表达拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间、地点、引用关系和因果关系要稳，避免额外立场，也不要把不确定信息翻成确定结论。",
+                qualityAnchors: ["客观", "数字", "时间", "事实", "因果"]
+            )
+        case .reviewProduct:
+            return TranslationPromptPresetProfile(
+                planningHint: "产品评测、体验分享、开箱或对比；常有规格、型号、功能、优缺点、价格和主观体验。",
+                segmentationGuidance: "你是产品评测字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按规格、型号、功能点、比较关系、优缺点和结论断行；不要把产品名、版本号、价格或单位拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名、价格、单位和结论要清楚一致，既不要广告化，也不要把主观体验翻成绝对事实。",
+                qualityAnchors: ["体验", "规格", "型号", "优缺点", "比较"]
+            )
+        case .vlogLifestyle:
+            return TranslationPromptPresetProfile(
+                planningHint: "vlog、生活记录、旅行、日常分享；常有个人视角、场景转换、轻松口吻和即时感受。",
+                segmentationGuidance: "你是 vlog 字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按场景、个人感受、自然口吻和轻松停顿断行；短句可以保留日常说话节奏，但不要切断主谓关系。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感、个人语气和即时感受；不要过度正式，短句可以保持日常说话的节奏，但仍要读起来顺。",
+                qualityAnchors: ["口吻", "日常", "场景感", "个人语气", "自然"]
+            )
+        case .shortSocial:
+            return TranslationPromptPresetProfile(
+                planningHint: "短视频或社交平台内容；常有快节奏、梗、反差、情绪推进、短句和强转折。",
+                segmentationGuidance: "你是短视频字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，保留节奏、梗、反差和情绪推进；可以让包袱和短反馈单独成行，但不得牺牲语义完整，不要把关键信息切碎。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，让包袱落得更准，但不能生造原文没有的信息，也不要为了快而牺牲语义完整。",
+                qualityAnchors: ["节奏", "梗", "反差", "情绪推进", "语义完整"]
+            )
+        case .documentaryNarrative:
+            return TranslationPromptPresetProfile(
+                planningHint: "纪录片、叙事旁白或历史/自然/社会主题；常有画面感、时间线、因果和克制叙述。",
+                segmentationGuidance: "你是纪录片旁白断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按叙事节奏、画面转换、时间线、因果和完整信息单元断行；不要把关键事实、地点、年代或人物关系拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像纪录片或叙事旁白。翻译时保持专业、严肃、克制，保留画面感、时间线、因果和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。",
+                qualityAnchors: ["严肃", "叙事", "画面感", "时间线", "因果"]
+            )
+        case .gamingEntertainment:
+            return TranslationPromptPresetProfile(
+                planningHint: "游戏、直播、娱乐解说或实况反应；常有即时反应、玩笑、机制术语、角色名和场面节奏。",
+                segmentationGuidance: "你是游戏/娱乐字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，按即时反应、游戏机制、玩笑、场面节奏和完整语气单元断行；不要把游戏名、角色名、技能名、数值或机制术语拆散。格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段内容更像游戏或娱乐解说。翻译时保留现场感、即时反应、玩笑、术语和场面节奏；游戏名、角色名、技能名、机制名和数值要一致，语气可以更有现场感，但不要把梗翻成看不懂的硬直译。",
+                qualityAnchors: ["现场感", "术语", "即时反应", "玩笑", "机制"]
+            )
+        }
+    }
+}
+
 public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
     public let summary: String
     public let context: String
     public let terms: [String]
     public let preset: TranslationPromptPreset
+    /// 第一层规划判定的源语言（ja/en/zh/yue/ko/es/fr/it），无法高置信判断时为 "unknown"。
+    /// 仅作建议：管线/文件名已确定的源语言优先，这里只在管线缺值时兜底点名。
+    public let sourceLanguageCode: String
+    /// 登场人物/角色/身份：说明（最多 8），用于第二层翻译保持称呼与口吻一致。
+    public let characters: [String]
+    /// 翻译注意事项（最多 8），如敬语、口癖、专名保留、歌词意象、数字单位、上下文承接。
+    public let translationNotes: [String]
 
-    public init(summary: String, context: String = "", terms: [String] = [], preset: TranslationPromptPreset) {
+    public init(
+        summary: String,
+        context: String = "",
+        terms: [String] = [],
+        preset: TranslationPromptPreset,
+        sourceLanguageCode: String = "unknown",
+        characters: [String] = [],
+        translationNotes: [String] = []
+    ) {
         self.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         self.context = context.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.terms = Self.normalizedTerms(terms)
+        self.terms = Self.normalizedList(terms)
         self.preset = preset
+        self.sourceLanguageCode = Self.normalizedSourceLanguageCode(sourceLanguageCode)
+        self.characters = Self.normalizedList(characters)
+        self.translationNotes = Self.normalizedList(translationNotes)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case summary, context, terms, preset
+        case summary, context, terms, preset, sourceLanguageCode, characters, translationNotes
     }
 
     public init(from decoder: Decoder) throws {
@@ -2614,9 +2734,13 @@ public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         context = try c.decodeIfPresent(String.self, forKey: .context)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        terms = Self.normalizedTerms(try c.decodeIfPresent([String].self, forKey: .terms) ?? [])
+        terms = Self.normalizedList(try c.decodeIfPresent([String].self, forKey: .terms) ?? [])
         let rawPreset = try c.decodeIfPresent(String.self, forKey: .preset) ?? TranslationPromptPreset.general.rawValue
         preset = TranslationPromptPreset(rawValue: rawPreset) ?? .general
+        sourceLanguageCode = Self.normalizedSourceLanguageCode(
+            try c.decodeIfPresent(String.self, forKey: .sourceLanguageCode) ?? "")
+        characters = Self.normalizedList(try c.decodeIfPresent([String].self, forKey: .characters) ?? [])
+        translationNotes = Self.normalizedList(try c.decodeIfPresent([String].self, forKey: .translationNotes) ?? [])
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2625,13 +2749,26 @@ public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
         try c.encode(context, forKey: .context)
         try c.encode(terms, forKey: .terms)
         try c.encode(preset.rawValue, forKey: .preset)
+        try c.encode(sourceLanguageCode, forKey: .sourceLanguageCode)
+        try c.encode(characters, forKey: .characters)
+        try c.encode(translationNotes, forKey: .translationNotes)
     }
 
-    private static func normalizedTerms(_ terms: [String]) -> [String] {
-        Array(terms
+    /// 公共的列表清洗：trim、去空、最多 8 条。terms/characters/translationNotes 共用。
+    private static func normalizedList(_ items: [String]) -> [String] {
+        Array(items
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .prefix(8))
+    }
+
+    /// 第一层只允许从这组源语言里选；其余（含空、地区码、整词如 "japanese"）一律落到 "unknown"，
+    /// 避免把不可识别的串喂给第二层的源语言点名逻辑。
+    private static let allowedSourceLanguageCodes: Set<String> = ["ja", "en", "zh", "yue", "ko", "es", "fr", "it"]
+
+    private static func normalizedSourceLanguageCode(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return allowedSourceLanguageCodes.contains(trimmed) ? trimmed : "unknown"
     }
 }
 
@@ -2651,7 +2788,18 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         advice: TranslationPromptAdvice? = nil
     ) -> String {
         // 点名源语言能让模型针对日语/韩语等谓语后置、修饰语前置的语言主动调整语序；未知源语言时退回不点名的措辞。
-        let sourceLanguageDisplayName = TranslationLanguage.sourceDisplayName(for: sourceLanguageCode)
+        // 管线/文件名确定的源语言优先；缺值时用第一层规划判定的 advice.sourceLanguageCode 兜底点名。
+        let resolvedSourceLanguageCode: String? = {
+            if let sourceLanguageCode,
+               !sourceLanguageCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return sourceLanguageCode
+            }
+            if let advice, advice.sourceLanguageCode != "unknown" {
+                return advice.sourceLanguageCode
+            }
+            return sourceLanguageCode
+        }()
+        let sourceLanguageDisplayName = TranslationLanguage.sourceDisplayName(for: resolvedSourceLanguageCode)
         let sourceClause = sourceLanguageDisplayName.map { "正在把\($0)字幕翻译成\(targetLanguageDisplayName)" }
             ?? "把用户给出的字幕翻译成\(targetLanguageDisplayName)"
         var prompt = """
@@ -2665,7 +2813,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         4) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
         """
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
-        if TranslationLanguage.normalizedScript(sourceLanguageCode ?? "") == "ja" {
+        if TranslationLanguage.normalizedScript(resolvedSourceLanguageCode ?? "") == "ja" {
             prompt += """
 
             日文→中文重排示例（务必按中文语序，不要留悬空成分）：
@@ -2681,31 +2829,16 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         if !advice.terms.isEmpty {
             prompt += "\n专名参考：\n" + advice.terms.map { "- \($0)" }.joined(separator: "\n")
         }
-        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息加进译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。"
-        switch advice.preset {
-        case .general:
-            prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
-        case .songLyrics:
-            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
-        case .interviewConversation:
-            prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
-        case .tutorialHowTo:
-            prompt += "\n这段内容更像教程或操作说明。翻译时优先让步骤、条件、按钮名和动作顺序清楚可跟做；语气保持简洁直接，技术词前后统一。"
-        case .lectureCourse:
-            prompt += "\n这段内容更像课程或讲座。翻译时优先保留概念层次、因果关系和术语一致性；表达可以更清楚，但不要把讲者的铺垫和重点压扁。"
-        case .newsExplainer:
-            prompt += "\n这段内容更像新闻、评论或解释型视频。翻译时保持客观、克制、信息密度清楚；专名、数字、时间和因果关系要稳，避免额外立场。"
-        case .reviewProduct:
-            prompt += "\n这段内容更像产品评测或体验分享。翻译时保留体验感、比较关系和优缺点的细微语气；规格、型号、功能名和结论要清楚一致。"
-        case .vlogLifestyle:
-            prompt += "\n这段内容更像 vlog 或生活记录。翻译时保留轻松自然的口吻、场景感和个人语气；不要过度正式，短句可以保持日常说话的节奏。"
-        case .shortSocial:
-            prompt += "\n这段内容更像短视频或社交平台内容。翻译时优先保留节奏、梗、反差和情绪推进；可以使用更贴近目标语言的自然说法，但不要生造原文没有的信息。"
-        case .documentaryNarrative:
-            prompt += "\n这段内容更像纪录片或叙事旁白。翻译时保留画面感、时间线和叙事张力；用词可以更凝练，但要让信息和气氛都稳稳落在字幕里。"
-        case .gamingEntertainment:
-            prompt += "\n这段内容更像游戏或娱乐解说。翻译时保留即时反应、玩笑、术语和场面节奏；游戏名、角色名、机制名要一致，语气可以更有现场感。"
+        if !advice.characters.isEmpty {
+            prompt += "\n人物/角色（保持称呼、口吻、敬语一致）：\n" + advice.characters.map { "- \($0)" }.joined(separator: "\n")
         }
+        if !advice.translationNotes.isEmpty {
+            prompt += "\n翻译注意：\n" + advice.translationNotes.map { "- \($0)" }.joined(separator: "\n")
+        }
+        let profile = advice.preset.profile
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息加进译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。先通读整段上下文再逐编号翻译，不要因为字幕被切成多行就丢失数字、主谓关系、角色称呼或歌词的上下文承接。"
+        prompt += "\n类型策略：\(profile.translationGuidance)"
+        prompt += "\n质量锚点：\(profile.qualityAnchors.joined(separator: "、"))。"
         return prompt
     }
 
@@ -2779,15 +2912,22 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
         // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
         let isLocalASRSource = srtFile.lastPathComponent.lowercased().contains(".local-asr.")
+        var advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
+        if advice == nil, isLocalASRSource {
+            advice = Self.localASRLyricsFallbackAdvice(fileName: srtFile.lastPathComponent, cues: cues)
+        }
         if (settings.smartTranslationPromptsEnabled || isLocalASRSource),
            sourceLooksLikeAutoCaption || Self.looksLikeAutoCaption(cues) {
-            let reseg = try await resegmentForReadability(cues, context: context)
+            let reseg = try await resegmentForReadability(
+                cues,
+                context: context,
+                preset: advice?.preset ?? .general
+            )
             if isLocalASRSource, reseg.count != cues.count {
                 try? serializeSRT(reseg).write(to: srtFile, atomically: true, encoding: .utf8)
             }
             cues = reseg
         }
-        let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
@@ -3010,11 +3150,14 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
         let sample = Self.subtitleAnalysisSample(cues)
         let summarySettings = settings.applyingTranslationConfig(config)
+        let presetHints = Self.translationPresetPlanningHints
         let system = """
-        你是字幕内容分析器。根据字幕判断视频内容类型，并只输出 JSON：\
-        {"summary":"不超过80字的中文摘要","context":"不超过160字，写清人物、组织、场景、发生的事和主题","terms":["原文专名或术语：目标语言说明，最多8个"],"preset":"general|songLyrics|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment"}。\
-        summary 写整体内容；context 写会影响翻译的背景，不要编造字幕没有支持的信息；terms 只放字幕里出现或能高置信识别的专名、人物、组织、作品名、品牌、术语，不确定官方译名时保留原文写法并说明不确定。\
-        preset 选择最贴近的一个：歌曲/歌词/MV 用 songLyrics；访谈播客对话用 interviewConversation；教程操作演示用 tutorialHowTo；课程讲座用 lectureCourse；新闻评论解释用 newsExplainer；产品评测体验用 reviewProduct；vlog 生活记录用 vlogLifestyle；短视频社交平台内容用 shortSocial；纪录片旁白叙事用 documentaryNarrative；游戏或娱乐解说用 gamingEntertainment；无法判断用 general。不要输出 Markdown。
+        你是字幕内容规划器。先通读样本，理解这段视频的源语言、内容类型、人物和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：\
+        {"summary":"不超过80字的中文摘要","context":"不超过160字，写清人物、组织、场景、发生的事和主题","sourceLanguageCode":"ja|en|zh|yue|ko|es|fr|it|unknown","preset":"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment","terms":["原文专名或术语：目标语言说明，最多8个"],"characters":["人物/角色/身份：简要说明，最多8个"],"translationNotes":["影响翻译的注意事项，最多8条"]}。\
+        summary 写整体内容；context 写会影响翻译的背景；sourceLanguageCode 从给定集合里选最贴近的，拿不准就写 unknown；characters 写登场人物或角色及其身份、与他人的关系或称呼习惯；translationNotes 写具体的翻译策略，如敬语、角色口癖、专名保留、歌词意象、数字单位、上下文承接等。\
+        所有字段都不得编造：terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段就写 unknown 或留空数组，绝不要凭空生成人物、剧情或译名。\
+        preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：
+        \(presetHints)
         """
         let userContent = """
         目标译文语言：\(context.targetLanguageDisplayName)
@@ -3025,13 +3168,44 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             settings: summarySettings,
             system: system,
             userContent: userContent,
-            maxTokens: 1200,
+            maxTokens: 1500,
             context: context
         )
         guard let advice = Self.parseTranslationPromptAdvice(reply.text) else {
             throw MoongateError.translateFailed(TranslatorL10n.smartAnalysisInvalid)
         }
         return advice
+    }
+
+    private static var translationPresetPlanningHints: String {
+        TranslationPromptPreset.allCases
+            .map { "- \($0.rawValue)：\($0.profile.planningHint)" }
+            .joined(separator: "\n")
+    }
+
+    private static func localASRLyricsFallbackAdvice(
+        fileName: String,
+        cues: [SubtitleCue]
+    ) -> TranslationPromptAdvice? {
+        guard looksLikeLocalASRLyrics(fileName: fileName, cues: cues) else { return nil }
+        let stem = subtitleOutputStem(fileName)
+            .replacingOccurrences(of: ".local-asr.", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = stem.isEmpty ? "歌曲歌词" : "\(stem) 的歌曲歌词"
+        return TranslationPromptAdvice(
+            summary: summary,
+            context: "本地 ASR 识别的 MV、歌曲或歌词字幕；按歌词行、乐句和副歌重复来理解。",
+            preset: .songLyrics
+        )
+    }
+
+    private static func looksLikeLocalASRLyrics(fileName: String, cues: [SubtitleCue]) -> Bool {
+        // Single source of truth: the same detector the ASR planner uses to pick a timing profile.
+        // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
+        // never disagree about whether a clip is a song.
+        let profile = SubtitleTimingProfileDetector.detect(fileName: fileName, cues: cues)
+        return profile == .lyrics || profile == .japaneseLyrics
     }
 
     private func sendModelMessage(
@@ -3285,16 +3459,20 @@ extension ConfiguredTranslator {
 
     /// 把一块原 cue 的转写文本发给模型断句，返回模型给出的句子列表（按编号排序）。
     /// 命中输出上限时把这块的 cue 数减半递归重试；单条仍截断则用原文兜底。
-    fileprivate func segmentChunk(_ cues: [SubtitleCue], start: Int, count: Int,
-                                  context: TranslationContext) async throws -> [String] {
+    fileprivate func segmentChunk(
+        _ cues: [SubtitleCue],
+        start: Int,
+        count: Int,
+        context: TranslationContext,
+        preset: TranslationPromptPreset
+    ) async throws -> [String] {
         if Task.isCancelled { throw MoongateError.cancelled }
         let transcript = (start..<(start + count))
             .map { Self.flattened(cues[$0].text) }
             .joined(separator: " ")
+        let instruction = preset.profile.segmentationGuidance
         let system = """
-        你是字幕断句助手。下面是一段逐字、缺少标点的自动语音字幕转写。\
-        请在不改动、不增减、不翻译任何词的前提下，仅添加标点并按完整句子重新断行，\
-        每个完整句子输出为一行，格式严格为 编号|句子（编号从 1 递增）。只能输出这些行，不要解释。
+        \(instruction)
         待断句文本：
         \(transcript)
         """
@@ -3304,8 +3482,14 @@ extension ConfiguredTranslator {
         if reply.reachedOutputLimit {
             if count <= 1 { return [Self.flattened(cues[start].text)] }
             let half = count / 2
-            let first = try await segmentChunk(cues, start: start, count: half, context: context)
-            let second = try await segmentChunk(cues, start: start + half, count: count - half, context: context)
+            let first = try await segmentChunk(cues, start: start, count: half, context: context, preset: preset)
+            let second = try await segmentChunk(
+                cues,
+                start: start + half,
+                count: count - half,
+                context: context,
+                preset: preset
+            )
             return first + second
         }
         let map = Self.parseReply(reply.text)
@@ -3332,7 +3516,11 @@ extension ConfiguredTranslator {
 
     /// ASR 字幕重分段：把逐字无标点的自动字幕重新断成完整句子，保留原始时间轴。
     /// 对齐失败（模型改词/漏词）时原样返回输入，绝不产出错位时间轴。
-    func resegmentForReadability(_ cues: [SubtitleCue], context: TranslationContext) async throws -> [SubtitleCue] {
+    func resegmentForReadability(
+        _ cues: [SubtitleCue],
+        context: TranslationContext,
+        preset: TranslationPromptPreset = .general
+    ) async throws -> [SubtitleCue] {
         guard !cues.isEmpty else { return [] }
 
         // 1) 在 cue 边界分块请求断句，拼出全部句子。最多 3 块在途并行（此前为串行，是
@@ -3358,7 +3546,16 @@ extension ConfiguredTranslator {
                 let chunk = chunkRanges[nextChunk]
                 nextChunk += 1
                 group.addTask {
-                    (chunk.index, try await self.segmentChunk(cues, start: chunk.start, count: chunk.count, context: context))
+                    (
+                        chunk.index,
+                        try await self.segmentChunk(
+                            cues,
+                            start: chunk.start,
+                            count: chunk.count,
+                            context: context,
+                            preset: preset
+                        )
+                    )
                 }
             }
             for _ in 0..<min(maxInFlight, chunkRanges.count) {
@@ -3476,7 +3673,7 @@ extension ConfiguredTranslator {
         }
         var parts = Int((duration / resegmentMaxSegmentSeconds).rounded(.up))
         parts = max(2, min(parts, tokenCount)) // 至少 2 份，至多每份 1 token
-        let words = seg.text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        let textParts = splitSegmentText(seg.text, parts: parts)
         var output: [Segment] = []
         for p in 0..<parts {
             var tStart = seg.tokenStart + tokenCount * p / parts
@@ -3485,9 +3682,7 @@ extension ConfiguredTranslator {
             if p == parts - 1 { tEnd = seg.tokenEnd }
             tStart = min(tStart, flat.count - 1)
 
-            let wStart = words.count * p / parts
-            let wEnd = p == parts - 1 ? words.count : words.count * (p + 1) / parts
-            let text = wEnd > wStart ? words[wStart..<wEnd].joined(separator: " ") : seg.text
+            let text = p < textParts.count ? textParts[p] : seg.text
             output.append(Segment(
                 startSec: tokenTime(cues, flat[tStart], edge: false),
                 endSec: tokenTime(cues, flat[tEnd - 1], edge: true),
@@ -3495,5 +3690,25 @@ extension ConfiguredTranslator {
                 text: text.trimmingCharacters(in: .whitespaces)))
         }
         return output
+    }
+
+    fileprivate static func splitSegmentText(_ text: String, parts: Int) -> [String] {
+        guard parts > 1 else { return [text] }
+        let words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        if words.count >= parts {
+            return (0..<parts).map { part in
+                let start = words.count * part / parts
+                let end = part == parts - 1 ? words.count : words.count * (part + 1) / parts
+                return start < end ? words[start..<end].joined(separator: " ") : ""
+            }
+        }
+
+        let characters = text.filter { !$0.isWhitespace }.map(String.init)
+        guard characters.count >= parts else { return [text] }
+        return (0..<parts).map { part in
+            let start = characters.count * part / parts
+            let end = part == parts - 1 ? characters.count : characters.count * (part + 1) / parts
+            return start < end ? characters[start..<end].joined() : ""
+        }
     }
 }

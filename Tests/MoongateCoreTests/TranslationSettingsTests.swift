@@ -292,12 +292,100 @@ final class TranslationSettingsTests: XCTestCase {
         }
     }
 
+    func testTranslationPromptPresetProfilesCoverEveryPromptLayer() {
+        XCTAssertEqual(TranslationPromptPreset.allCases.count, 12)
+        for preset in TranslationPromptPreset.allCases {
+            let profile = preset.profile
+            XCTAssertFalse(profile.planningHint.isEmpty, "\(preset).planningHint")
+            XCTAssertFalse(profile.segmentationGuidance.isEmpty, "\(preset).segmentationGuidance")
+            XCTAssertFalse(profile.translationGuidance.isEmpty, "\(preset).translationGuidance")
+            XCTAssertFalse(profile.qualityAnchors.isEmpty, "\(preset).qualityAnchors")
+        }
+    }
+
+    func testTranslationPromptPresetProfilesExpressDistinctStyleAnchors() {
+        let anchors: [(TranslationPromptPreset, [String], [String])] = [
+            (.songLyrics, ["诗意", "意象", "副歌"], ["客观", "按钮名"]),
+            (.anime, ["角色", "称呼", "口癖"], ["严肃科普"]),
+            (.lectureCourse, ["专业", "严肃", "逻辑"], ["诗意"]),
+            (.newsExplainer, ["客观", "数字", "时间"], ["副歌"]),
+            (.shortSocial, ["节奏", "梗", "语义完整"], ["课程"]),
+            (.gamingEntertainment, ["现场感", "术语", "即时反应"], ["新闻"]),
+        ]
+
+        for (preset, required, forbidden) in anchors {
+            let prompt = ConfiguredTranslator.systemPrompt(
+                targetLanguageDisplayName: "简体中文",
+                advice: TranslationPromptAdvice(summary: "测试摘要", preset: preset)
+            )
+            for word in required {
+                XCTAssertTrue(prompt.contains(word), "\(preset) should contain \(word)")
+            }
+            for word in forbidden {
+                XCTAssertFalse(prompt.contains(word), "\(preset) should not leak \(word)")
+            }
+        }
+    }
+
     func testSmartTranslationUnknownPresetFallsBackToGeneral() throws {
         let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
         {"summary":"测试摘要","preset":"unknownFuturePreset"}
         """))
 
         XCTAssertEqual(advice.preset, .general)
+    }
+
+    func testSmartTranslationAdviceParsesPlanningFieldsAndInjectsThem() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {
+          "summary":"一群冒险者的战斗对白。",
+          "context":"奇幻动画第二季，主角与对手交战。",
+          "sourceLanguageCode":"ja",
+          "preset":"anime",
+          "terms":["魔法：保留原文"],
+          "characters":["王城ハル：主角，使用敬语","レン：对手，说话粗鲁"],
+          "translationNotes":["保持ハル的敬语口吻","战斗拟声词保留情绪"]
+        }
+        """))
+
+        XCTAssertEqual(advice.preset, .anime)
+        XCTAssertEqual(advice.sourceLanguageCode, "ja")
+        XCTAssertEqual(advice.characters.count, 2)
+        XCTAssertEqual(advice.translationNotes.count, 2)
+
+        // 第二层 prompt：源语言（advice 兜底点名）、人物、翻译注意、anime 风格句都要注入。
+        let prompt = ConfiguredTranslator.systemPrompt(
+            targetLanguageDisplayName: "简体中文",
+            sourceLanguageCode: nil,
+            advice: advice
+        )
+        XCTAssertTrue(prompt.contains("正在把日语字幕翻译成简体中文"), "advice.sourceLanguageCode 应在管线缺值时兜底点名源语言")
+        XCTAssertTrue(prompt.contains("日文→中文重排示例"))
+        XCTAssertTrue(prompt.contains("人物/角色"))
+        XCTAssertTrue(prompt.contains("王城ハル"))
+        XCTAssertTrue(prompt.contains("翻译注意"))
+        XCTAssertTrue(prompt.contains("战斗拟声词保留情绪"))
+        XCTAssertTrue(prompt.contains("动漫或动画对白"))
+    }
+
+    func testSmartTranslationAdviceLegacyJSONDefaultsPlanningFields() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {"summary":"测试摘要","preset":"songLyrics"}
+        """))
+
+        XCTAssertEqual(advice.sourceLanguageCode, "unknown")
+        XCTAssertEqual(advice.characters, [])
+        XCTAssertEqual(advice.translationNotes, [])
+    }
+
+    func testSmartTranslationAdviceNormalizesSourceLanguageAndCapsLists() throws {
+        let manyCharacters = (0..<12).map { "\"角色\($0)\"" }.joined(separator: ",")
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseTranslationPromptAdvice("""
+        {"summary":"测试摘要","sourceLanguageCode":"Japanese","characters":[\(manyCharacters)]}
+        """))
+
+        XCTAssertEqual(advice.sourceLanguageCode, "unknown", "不在允许集合里的源语言串应落到 unknown")
+        XCTAssertEqual(advice.characters.count, 8, "人物列表最多 8 条")
     }
 
     func testSettingsSingleLineFieldsAreTrimmedWhenRoundTripping() throws {

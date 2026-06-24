@@ -1624,9 +1624,12 @@ public sealed class QueueManager
     private static string? ExistingLocalAsrSubtitle(IEnumerable<string> files, string languageCode)
     {
         var normalized = languageCode.Trim().ToLowerInvariant();
-        if (normalized.Length == 0) return null;
+        // auto / 空：whisper 产物名用的是“检测到的语言”（如 .local-asr.ja.srt），不会是 .local-asr.auto.srt。
+        // 所以 auto/空 要通配命中任意已存在的 local-ASR 字幕，与 transcript cache 的 auto-wildcard 语义一致；
+        // 否则完成项以 auto 重跑会因后缀不匹配而重复抽音频 / 重跑 whisper（BUG-C）。
+        var wildcard = normalized.Length == 0 || normalized == "auto";
         return files.FirstOrDefault(file =>
-            IsLocalAsrSubtitle(file) && LangCodeOfSubtitle(file) == normalized);
+            IsLocalAsrSubtitle(file) && (wildcard || LangCodeOfSubtitle(file) == normalized));
     }
 
     private static string? LangCodeOfSubtitle(string file)

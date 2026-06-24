@@ -179,6 +179,16 @@ python3 -m subtitle_timing_eval.cli iteration-report \
 
 Manual-caption samples can still use `preserve` comparisons for compatibility checks, but preserve evidence is not enough for the fixed 10-language target. The manual-suite gate requires strict timing comparisons against either ASR/VTT word timing for source-language speech or `reference-metrics` human cue timing for translated/manual reference tracks.
 
+### Local-ASR suite gate (`local-asr-suite-status`)
+
+`local-asr-suite-status` scores **only** local-ASR output against a **human** reference — it is the gate for the dedicated whisper-timing work. It deliberately rejects the old self-referential evidence:
+
+- the candidate must be a local-ASR SRT (`*.local-asr.<lang>.srt`);
+- the recorded `reference_path` must be a **human `.srt`** (lyrics/captions) — never a platform `.vtt` auto-caption, and never the candidate itself (no self-comparison);
+- any recorded word evidence must come from local ASR, never `vtt_words.json`.
+
+A report that compares whisper output against whisper's own VTT/word timing is **not** accepted, so a passing suite cannot be faked from self-reference. Content-type coverage (`category_coverage_goal` in `samples.json`) additionally expects music / animation / talk spread; `ytsearch1:`-sourced entries resolve at run time but still need a human reference authored before they pass.
+
 Prepare a sample section and subtitle files:
 
 ```bash

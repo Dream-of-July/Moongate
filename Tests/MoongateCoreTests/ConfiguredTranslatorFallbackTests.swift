@@ -131,6 +131,20 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                         text: "word\(i) line\nnext\(i) piece")
         }
     }
+
+    private func japaneseLyricsCues() -> [SubtitleCue] {
+        let parts = [
+            "青い", "世界", "好きなものを", "好きだという", "怖く", "て",
+            "仕方ないけど", "本当の自分", "出会えた", "気がしたんだ"
+        ]
+        return parts.enumerated().map { i, text in
+            SubtitleCue(index: i + 1,
+                        start: secondsToSRTTime(Double(i) * 2.0),
+                        end: secondsToSRTTime(Double(i) * 2.0 + 1.7),
+                        text: text)
+        }
+    }
+
     func testResegmentForReadabilityRebuildsSentencesWithAlignedTime() async throws {
         // 模型把碎句断成 2 个完整句子；token 与原文一致 → 重分段成功，时间轴保留。
         let translator = ConfiguredTranslator(
@@ -148,6 +162,64 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(output[0].start, "00:00:00,000")
         XCTAssertEqual(output[0].text, "we know it what is the vision for what you see coming next.")
         XCTAssertEqual(output.last?.end, "00:00:08,000")
+    }
+
+    func testResegmentForReadabilityUsesLyricsPromptForSongPreset() async throws {
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, _, _, _ in
+                let system = system ?? ""
+                XCTAssertTrue(system.contains("歌词行"))
+                XCTAssertTrue(system.contains("乐句"))
+                XCTAssertFalse(system.contains("按完整句子重新断行"))
+                return ModelReply(
+                    text: "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ",
+                    reachedOutputLimit: false
+                )
+            }
+        )
+
+        let output = try await translator.resegmentForReadability(
+            japaneseLyricsCues(),
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            preset: .songLyrics
+        )
+
+        XCTAssertEqual(output.map(\.text), [
+            "青い世界",
+            "好きなものを好きだという",
+            "怖くて仕方ないけど",
+            "本当の自分出会えた気がしたんだ"
+        ])
+    }
+
+    func testResegmentForReadabilityUsesProfileGuidanceForLectureAndShortSocial() async throws {
+        let expectations: [(TranslationPromptPreset, [String])] = [
+            (.lectureCourse, ["术语边界", "因果", "逻辑"]),
+            (.shortSocial, ["节奏", "语义完整", "梗"])
+        ]
+
+        for (preset, requiredWords) in expectations {
+            let translator = ConfiguredTranslator(
+                settings: cloudSettings(),
+                appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+                modelSender: { _, system, userContent, _, _ in
+                    let system = system ?? ""
+                    for word in requiredWords {
+                        XCTAssertTrue(system.contains(word), "\(preset) missing \(word)")
+                    }
+                    XCTAssertFalse(system.contains("歌词行"), "\(preset) should not use lyrics segmentation")
+                    return ModelReply(text: "1|\(userContent).", reachedOutputLimit: false)
+                }
+            )
+
+            _ = try await translator.resegmentForReadability(
+                [SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:02,000", text: "this explains the core idea")],
+                context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+                preset: preset
+            )
+        }
     }
 
     func testResegmentReturnsOriginalWhenAlignmentFails() async throws {
@@ -207,7 +279,13 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                         reachedOutputLimit: false)
                 }
                 // 摘要分析请求（smart）：返回最简 JSON。
-                if (system ?? "").contains("字幕内容分析器") {
+                if let system, system.contains("字幕内容规划器") {
+                    XCTAssertTrue(system.contains("- songLyrics："))
+                    XCTAssertTrue(system.contains("意象"))
+                    XCTAssertTrue(system.contains("- lectureCourse："))
+                    XCTAssertTrue(system.contains("严肃科普"))
+                    XCTAssertTrue(system.contains("- shortSocial："))
+                    XCTAssertTrue(system.contains("快节奏"))
                     return ModelReply(text: #"{"summary":"测试","preset":"general"}"#, reachedOutputLimit: false)
                 }
                 return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
@@ -221,6 +299,182 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         let segmentCalls = await didSegment.value()
         XCTAssertGreaterThan(segmentCalls, 0, "smart 开 + ASR 应触发重分段")
         XCTAssertEqual(result.count, 2, "重分段后应是 2 条整句")
+    }
+
+    func testTranslateUsesSmartSongLyricsAdviceBeforeLocalASRResegment() async throws {
+        let source = try writeSRT("clip.local-asr.ja.srt", japaneseLyricsCues())
+        let promptFlags = PromptFlags()
+        var settings = cloudSettings()
+        settings.smartTranslationPromptsEnabled = true
+        let translator = ConfiguredTranslator(
+            settings: settings,
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                let system = system ?? ""
+                if system.contains("字幕内容规划器") {
+                    return ModelReply(
+                        text: #"{"summary":"日语歌曲歌词","context":"MV 演唱内容","preset":"songLyrics"}"#,
+                        reachedOutputLimit: false
+                    )
+                }
+                if system.contains("待断句文本") {
+                    await promptFlags.markLyricsSegmentPrompt(
+                        system.contains("歌词行") && !system.contains("按完整句子重新断行")
+                    )
+                    return ModelReply(
+                        text: "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ",
+                        reachedOutputLimit: false
+                    )
+                }
+                await promptFlags.markLyricsTranslationPrompt(system.contains("中文歌词译本"))
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 4)
+        let flags = await promptFlags.snapshot()
+        XCTAssertTrue(flags.segment, "songLyrics advice 应先于 local-ASR 重分段生效")
+        XCTAssertTrue(flags.translation, "同一个 songLyrics advice 应继续用于翻译提示词")
+        let rewrittenSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
+        XCTAssertEqual(rewrittenSource.map(\.text).prefix(3), [
+            "青い世界",
+            "好きなものを好きだという",
+            "怖くて仕方ないけど"
+        ])
+    }
+
+    func testTranslateUsesLyricsFallbackForLocalASRMusicFilenameWhenSmartDisabled() async throws {
+        let source = try writeSRT("YOASOBI Official Music Video.local-asr.ja.srt", japaneseLyricsCues())
+        let promptFlags = PromptFlags()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                let system = system ?? ""
+                XCTAssertFalse(system.contains("字幕内容规划器"), "smart 关闭时兜底不应额外请求增强分析")
+                if system.contains("待断句文本") {
+                    await promptFlags.markLyricsSegmentPrompt(
+                        system.contains("歌词行") && !system.contains("按完整句子重新断行")
+                    )
+                    return ModelReply(
+                        text: "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ",
+                        reachedOutputLimit: false
+                    )
+                }
+                await promptFlags.markLyricsTranslationPrompt(system.contains("中文歌词译本"))
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 4)
+        let flags = await promptFlags.snapshot()
+        XCTAssertTrue(flags.segment)
+        XCTAssertTrue(flags.translation)
+    }
+
+    func testSmartInterviewAdviceOverridesMusicFilenameAndAvoidsLyricsSegmentation() async throws {
+        // 文件名像 MV，但第一层规划判定为访谈：必须按访谈处理，不走歌词分段、不套歌词翻译风格。
+        let source = try writeSRT("YOASOBI Official Music Video.local-asr.ja.srt", japaneseLyricsCues())
+        let promptFlags = PromptFlags()
+        var settings = cloudSettings()
+        settings.smartTranslationPromptsEnabled = true
+        let translator = ConfiguredTranslator(
+            settings: settings,
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                let system = system ?? ""
+                if system.contains("字幕内容规划器") {
+                    return ModelReply(
+                        text: #"{"summary":"两位音乐人的访谈对话","preset":"interviewConversation","sourceLanguageCode":"ja"}"#,
+                        reachedOutputLimit: false
+                    )
+                }
+                if system.contains("待断句文本") {
+                    await promptFlags.markLyricsSegmentPrompt(
+                        system.contains("歌词行") && !system.contains("按完整句子重新断行")
+                    )
+                    return ModelReply(
+                        text: "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ",
+                        reachedOutputLimit: false
+                    )
+                }
+                await promptFlags.markLyricsTranslationPrompt(system.contains("中文歌词译本"))
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        _ = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let flags = await promptFlags.snapshot()
+        XCTAssertFalse(flags.segment, "interview advice 不应触发歌词分段，即便文件名像 MV")
+        XCTAssertFalse(flags.translation, "interview advice 不应套用歌词翻译风格")
+    }
+
+    func testSmartAnimeAdviceUsesAnimeSegmentationInstruction() async throws {
+        // anime advice 应让重分段使用动漫对白断句指令，而不是歌词断句或普通完整句子断句。
+        let source = try writeSRT("clip.local-asr.ja.srt", japaneseLyricsCues())
+        let promptFlags = PromptFlags()
+        var settings = cloudSettings()
+        settings.smartTranslationPromptsEnabled = true
+        let translator = ConfiguredTranslator(
+            settings: settings,
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                let system = system ?? ""
+                if system.contains("字幕内容规划器") {
+                    return ModelReply(
+                        text: #"{"summary":"动画对白片段","preset":"anime","sourceLanguageCode":"ja"}"#,
+                        reachedOutputLimit: false
+                    )
+                }
+                if system.contains("待断句文本") {
+                    await promptFlags.markAnimeSegmentPrompt(system.contains("对白断句助手") && system.contains("台词"))
+                    await promptFlags.markLyricsSegmentPrompt(system.contains("歌词行"))
+                    return ModelReply(
+                        text: "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ",
+                        reachedOutputLimit: false
+                    )
+                }
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        _ = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let usedAnimeSegmentation = await promptFlags.animeSegmentSnapshot()
+        XCTAssertTrue(usedAnimeSegmentation, "anime advice 应使用动漫对白断句指令")
+        let flags = await promptFlags.snapshot()
+        XCTAssertFalse(flags.segment, "anime 不应使用歌词断句")
     }
 
     func testTranslateResegmentsMultilineAsrCaptionWhenSmartEnabled() async throws {
@@ -237,7 +491,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                     _ = await didSegment.next()
                     return ModelReply(text: "1|\(userContent).", reachedOutputLimit: false)
                 }
-                if (system ?? "").contains("字幕内容分析器") {
+                if (system ?? "").contains("字幕内容规划器") {
                     return ModelReply(text: #"{"summary":"测试","preset":"general"}"#, reachedOutputLimit: false)
                 }
                 return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
@@ -306,6 +560,38 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(output[0].start, "00:00:00,000")
         XCTAssertEqual(output[2].text, "顔洗ってえらい。", "「顔」与「洗って」应并入同一句，不再割裂")
         XCTAssertEqual(output.last?.end, "00:00:08,000")
+    }
+
+    func testResegmentCJKLongSegmentSplitsWithoutRepeatingWholeLine() async throws {
+        let parts = ["青い世界", "を見て", "胸の奥", "怖くて", "仕方ない", "けど今日も", "前へ進む"]
+        let cues = parts.enumerated().map { i, text in
+            SubtitleCue(index: i + 1,
+                        start: secondsToSRTTime(Double(i)),
+                        end: secondsToSRTTime(Double(i + 1)),
+                        text: text)
+        }
+        let joined = parts.joined()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(text: "1|\(joined)。", reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.resegmentForReadability(
+            cues,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            preset: .songLyrics
+        )
+
+        XCTAssertGreaterThan(output.count, 1, "长 CJK 歌词行应按时间安全拆分")
+        XCTAssertEqual(
+            output.map(\.text).joined().replacingOccurrences(of: "。", with: ""),
+            joined,
+            "拆分后的 CJK 文本应首尾相接，而不是每段重复整句"
+        )
+        XCTAssertEqual(Set(output.map(\.text)).count, output.count, "不能把同一整句重复到多个 cue")
     }
 
     func testResegmentCJKFallsBackWhenCharactersChanged() async throws {
@@ -381,5 +667,31 @@ private actor AttemptCounter {
 
     func value() -> Int {
         count
+    }
+}
+
+private actor PromptFlags {
+    private var sawLyricsSegmentPrompt = false
+    private var sawLyricsTranslationPrompt = false
+    private var sawAnimeSegmentPrompt = false
+
+    func markLyricsSegmentPrompt(_ value: Bool) {
+        sawLyricsSegmentPrompt = sawLyricsSegmentPrompt || value
+    }
+
+    func markLyricsTranslationPrompt(_ value: Bool) {
+        sawLyricsTranslationPrompt = sawLyricsTranslationPrompt || value
+    }
+
+    func markAnimeSegmentPrompt(_ value: Bool) {
+        sawAnimeSegmentPrompt = sawAnimeSegmentPrompt || value
+    }
+
+    func animeSegmentSnapshot() -> Bool {
+        sawAnimeSegmentPrompt
+    }
+
+    func snapshot() -> (segment: Bool, translation: Bool) {
+        (sawLyricsSegmentPrompt, sawLyricsTranslationPrompt)
     }
 }

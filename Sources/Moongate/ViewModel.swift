@@ -1061,6 +1061,11 @@ final class ViewModel: ObservableObject {
         apiModel: String = "",
         apiAuthToken: String = ""
     ) -> Bool {
+        // 必须先 hydrate 再取 draft：启动期 settings 以 readCredentials:false 载入（三个 Token 为空），
+        // 若直接以此为 draft 落盘，save() → writeTokensToStore() 会把空值当“删除”抹掉 Keychain 里
+        // 既有 Token（重跑 onboarding / settings.json 被重置或损坏后重建时尤甚）。
+        // hydrate 后 settings 带真实 Token，draft 继承后只覆盖 onboarding 字段，未重填的 Token 得以保留。
+        hydrateCredentials()
         var draft = settings
         draft.appLanguage = appLanguage.rawValue
         draft.translationTargetLanguage = translationTargetLanguage

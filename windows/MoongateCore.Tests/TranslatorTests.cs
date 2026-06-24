@@ -630,7 +630,7 @@ public class ConfiguredTranslatorTests : IDisposable
         handler.Responder = captured =>
         {
             if (captured.Body.Contains("preset", StringComparison.OrdinalIgnoreCase)
-                || captured.Body.Contains("字幕内容分析", StringComparison.Ordinal))
+                || captured.Body.Contains("字幕内容规划", StringComparison.Ordinal))
             {
                 return FakeHttpHandler.Json(200, AnthropicReply(
                     """
@@ -649,7 +649,7 @@ public class ConfiguredTranslatorTests : IDisposable
         await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
 
         Assert.Equal(2, handler.Requests.Count);
-        Assert.Contains("字幕内容分析", RequestSystem(handler.Requests[0].Body));
+        Assert.Contains("字幕内容规划", RequestSystem(handler.Requests[0].Body));
         var translateSystem = RequestSystem(handler.Requests[1].Body);
         Assert.Contains("这是一首夜色里的告别歌曲。", translateSystem);
         Assert.Contains("翻译前上下文", translateSystem);
@@ -704,6 +704,50 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public void TranslationPromptPresetProfiles_CoverEveryPromptLayer()
+    {
+        var presets = Enum.GetValues<TranslationPromptPreset>();
+        Assert.Equal(12, presets.Length);
+        foreach (var preset in presets)
+        {
+            var profile = TranslationPromptPresetProfile.For(preset);
+            Assert.False(string.IsNullOrWhiteSpace(profile.PlanningHint), $"{preset}.PlanningHint");
+            Assert.False(string.IsNullOrWhiteSpace(profile.SegmentationGuidance), $"{preset}.SegmentationGuidance");
+            Assert.False(string.IsNullOrWhiteSpace(profile.TranslationGuidance), $"{preset}.TranslationGuidance");
+            Assert.NotEmpty(profile.QualityAnchors);
+        }
+    }
+
+    [Fact]
+    public void TranslationPromptPresetProfiles_ExpressDistinctStyleAnchors()
+    {
+        var anchors = new (TranslationPromptPreset Preset, string[] Required, string[] Forbidden)[]
+        {
+            (TranslationPromptPreset.SongLyrics, ["诗意", "意象", "副歌"], ["客观", "按钮名"]),
+            (TranslationPromptPreset.Anime, ["角色", "称呼", "口癖"], ["严肃科普"]),
+            (TranslationPromptPreset.LectureCourse, ["专业", "严肃", "逻辑"], ["诗意"]),
+            (TranslationPromptPreset.NewsExplainer, ["客观", "数字", "时间"], ["副歌"]),
+            (TranslationPromptPreset.ShortSocial, ["节奏", "梗", "语义完整"], ["课程"]),
+            (TranslationPromptPreset.GamingEntertainment, ["现场感", "术语", "即时反应"], ["新闻"]),
+        };
+
+        foreach (var (preset, required, forbidden) in anchors)
+        {
+            var prompt = ConfiguredTranslator.SystemPrompt(
+                "简体中文",
+                new TranslationPromptAdvice("测试摘要", "", [], preset));
+            foreach (var word in required)
+            {
+                Assert.Contains(word, prompt);
+            }
+            foreach (var word in forbidden)
+            {
+                Assert.DoesNotContain(word, prompt);
+            }
+        }
+    }
+
+    [Fact]
     public void SmartTranslationPromptPresets_UnknownPresetFallsBackToGeneral()
     {
         var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
@@ -711,6 +755,62 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.NotNull(advice);
 
         Assert.Equal(TranslationPromptPreset.General, advice.Preset);
+    }
+
+    [Fact]
+    public void SmartTranslationPromptAdvice_ParsesPlanningFieldsAndInjectsThem()
+    {
+        var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+            """
+            {
+              "summary":"一群冒险者的战斗对白。",
+              "context":"奇幻动画第二季，主角与对手交战。",
+              "sourceLanguageCode":"ja",
+              "preset":"anime",
+              "terms":["魔法：保留原文"],
+              "characters":["王城ハル：主角，使用敬语","レン：对手，说话粗鲁"],
+              "translationNotes":["保持ハル的敬语口吻","战斗拟声词保留情绪"]
+            }
+            """);
+        Assert.NotNull(advice);
+        Assert.Equal(TranslationPromptPreset.Anime, advice.Preset);
+        Assert.Equal("ja", advice.SourceLanguageCode);
+        Assert.Equal(2, advice.Characters!.Count);
+        Assert.Equal(2, advice.TranslationNotes!.Count);
+
+        // 第二层 prompt：源语言（advice 兜底点名）、人物、翻译注意、anime 风格句都要注入。
+        var prompt = ConfiguredTranslator.SystemPrompt("简体中文", sourceLanguageCode: null, advice);
+        Assert.Contains("正在把日语字幕翻译成简体中文", prompt);
+        Assert.Contains("日文→中文重排示例", prompt);
+        Assert.Contains("人物/角色", prompt);
+        Assert.Contains("王城ハル", prompt);
+        Assert.Contains("翻译注意", prompt);
+        Assert.Contains("战斗拟声词保留情绪", prompt);
+        Assert.Contains("动漫或动画对白", prompt);
+    }
+
+    [Fact]
+    public void SmartTranslationPromptAdvice_LegacyJsonDefaultsPlanningFields()
+    {
+        var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+            """{"summary":"测试摘要","preset":"songLyrics"}""");
+        Assert.NotNull(advice);
+
+        Assert.Equal("unknown", advice.SourceLanguageCode);
+        Assert.Empty(advice.Characters!);
+        Assert.Empty(advice.TranslationNotes!);
+    }
+
+    [Fact]
+    public void SmartTranslationPromptAdvice_NormalizesSourceLanguageAndCapsLists()
+    {
+        var manyCharacters = string.Join(",", Enumerable.Range(0, 12).Select(i => $"\"角色{i}\""));
+        var advice = ConfiguredTranslator.ParseTranslationPromptAdvice(
+            $$"""{"summary":"测试摘要","sourceLanguageCode":"Japanese","characters":[{{manyCharacters}}]}""");
+        Assert.NotNull(advice);
+
+        Assert.Equal("unknown", advice.SourceLanguageCode);
+        Assert.Equal(8, advice.Characters!.Count);
     }
 
     [Fact]
@@ -815,6 +915,70 @@ public class ConfiguredTranslatorTests : IDisposable
             "Thisisthefirstsentence.Thisisthesecondsentence.Finallythethirdsentence.",
             string.Concat(pieces.Select(p => p.Text.Split('\n').ElementAtOrDefault(1) ?? ""))
                 .Replace(" ", ""));
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_AnimePresetUsesAnimeSegmentationInstruction()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,000", "00:00:01,000", "おはよう"),
+            new(2, "00:00:01,000", "00:00:02,000", "今日もいい天気"),
+        };
+        string? capturedSegmentSystem = null;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var system = RequestSystem(captured.Body);
+                if (system.Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    capturedSegmentSystem = system;
+                }
+                return FakeHttpHandler.Json(200, AnthropicReply("1|おはよう。\n2|今日もいい天気。"));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        await translator.ResegmentForReadabilityAsync(cues, TranslationPromptPreset.Anime, CancellationToken.None);
+
+        Assert.NotNull(capturedSegmentSystem);
+        Assert.Contains("对白断句助手", capturedSegmentSystem!);
+        Assert.Contains("台词", capturedSegmentSystem!);
+        Assert.DoesNotContain("歌词行", capturedSegmentSystem!);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_UsesProfileGuidanceForLectureAndShortSocial()
+    {
+        var expectations = new (TranslationPromptPreset Preset, string[] RequiredWords)[]
+        {
+            (TranslationPromptPreset.LectureCourse, ["术语边界", "因果", "逻辑"]),
+            (TranslationPromptPreset.ShortSocial, ["节奏", "语义完整", "梗"]),
+        };
+
+        foreach (var (preset, requiredWords) in expectations)
+        {
+            var handler = new FakeHttpHandler
+            {
+                Responder = captured =>
+                {
+                    var system = RequestSystem(captured.Body);
+                    foreach (var word in requiredWords)
+                    {
+                        Assert.Contains(word, system);
+                    }
+                    Assert.DoesNotContain("歌词行", system);
+                    return FakeHttpHandler.Json(200, AnthropicReply("1|this explains the core idea."));
+                },
+            };
+            var translator = new ConfiguredTranslator(Settings, handler);
+
+            await translator.ResegmentForReadabilityAsync(
+                [new SubtitleCue(1, "00:00:00,000", "00:00:02,000", "this explains the core idea")],
+                preset,
+                CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -1013,6 +1177,20 @@ public class ConfiguredTranslatorTests : IDisposable
             i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
     }
 
+    private static List<SubtitleCue> JapaneseLyricsCues()
+    {
+        string[] parts =
+        [
+            "青い", "世界", "好きなものを", "好きだという", "怖く", "て",
+            "仕方ないけど", "本当の自分", "出会えた", "気がしたんだ",
+        ];
+        return parts.Select((t, i) => new SubtitleCue(
+            i + 1,
+            SrtTools.SecondsToSrtTime(i * 2.0),
+            SrtTools.SecondsToSrtTime(i * 2.0 + 1.7),
+            t)).ToList();
+    }
+
     [Fact]
     public async Task ResegmentForReadability_Cjk_AlignsByCharacterAndRebuildsSentences()
     {
@@ -1031,6 +1209,61 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal("00:00:00,000", output[0].Start);
         Assert.Equal("顔洗ってえらい。", output[2].Text);   // 「顔」与「洗って」并入同一句，不再割裂
         Assert.Equal("00:00:08,000", output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_CjkLongSegment_SplitsWithoutRepeatingWholeLine()
+    {
+        string[] parts = ["青い世界", "を見て", "胸の奥", "怖くて", "仕方ない", "けど今日も", "前へ進む"];
+        var cues = parts.Select((text, i) => new SubtitleCue(
+            i + 1,
+            SrtTools.SecondsToSrtTime(i),
+            SrtTools.SecondsToSrtTime(i + 1),
+            text)).ToList();
+        var joined = string.Concat(parts);
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply($"1|{joined}。")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(
+            cues,
+            TranslationPromptPreset.SongLyrics,
+            CancellationToken.None);
+
+        Assert.True(output.Count > 1, "long CJK lyric line should be safely split by time");
+        Assert.Equal(
+            joined,
+            string.Concat(output.Select(cue => cue.Text)).Replace("。", "", StringComparison.Ordinal));
+        Assert.Equal(output.Count, output.Select(cue => cue.Text).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_SongLyricsPreset_UsesLyricsLinePrompt()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var system = RequestSystem(captured.Body);
+                Assert.Contains("歌词行", system);
+                Assert.Contains("乐句", system);
+                Assert.DoesNotContain("按完整句子重新断行", system);
+                return FakeHttpHandler.Json(200, AnthropicReply(
+                    "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ"));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(
+            JapaneseLyricsCues(),
+            TranslationPromptPreset.SongLyrics,
+            CancellationToken.None);
+
+        Assert.Equal(
+            ["青い世界", "好きなものを好きだという", "怖くて仕方ないけど", "本当の自分出会えた気がしたんだ"],
+            output.Select(c => c.Text).ToArray());
     }
 
     [Fact]
@@ -1075,6 +1308,87 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal("顔洗ってえらい。", rewrittenSource[2].Text);
         var result = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal(4, result.Count);
+    }
+
+    [Fact]
+    public async Task Translate_LocalAsrSource_UsesSmartSongLyricsAdviceBeforeResegment()
+    {
+        var srt = WriteSrt("clip.local-asr.ja.srt", JapaneseLyricsCues());
+        var sawLyricsSegmentPrompt = false;
+        var sawLyricsTranslationPrompt = false;
+        var settings = Settings with { SmartTranslationPromptsEnabled = true };
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var system = RequestSystem(captured.Body);
+                if (system.Contains("字幕内容规划器", StringComparison.Ordinal))
+                {
+                    Assert.Contains("- songLyrics：", system);
+                    Assert.Contains("意象", system);
+                    Assert.Contains("- lectureCourse：", system);
+                    Assert.Contains("严肃科普", system);
+                    Assert.Contains("- shortSocial：", system);
+                    Assert.Contains("快节奏", system);
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "{\"summary\":\"日语歌曲歌词\",\"context\":\"MV 演唱内容\",\"preset\":\"songLyrics\"}"));
+                }
+                if (system.Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    sawLyricsSegmentPrompt = system.Contains("歌词行", StringComparison.Ordinal)
+                        && !system.Contains("按完整句子重新断行", StringComparison.Ordinal);
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ"));
+                }
+                sawLyricsTranslationPrompt = system.Contains("中文歌词译本", StringComparison.Ordinal);
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(4, result.Count);
+        Assert.True(sawLyricsSegmentPrompt);
+        Assert.True(sawLyricsTranslationPrompt);
+        var rewrittenSource = SrtTools.ParseSrt(File.ReadAllText(srt));
+        Assert.Equal(
+            ["青い世界", "好きなものを好きだという", "怖くて仕方ないけど"],
+            rewrittenSource.Select(c => c.Text).Take(3).ToArray());
+    }
+
+    [Fact]
+    public async Task Translate_LocalAsrSource_UsesLyricsFallbackForMusicFilenameWhenSmartDisabled()
+    {
+        var srt = WriteSrt("YOASOBI Official Music Video.local-asr.ja.srt", JapaneseLyricsCues());
+        var sawLyricsSegmentPrompt = false;
+        var sawLyricsTranslationPrompt = false;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                var system = RequestSystem(captured.Body);
+                Assert.DoesNotContain("字幕内容规划器", system);
+                if (system.Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    sawLyricsSegmentPrompt = system.Contains("歌词行", StringComparison.Ordinal)
+                        && !system.Contains("按完整句子重新断行", StringComparison.Ordinal);
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|青い世界\n2|好きなものを好きだという\n3|怖くて仕方ないけど\n4|本当の自分出会えた気がしたんだ"));
+                }
+                sawLyricsTranslationPrompt = system.Contains("中文歌词译本", StringComparison.Ordinal);
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(4, result.Count);
+        Assert.True(sawLyricsSegmentPrompt);
+        Assert.True(sawLyricsTranslationPrompt);
     }
 
     private static List<SubtitleCue> MultilineAsrCues() =>
@@ -1124,7 +1438,7 @@ public class ConfiguredTranslatorTests : IDisposable
                     return FakeHttpHandler.Json(200, AnthropicReply(
                         "1|we know it what is the vision for what you see coming next.\n2|we asked ourselves how far can it go and what comes after that?"));
                 }
-                if (system.Contains("字幕内容分析器", StringComparison.Ordinal))
+                if (system.Contains("字幕内容规划器", StringComparison.Ordinal))
                 {
                     return FakeHttpHandler.Json(200, AnthropicReply("{\"summary\":\"测试\",\"preset\":\"general\"}"));
                 }

@@ -7,11 +7,15 @@ import random
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 from urllib.parse import quote
 
 from .asr import transcribe_words, transcribe_words_whisper_cpp
 from .comparison import compare_reports, summarize_suite
+from .segmentation import (
+    evaluate_segmentation,
+    summarize_suite as summarize_segmentation_reports,
+)
 from .metrics import (
     ACCEPTED_END_MAX_MS,
     ACCEPTED_END_MIN_MS,
@@ -417,6 +421,188 @@ def collect_manual_suite_status(
     return status
 
 
+def _resolve_report_path(path_value: Any, comparison_path: str) -> Optional[Path]:
+    if not path_value:
+        return None
+    path = Path(str(path_value))
+    if path.is_absolute():
+        return path
+    comparison_dir = Path(comparison_path).parent
+    candidates = [
+        comparison_dir / path,
+        comparison_dir.parent / path,
+        path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _is_local_asr_candidate_path(path: Optional[Path]) -> bool:
+    if path is None:
+        return False
+    name = path.name.lower()
+    # Local-ASR source SRTs are written as "<stem>.local-asr.<lang>.srt" (Swift/C# WriteLocalAsrSourceSrt),
+    # and eval candidates copy that "local-asr.<lang>.srt" tail. Require the local-asr marker and a
+    # .srt extension; reject .vtt platform captions and anything without the marker.
+    return "local-asr" in name and name.endswith(".srt")
+
+
+def _is_human_reference_path(path: Optional[Path]) -> bool:
+    # The only acceptable reference for local-ASR scoring is a human caption / lyric .srt — never a
+    # platform .vtt auto-caption (that is the old self-referential evidence we are banning).
+    if path is None:
+        return False
+    name = path.name.lower()
+    if not name.endswith(".srt"):
+        return False
+    if "vtt" in name:
+        return False
+    # A local-asr candidate is not a human reference; scoring local-asr against itself is self-reference.
+    return not _is_local_asr_candidate_path(path)
+
+
+def _comparison_uses_local_asr(comparison: Dict[str, Any], sample: Dict[str, Any]) -> bool:
+    comparison_path = comparison.get("_path")
+    if not comparison_path:
+        return False
+    _, optimized_report = _load_reports_for_comparison(str(comparison_path))
+    if not optimized_report:
+        return False
+    candidate = _resolve_report_path(optimized_report.get("candidate_path"), str(comparison_path))
+    if not _is_local_asr_candidate_path(candidate):
+        return False
+    if candidate is not None and not candidate.exists():
+        return False
+    reference = _resolve_report_path(optimized_report.get("reference_path"), str(comparison_path))
+    # Reference must be a human .srt that exists and is not the candidate itself (no self-reference).
+    if reference is None or not reference.exists():
+        return False
+    if not _is_human_reference_path(reference):
+        return False
+    if candidate is not None and reference.resolve() == candidate.resolve():
+        return False
+    # If word-level evidence is recorded it must come from local-ASR, never the platform VTT words.
+    words_path = _resolve_report_path(optimized_report.get("asr_words_path"), str(comparison_path))
+    if words_path is not None:
+        if not words_path.exists():
+            return False
+        if "vtt" in words_path.name.lower():
+            return False
+    return True
+
+
+def _coverage_category(category: Optional[str], required_categories: List[str]) -> Optional[str]:
+    """Map a sample's specific ``category`` tag onto a ``category_coverage_goal`` bucket.
+
+    Most required categories (music_lyrics, japanese_talk, …) match a sample category verbatim, but a
+    few are buckets: ``english_talk`` covers english_interview/lecture/tutorial/vlog, and ``animation``
+    covers japanese_animation/chinese_animation. Direct matches win; otherwise apply the bucket rules.
+    """
+    if not category:
+        return None
+    if category in required_categories:
+        return category
+    if category.startswith("english_"):
+        return "english_talk"
+    if category == "animation" or category.endswith("_animation"):
+        return "animation"
+    return category
+
+
+def _local_asr_artifacts_for_sample(sample_dir: Path) -> Dict[str, List[str]]:
+    # Accept both the bare "local-asr*.srt" eval-copy tail and the full "<stem>.local-asr.<lang>.srt"
+    # name Swift/C# WriteLocalAsrSourceSrt emits, so artifacts copied verbatim are still discovered.
+    local_srts = sorted({
+        str(path)
+        for pattern in ("local-asr*.srt", "*.local-asr.*.srt")
+        for path in sample_dir.glob(pattern)
+    })
+    asr_words = sorted(
+        str(path)
+        for path in sample_dir.glob("asr_words*.json")
+        if "vtt" not in path.name.lower() and "srt" not in path.name.lower()
+    )
+    media = sorted(
+        str(path)
+        for pattern in ("*.m4a", "*.wav", "*.webm", "*.mp4")
+        for path in sample_dir.glob(pattern)
+    )
+    return {
+        "local_asr_srt": local_srts,
+        "asr_words": asr_words,
+        "media": media,
+    }
+
+
+def collect_local_asr_suite_status(
+    manifest: Dict[str, Any],
+    selection: Dict[str, Any],
+    artifacts_root: str,
+) -> Dict[str, Any]:
+    suite_manifest = _manual_suite_filtered_manifest(manifest, selection)
+    status = collect_eval_status(
+        suite_manifest,
+        artifacts_root,
+        comparison_filter=_comparison_uses_local_asr,
+    )
+    selected_sample_ids = [sample["id"] for sample in suite_manifest["samples"]]
+    category_goal = manifest.get("category_coverage_goal") or {}
+    required_categories = list(category_goal.get("required_categories", []))
+    covered_categories = set()
+    root = Path(artifacts_root)
+    missing_local_asr_samples: List[str] = []
+    local_asr_groups = set()
+    for sample in suite_manifest["samples"]:
+        sample_id = sample["id"]
+        sample_dir = root / sample_id
+        artifacts = _local_asr_artifacts_for_sample(sample_dir)
+        sample_status = status["samples"].setdefault(sample_id, {
+            "status": "missing",
+            "language_group": sample.get("language_group", "unknown"),
+        })
+        sample_status["local_asr_artifacts"] = artifacts
+        comparison_path = sample_status.get("comparison")
+        if comparison_path:
+            _, optimized_report = _load_reports_for_comparison(str(comparison_path))
+            candidate = _resolve_report_path((optimized_report or {}).get("candidate_path"), str(comparison_path))
+            if candidate is not None:
+                sample_status["local_asr_candidate"] = str(candidate)
+        has_required_artifacts = bool(artifacts["local_asr_srt"]) and bool(artifacts["asr_words"]) and bool(artifacts["media"])
+        if sample_status.get("status") == "pass" and has_required_artifacts:
+            local_asr_groups.add(sample.get("language_group", "unknown"))
+            covered = _coverage_category(sample.get("category"), required_categories)
+            if covered is not None:
+                covered_categories.add(covered)
+        else:
+            missing_local_asr_samples.append(sample_id)
+            if sample_status.get("status") == "pass":
+                sample_status["status"] = "missing_local_asr_artifacts"
+
+    missing_local_asr_samples = sorted(set(missing_local_asr_samples + status.get("missing_samples", [])))
+    missing_required_categories = sorted(c for c in required_categories if c not in covered_categories)
+    status["selection_ready"] = bool(selection.get("ready"))
+    status["requested_count"] = selection.get("requested_count")
+    status["selected_count"] = len(selected_sample_ids)
+    status["selected_sample_ids"] = selected_sample_ids
+    status["requires_local_asr"] = True
+    status["local_asr_language_groups"] = sorted(local_asr_groups)
+    status["missing_local_asr_samples"] = missing_local_asr_samples
+    status["required_categories"] = required_categories
+    status["covered_categories"] = sorted(covered_categories)
+    status["missing_required_categories"] = missing_required_categories
+    status["passes_local_asr_suite_gate"] = (
+        status["selection_ready"]
+        and status["passes_strict_timing_gate"]
+        and status["passes_sample_completion_gate"]
+        and not missing_local_asr_samples
+        and not missing_required_categories
+        and len(local_asr_groups) >= len(status.get("required_language_groups", []))
+    )
+    return status
+
+
 def _completion_requirement(
     requirement: str,
     passed: bool,
@@ -720,16 +906,19 @@ def build_prepare_commands(
     sample: Dict[str, Any],
     output_template: str,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> List[List[str]]:
     source = sample["source"]
     start, end, _ = sample_section(sample, duration_override_seconds)
     subtitle_lang = sample.get("subtitle_lang", "en")
     media_format = sample.get("media_format", "ba[ext=m4a]/ba/best")
 
+    cookie_args = ["--cookies", cookies] if cookies else []
     common = [
         "yt-dlp",
         "--no-playlist",
         "--force-overwrites",
+        *cookie_args,
         "--download-sections",
         "*%s-%s" % (start, end),
         "-o",
@@ -1166,7 +1355,11 @@ def _choose_comparison_for_sample(
     return max(candidates, key=rank)
 
 
-def collect_eval_status(manifest: Dict[str, Any], artifacts_root: str) -> Dict[str, Any]:
+def collect_eval_status(
+    manifest: Dict[str, Any],
+    artifacts_root: str,
+    comparison_filter: Optional[Callable[[Dict[str, Any], Dict[str, Any]], bool]] = None,
+) -> Dict[str, Any]:
     validate_manifest(manifest)
     comparison_candidates = _load_all_comparison_files(artifacts_root)
     blockers = _load_blocker_files(artifacts_root)
@@ -1181,7 +1374,10 @@ def collect_eval_status(manifest: Dict[str, Any], artifacts_root: str) -> Dict[s
     for sample in manifest["samples"]:
         sample_id = sample["id"]
         language_group = sample.get("language_group", "unknown")
-        comparison = _choose_comparison_for_sample(comparison_candidates.get(sample_id, []), sample)
+        candidates = comparison_candidates.get(sample_id, [])
+        if comparison_filter is not None:
+            candidates = [comparison for comparison in candidates if comparison_filter(comparison, sample)]
+        comparison = _choose_comparison_for_sample(candidates, sample)
         if comparison is None:
             blocker = blockers.get(sample_id)
             if blocker is not None:
@@ -2992,12 +3188,14 @@ def build_converted_subtitle_command(
     ]
 
 
-def build_full_media_fallback_command(sample: Dict[str, Any], workdir: Path) -> List[str]:
+def build_full_media_fallback_command(sample: Dict[str, Any], workdir: Path, cookies: Optional[str] = None) -> List[str]:
     media_format = sample.get("media_format", "ba[ext=m4a]/ba/best")
+    cookie_args = ["--cookies", cookies] if cookies else []
     return [
         "yt-dlp",
         "--no-playlist",
         "--force-overwrites",
+        *cookie_args,
         "-f",
         media_format,
         "-o",
@@ -3040,9 +3238,10 @@ def run_full_media_fallback(
     workdir: Path,
     dry_run: bool = False,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> Path:
     start, _, duration = sample_section(sample, duration_override_seconds)
-    run_command(build_full_media_fallback_command(sample, workdir), dry_run=dry_run)
+    run_command(build_full_media_fallback_command(sample, workdir, cookies=cookies), dry_run=dry_run)
     output_path = workdir / ("%s.section.wav" % sample["id"])
     if dry_run:
         run_command(build_trim_fallback_command(Path("<downloaded-full-media>"), output_path, start, duration), dry_run=True)
@@ -3090,6 +3289,7 @@ def prepare_sample(
     artifacts_root: str,
     dry_run: bool = False,
     duration_override_seconds: Optional[float] = None,
+    cookies: Optional[str] = None,
 ) -> Path:
     workdir = sample_workdir(artifacts_root, sample["id"])
     output_template = str(workdir / "%(id)s.%(ext)s")
@@ -3097,6 +3297,7 @@ def prepare_sample(
         sample,
         output_template,
         duration_override_seconds=duration_override_seconds,
+        cookies=cookies,
     )
     try:
         run_command(media_command, dry_run=dry_run)
@@ -3108,6 +3309,7 @@ def prepare_sample(
                 workdir,
                 dry_run=dry_run,
                 duration_override_seconds=duration_override_seconds,
+                cookies=cookies,
             )
         except subprocess.CalledProcessError as error:
             _write_prepare_blocker(sample, workdir, error)
@@ -3239,6 +3441,7 @@ def evaluate_files(
     window_end: Optional[float] = None,
     alignment_mode: str = "text",
     alignment_text_path: Optional[str] = None,
+    reference_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     cues = _load_subtitle_cues(candidate_path)
     cues = offset_cues(cues, candidate_offset_seconds)
@@ -3259,6 +3462,10 @@ def evaluate_files(
         ]
     words = filter_words_by_window(offset_words(load_words_json(words_path), asr_offset_seconds), window_start, window_end)
     report = evaluate_cues(metric_cues, words, sample_id=sample_id, alignment_mode=alignment_mode)
+    report["candidate_path"] = candidate_path
+    report["asr_words_path"] = words_path
+    if reference_path is not None:
+        report["reference_path"] = reference_path
     report["window_start_seconds"] = window_start
     report["window_end_seconds"] = window_end
     report["asr_offset_seconds"] = asr_offset_seconds
@@ -3295,6 +3502,8 @@ def evaluate_reference_files(
     reference_cues = offset_cues(_load_subtitle_cues(reference_path), reference_offset_seconds)
     reference_cues = filter_cues_by_window(reference_cues, window_start, window_end)
     report = evaluate_cues_against_reference_cues(cues, reference_cues, sample_id=sample_id)
+    report["candidate_path"] = candidate_path
+    report["reference_path"] = reference_path
     report["window_start_seconds"] = window_start
     report["window_end_seconds"] = window_end
     report["candidate_offset_seconds"] = candidate_offset_seconds
@@ -3303,6 +3512,54 @@ def evaluate_reference_files(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
+
+
+def evaluate_segmentation_files(
+    candidate_path: str,
+    reference_path: str,
+    sample_id: str,
+    output_path: str,
+    candidate_offset_seconds: float = 0.0,
+    reference_offset_seconds: float = 0.0,
+    window_start: Optional[float] = None,
+    window_end: Optional[float] = None,
+    tolerance_seconds: float = 0.5,
+    track: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Score a candidate subtitle file's segmentation against a reference file."""
+    candidate_cues = offset_cues(_load_subtitle_cues(candidate_path), candidate_offset_seconds)
+    reference_cues = offset_cues(_load_subtitle_cues(reference_path), reference_offset_seconds)
+    report = evaluate_segmentation(
+        candidate_cues,
+        reference_cues,
+        sample_id=sample_id,
+        window_start=window_start,
+        window_end=window_end,
+        tolerance=tolerance_seconds,
+        track=track,
+    )
+    report["candidate_path"] = candidate_path
+    report["reference_path"] = reference_path
+    report["candidate_offset_seconds"] = candidate_offset_seconds
+    report["reference_offset_seconds"] = reference_offset_seconds
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def summarize_segmentation_suite_files(
+    report_paths: List[str],
+    output_path: str,
+) -> Dict[str, Any]:
+    """Aggregate per-sample segmentation reports into a suite-level summary."""
+    reports = []
+    for path in report_paths:
+        with open(path, "r", encoding="utf-8") as handle:
+            reports.append(json.load(handle))
+    summary = summarize_segmentation_reports(reports)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return summary
 
 
 def compare_report_files(

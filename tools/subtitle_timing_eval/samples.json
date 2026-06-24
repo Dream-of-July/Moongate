@@ -10,6 +10,11 @@
     "description": "Product-pragmatic target for mainstream languages/users Moongate is most likely to serve: en/zh/yue/ja/ko/es/fr/it plus translated subtitle timing. This keeps the 90% human-like gate bounded instead of tuning every long-tail language on YouTube.",
     "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "fr", "it", "translated"]
   },
+  "category_coverage_goal": {
+    "id": "local_asr_content_type_coverage",
+    "description": "The local-ASR timing-profile work (speech/lyrics/anime) must be validated on a spread of content types, not just talks. The real 10-sample eval should cover these categories; entries sourced via ytsearch1: resolve at run time and STILL require a human caption / human lyric reference to be authored before they pass the local-asr suite gate (metrics only count local-ASR output vs a human reference).",
+    "required_categories": ["music_lyrics", "animation", "english_talk", "japanese_talk", "cantonese_chinese", "korean_talk", "french_talk", "italian_talk", "spanish_talk", "portuguese_talk"]
+  },
   "samples": [
     {
       "id": "starship_test_like_you_fly_en",
@@ -65,6 +70,39 @@
       "spoken_languages": ["en"],
       "section": { "start_seconds": 35, "duration_seconds": 180 },
       "stressors": ["music", "lyrics"]
+    },
+    {
+      "id": "music_lyrics_chinese",
+      "title": "Chinese music lyrics stress case (run-time selected, needs human lyric reference)",
+      "source": "ytsearch1:中文 歌曲 歌词 字幕 official MV",
+      "category": "music_lyrics",
+      "language_group": "zh",
+      "subtitle_lang": "zh",
+      "spoken_languages": ["zh"],
+      "section": { "start_seconds": 20, "duration_seconds": 180 },
+      "stressors": ["music", "lyrics", "cjk_no_spaces", "manual_captions"]
+    },
+    {
+      "id": "music_lyrics_japanese",
+      "title": "Japanese song lyrics stress case (run-time selected, needs human lyric reference)",
+      "source": "ytsearch1:日本語 歌 歌詞 字幕 official music video",
+      "category": "music_lyrics",
+      "language_group": "ja",
+      "subtitle_lang": "ja",
+      "spoken_languages": ["ja"],
+      "section": { "start_seconds": 20, "duration_seconds": 180 },
+      "stressors": ["music", "lyrics", "cjk_no_spaces", "manual_captions"]
+    },
+    {
+      "id": "chinese_animation_zh",
+      "title": "Chinese-dub animation short with manual captions (run-time selected, needs human reference)",
+      "source": "ytsearch1:国创 动画 中文配音 字幕",
+      "category": "animation",
+      "language_group": "zh",
+      "subtitle_lang": "zh",
+      "spoken_languages": ["zh"],
+      "section": { "start_seconds": 30, "duration_seconds": 180 },
+      "stressors": ["cjk_no_spaces", "short_feedback", "manual_captions"]
     },
     {
       "id": "tedx_nagoyau_happiness_ja",

@@ -15,14 +15,14 @@ Windows 版是一個獨立的原生實作，位於 `windows/`：
 相依（一次性）：`brew install dotnet makensis`
 
 ```bash
-./build-windows.sh            # 輸出 ~/Downloads/Moongate-Windows-Setup-v0.8.0-rc.1.exe 和 .sha256
+./build-windows.sh            # 輸出 ~/Downloads/Moongate-Windows-Setup-v0.8.0.exe 和 .sha256
 ```
 
 指令碼流程：核心庫單元測試（必須全綠）→ `dotnet publish` win-x64 自包含（使用者機器無需裝 .NET）→ NSIS 打包。
 
 ## Windows 使用者體驗
 
-1. 雙擊 `Moongate-Windows-Setup-v0.8.0-rc.1.exe` → 安裝到預設使用者目錄（無 UAC 彈窗）。
+1. 雙擊 `Moongate-Windows-Setup-v0.8.0.exe` → 安裝到預設使用者目錄（無 UAC 彈窗）。
 2. 首次啟動自動從固定版本官方來源下載 yt-dlp / ffmpeg（GyanD full 建置，含 libass）/ deno 到 `%LOCALAPPDATA%\Moongate\bin`，並校驗 SHA-256（需連網；設定裡可重新下載、重新安裝 yt-dlp）。
 3. 之後與 macOS 版一致：貼上連結 → 選畫質字幕 → 下載/翻譯/燒錄，多檔案工作自動建資料夾。
 4. 站點登入走 WebView2（Windows 11 內建執行階段；缺失時 App 會引導安裝）。

@@ -21,7 +21,7 @@ public class SettingsWindowSmokeTests
                 var app = Application.Current as App ?? new App();
                 app.InitializeComponent();
 
-                // 设置窗：v0.8 深色控件模板、存储管理、复合「更新与关于」tab 头（带红点）。
+                // 设置窗：v0.8 深色控件模板、存储管理、复合「更新与关于」tab 头（带红色数字 1 角标）。
                 var settings = new SettingsWindow(new MainViewModel());
                 settings.Close();
 

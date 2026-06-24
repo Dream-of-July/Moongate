@@ -303,8 +303,8 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(rowBody.contains("settingsUpdateBadge"))
         XCTAssertTrue(rowBody.contains("localizer.t(L.Update.updateAvailableStatus)"))
         XCTAssertTrue(rowBody.contains(".accessibilityValue"))
-        XCTAssertFalse(badgeBody.contains("Text(\"1\")"))
-        XCTAssertTrue(badgeBody.contains("Circle()"))
+        // 七月明确要求“数字 1 / 类似通知”的角标（App Store 式），推翻早前“布尔态用无数字红点”的决策。
+        XCTAssertTrue(badgeBody.contains("Text(\"1\")"))
         XCTAssertTrue(badgeBody.contains(".fill(.red)"))
         XCTAssertTrue(badgeBody.contains(".accessibilityHidden(true)"))
     }
