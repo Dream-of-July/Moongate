@@ -4,6 +4,20 @@
 
 This project follows semantic versioning (major.minor.patch).
 
+## Unreleased
+
+Language-first subtitle selection on the ready page. You now pick a language instead of a technical source, and the best source is chosen automatically after download.
+
+### Added / Changed
+
+- **Language-first ready page**: the ready page shows a single recommended subtitle language (chosen deterministically from the video title and available tracks — e.g. Japanese for a Japanese MV, English for an English interview, Korean for a Korean MV), with other languages and source details tucked into a "More languages" disclosure.
+- **Automatic source resolution after download**: once a language is picked, the best source is chosen automatically. Manual/official captions are trusted; a platform auto-caption is checked for usability (language match, cue density, coverage, garbling/repetition — never by timing), and when it is low quality and local recognition is available, Moongate falls back to local Whisper and labels the real source in the disclosure area. When local recognition is unavailable it does not block — the auto-caption is kept and an "enable local recognition" hint is shown.
+- **Settings copy**: "Enhanced mode" is now "AI translation planning"; the local speech recognition help now reads "Automatically fills in recognition when platform subtitles are low quality."
+
+### Tests
+
+- New cross-platform pure-logic suites for the language recommender and the platform subtitle quality gate (including a regression that timing is never used to judge the gate), plus queue fallback and ready-page wiring tests. Scoring/threshold constants are pinned in the shared cross-platform fixture and asserted on both ends.
+
 ## 0.7.6
 
 0.7.6 is a cross-platform subtitle segmentation and timing release, focused on line breaks, display duration, and inter-cue continuity for English and Japanese subtitles across YouTube auto-captions, manual subtitles, and the pre-translation cleanup. macOS and Windows keep their core logic in lockstep.
