@@ -79,11 +79,27 @@ def iter_vtt_blocks(raw: str) -> List[Tuple[str, float, float, str]]:
 
 def parse_vtt_cues(raw: str) -> List[Cue]:
     cues: List[Cue] = []
+    previous_visible = ""
     for body_text, start, end, _visible_text in iter_vtt_blocks(raw):
         text = strip_vtt_markup(body_text)
+        text = remove_rolling_prefix(text, previous_visible)
         if text:
             cues.append(Cue(index=len(cues) + 1, start=start, end=end, text=text))
+            previous_visible = text
     return cues
+
+
+def remove_rolling_prefix(text: str, previous_visible: str) -> str:
+    current_tokens = text.split()
+    previous_tokens = previous_visible.replace("\n", " ").split()
+    for count in range(min(len(current_tokens), len(previous_tokens)), 0, -1):
+        if previous_tokens[-count:] == current_tokens[:count]:
+            return " ".join(current_tokens[count:])
+    compact_text = " ".join(text.split())
+    compact_previous = " ".join(previous_visible.replace("\n", " ").split())
+    if compact_previous and compact_text != compact_previous and compact_text.startswith(compact_previous):
+        return compact_text[len(compact_previous):].strip()
+    return text
 
 
 def parse_vtt_word_timestamps(raw: str) -> List[Word]:

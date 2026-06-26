@@ -3605,6 +3605,7 @@ def transcribe_file(
     ffmpeg: str = "ffmpeg",
     prompt: Optional[str] = None,
     whisper_cpp_no_gpu: bool = False,
+    whisper_cpp_max_context_tokens: Optional[int] = None,
 ) -> Dict[str, object]:
     if engine == "whisper-cpp":
         return transcribe_words_whisper_cpp(
@@ -3616,6 +3617,7 @@ def transcribe_file(
             ffmpeg=ffmpeg,
             prompt=prompt,
             no_gpu=whisper_cpp_no_gpu,
+            max_context_tokens=whisper_cpp_max_context_tokens,
         )
     return transcribe_words(audio_path=audio_path, output_path=output_path, model_size=model_size, language=language)
 
