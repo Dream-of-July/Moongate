@@ -630,7 +630,7 @@ public class ConfiguredTranslatorTests : IDisposable
         handler.Responder = captured =>
         {
             if (captured.Body.Contains("preset", StringComparison.OrdinalIgnoreCase)
-                || captured.Body.Contains("字幕内容规划", StringComparison.Ordinal))
+                || captured.Body.Contains("字幕流水线规划", StringComparison.Ordinal))
             {
                 return FakeHttpHandler.Json(200, AnthropicReply(
                     """
@@ -649,7 +649,7 @@ public class ConfiguredTranslatorTests : IDisposable
         await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
 
         Assert.Equal(2, handler.Requests.Count);
-        Assert.Contains("字幕内容规划", RequestSystem(handler.Requests[0].Body));
+        Assert.Contains("字幕流水线规划", RequestSystem(handler.Requests[0].Body));
         var translateSystem = RequestSystem(handler.Requests[1].Body);
         Assert.Contains("这是一首夜色里的告别歌曲。", translateSystem);
         Assert.Contains("翻译前上下文", translateSystem);
@@ -716,6 +716,48 @@ public class ConfiguredTranslatorTests : IDisposable
             Assert.False(string.IsNullOrWhiteSpace(profile.TranslationGuidance), $"{preset}.TranslationGuidance");
             Assert.NotEmpty(profile.QualityAnchors);
         }
+    }
+
+    [Fact]
+    public void SanitizedSourceCuesForTranslation_DropsCjkRomanizedGarbageCues()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:01,000", "00:00:02,000", "好きなことを続けること"),
+            new(2, "00:00:02,000", "00:00:03,000", "ni"),
+            new(3, "00:00:03,000", "00:00:04,000", "dare ni"),
+            new(4, "00:00:04,000", "00:00:05,000", "それは楽しいだけじゃない"),
+            new(5, "00:00:05,000", "00:00:06,000", "carano"),
+            new(6, "00:00:06,000", "00:00:07,000", "本当にできる"),
+        };
+
+        var filtered = ConfiguredTranslator.SanitizedSourceCuesForTranslation(cues, "ja");
+
+        Assert.Equal(
+            new[] { "好きなことを続けること", "それは楽しいだけじゃない", "本当にできる" },
+            filtered.Select(cue => cue.Text));
+        Assert.Equal(new[] { 1, 2, 3 }, filtered.Select(cue => cue.Index));
+        Assert.Equal(
+            new[] { "00:00:01,000", "00:00:04,000", "00:00:06,000" },
+            filtered.Select(cue => cue.Start));
+    }
+
+    [Fact]
+    public void SanitizedSourceCuesForTranslation_StripsJapaneseRomajiGlosses()
+    {
+        var cues = new List<SubtitleCue>
+        {
+            new(1, "00:00:00,790", "00:00:05,620", "沈むように溶けていくように (Shizumu you ni tokete yuku you ni)"),
+            new(2, "00:00:08,500", "00:00:14,900", "二人だけの空が広がる夜に (Futari dake no sora ga hirogaru you ni)"),
+        };
+
+        var sanitized = ConfiguredTranslator.SanitizedSourceCuesForTranslation(cues, "ja");
+
+        Assert.Equal(
+            new[] { "沈むように溶けていくように", "二人だけの空が広がる夜に" },
+            sanitized.Select(cue => cue.Text));
+        Assert.Equal(new[] { 1, 2 }, sanitized.Select(cue => cue.Index));
+        Assert.Equal(new[] { "00:00:00,790", "00:00:08,500" }, sanitized.Select(cue => cue.Start));
     }
 
     [Fact]
@@ -799,6 +841,78 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal("unknown", advice.SourceLanguageCode);
         Assert.Empty(advice.Characters!);
         Assert.Empty(advice.TranslationNotes!);
+    }
+
+    [Fact]
+    public void SubtitlePipelineAdvice_ParsesSourceActionAndTimingProfile()
+    {
+        var advice = ConfiguredTranslator.ParseSubtitlePipelineAdvice(
+            """
+            {
+              "summary":"YOASOBI 歌曲 MV，YouTube 自动字幕疑似罗马音循环。",
+              "context":"日语歌词，源字幕混入大量 ni/dare/carano。",
+              "sourceLanguageCode":"ja",
+              "preset":"songLyrics",
+              "terms":["群青：歌名，保留意象"],
+              "translationNotes":["按整段歌词意象翻译"],
+              "sourceAssessment":"bad",
+              "recommendedSourceAction":"useLocalASR",
+              "timingProfile":"japaneseLyrics",
+              "asrHints":{
+                "disablePromptContext":true,
+                "preferVAD":true,
+                "suppressIntroHallucination":true
+              },
+              "qualityRisks":["romajiLoop","lyricsContext"]
+            }
+            """);
+        Assert.NotNull(advice);
+
+        Assert.Equal("ja", advice.SourceLanguageCode);
+        Assert.Equal(TranslationPromptPreset.SongLyrics, advice.Preset);
+        Assert.Equal(SubtitleSourceAssessment.Bad, advice.SourceAssessment);
+        Assert.Equal(RecommendedSubtitleSourceAction.UseLocalAsr, advice.RecommendedSourceAction);
+        Assert.Equal(SubtitleTimingProfile.JapaneseLyrics, advice.TimingProfile);
+        Assert.True(advice.AsrHints.DisablePromptContext);
+        Assert.True(advice.AsrHints.PreferVad);
+        Assert.True(advice.AsrHints.SuppressIntroHallucination);
+        Assert.Equal(["romajiLoop", "lyricsContext"], advice.QualityRisks);
+
+        var translationAdvice = advice.ToTranslationPromptAdvice();
+        Assert.Equal(TranslationPromptPreset.SongLyrics, translationAdvice.Preset);
+        Assert.Equal(["按整段歌词意象翻译"], translationAdvice.TranslationNotes);
+    }
+
+    [Fact]
+    public void SubtitlePipelineAdvice_LegacyTranslationJsonDefaultsToSafeSourceDecision()
+    {
+        var advice = ConfiguredTranslator.ParseSubtitlePipelineAdvice(
+            """{"summary":"测试摘要","preset":"anime","sourceLanguageCode":"ja"}""");
+        Assert.NotNull(advice);
+
+        Assert.Equal(TranslationPromptPreset.Anime, advice.Preset);
+        Assert.Equal("ja", advice.SourceLanguageCode);
+        Assert.Equal(SubtitleSourceAssessment.Unknown, advice.SourceAssessment);
+        Assert.Equal(RecommendedSubtitleSourceAction.KeepPlatform, advice.RecommendedSourceAction);
+        Assert.Equal(SubtitleTimingProfile.Speech, advice.TimingProfile);
+        Assert.False(advice.AsrHints.DisablePromptContext);
+        Assert.Equal(TranslationPromptPreset.Anime, advice.ToTranslationPromptAdvice().Preset);
+    }
+
+    [Fact]
+    public void SubtitlePipelinePlanningPrompt_IncludesSourceAndAsrDecisionSchema()
+    {
+        var prompt = ConfiguredTranslator.SubtitlePipelinePlanningSystemPrompt;
+
+        Assert.Contains("字幕流水线规划器", prompt);
+        Assert.Contains("sourceAssessment", prompt);
+        Assert.Contains("recommendedSourceAction", prompt);
+        Assert.Contains("timingProfile", prompt);
+        Assert.Contains("asrHints", prompt);
+        Assert.Contains("useLocalASR", prompt);
+        Assert.Contains("japaneseLyrics", prompt);
+        Assert.Contains("不能直接写时间轴", prompt);
+        Assert.Contains("不能覆盖 local-ASR 源字幕", prompt);
     }
 
     [Fact]
@@ -892,7 +1006,7 @@ public class ConfiguredTranslatorTests : IDisposable
             translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
 
         Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
-        Assert.Contains("增强模式", ex.Detail);
+        Assert.Contains("AI 翻译规划", ex.Detail);
         Assert.Contains("模型", ex.Detail);
     }
 
@@ -1283,9 +1397,33 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
-    public async Task Translate_LocalAsrSource_ResegmentsWithoutSmartAndWritesBack()
+    public async Task ResegmentForReadability_SongLyrics_FallsBackOnInternalDuplicateNoise()
     {
-        // 本地 Whisper 源字幕（.local-asr.ja.srt）即使 smart 关闭也应重分段，并把句子级结果写回源文件。
+        List<SubtitleCue> input =
+        [
+            new SubtitleCue(1, "00:01:59,880", "00:02:02,000", "好きなことを続けること、"),
+            new SubtitleCue(2, "00:02:02,000", "00:02:04,618", "好こときをな続ことける、そ"),
+            new SubtitleCue(3, "00:02:04,618", "00:02:08,000", "れは楽しいだけじゃない"),
+        ];
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|好きなことを続けること、好こときをな続ことける、それは楽しいだけじゃない")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(
+            input,
+            TranslationPromptPreset.SongLyrics,
+            CancellationToken.None);
+
+        Assert.Equal(input.Select(c => c.Text), output.Select(c => c.Text));
+    }
+
+    [Fact]
+    public async Task Translate_LocalAsrSource_ResegmentsWithoutSmartButDoesNotOverwriteSource()
+    {
+        // 本地 Whisper 源字幕可以在翻译内存视图里重分段，但不能把 LLM 结果写回源 .local-asr.ja.srt。
         var srt = WriteSrt("clip.local-asr.ja.srt", JapaneseAsrCues());
         var handler = new FakeHttpHandler
         {
@@ -1303,9 +1441,8 @@ public class ConfiguredTranslatorTests : IDisposable
 
         var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
 
-        var rewrittenSource = SrtTools.ParseSrt(File.ReadAllText(srt));
-        Assert.Equal(4, rewrittenSource.Count);                       // 源 .local-asr.ja.srt 被写回为整句
-        Assert.Equal("顔洗ってえらい。", rewrittenSource[2].Text);
+        var unchangedSource = SrtTools.ParseSrt(File.ReadAllText(srt));
+        Assert.Equal(JapaneseAsrCues().Select(c => c.Text), unchangedSource.Select(c => c.Text));
         var result = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal(4, result.Count);
     }
@@ -1322,7 +1459,7 @@ public class ConfiguredTranslatorTests : IDisposable
             Responder = captured =>
             {
                 var system = RequestSystem(captured.Body);
-                if (system.Contains("字幕内容规划器", StringComparison.Ordinal))
+                if (system.Contains("字幕流水线规划器", StringComparison.Ordinal))
                 {
                     Assert.Contains("- songLyrics：", system);
                     Assert.Contains("意象", system);
@@ -1352,10 +1489,10 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal(4, result.Count);
         Assert.True(sawLyricsSegmentPrompt);
         Assert.True(sawLyricsTranslationPrompt);
-        var rewrittenSource = SrtTools.ParseSrt(File.ReadAllText(srt));
+        var unchangedSource = SrtTools.ParseSrt(File.ReadAllText(srt));
         Assert.Equal(
-            ["青い世界", "好きなものを好きだという", "怖くて仕方ないけど"],
-            rewrittenSource.Select(c => c.Text).Take(3).ToArray());
+            JapaneseLyricsCues().Select(c => c.Text),
+            unchangedSource.Select(c => c.Text));
     }
 
     [Fact]
@@ -1369,7 +1506,7 @@ public class ConfiguredTranslatorTests : IDisposable
             Responder = captured =>
             {
                 var system = RequestSystem(captured.Body);
-                Assert.DoesNotContain("字幕内容规划器", system);
+                Assert.DoesNotContain("字幕流水线规划器", system);
                 if (system.Contains("待断句文本", StringComparison.Ordinal))
                 {
                     sawLyricsSegmentPrompt = system.Contains("歌词行", StringComparison.Ordinal)
@@ -1438,7 +1575,7 @@ public class ConfiguredTranslatorTests : IDisposable
                     return FakeHttpHandler.Json(200, AnthropicReply(
                         "1|we know it what is the vision for what you see coming next.\n2|we asked ourselves how far can it go and what comes after that?"));
                 }
-                if (system.Contains("字幕内容规划器", StringComparison.Ordinal))
+                if (system.Contains("字幕流水线规划器", StringComparison.Ordinal))
                 {
                     return FakeHttpHandler.Json(200, AnthropicReply("{\"summary\":\"测试\",\"preset\":\"general\"}"));
                 }

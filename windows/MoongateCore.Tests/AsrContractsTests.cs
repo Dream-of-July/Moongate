@@ -764,6 +764,30 @@ public class AsrContractsTests
         Assert.Equal(LocalAsrSubtitleTimingPlanner.MaximumLatinCueSeconds, speech.MaximumLatinCueSeconds);
     }
 
+    [Fact]
+    public void LocalAsrConfidenceConstantsMatchFixtureAndAssess()
+    {
+        var path = Path.Combine(RepoRoot(), "Tests", "fixtures", "whisper-timing-constants.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var section = doc.RootElement.GetProperty("localASRConfidence");
+        Assert.Equal(LocalAsrConfidence.AverageProbabilityFloor, section.GetProperty("averageProbabilityFloor").GetDouble());
+        Assert.Equal(LocalAsrConfidence.LowConfidenceWordProbability, section.GetProperty("lowConfidenceWordProbability").GetDouble());
+        Assert.Equal(LocalAsrConfidence.LowConfidenceWordRatioCeiling, section.GetProperty("lowConfidenceWordRatioCeiling").GetDouble());
+        Assert.Equal(LocalAsrConfidence.MinimumAssessableWordCount, section.GetProperty("minimumAssessableWordCount").GetInt32());
+
+        static List<AsrWord> Words(double probability, int count) =>
+            Enumerable.Range(0, count)
+                .Select(_ => new AsrWord { Text = "あ", StartSeconds = 0, EndSeconds = 0.1, Probability = probability })
+                .ToList();
+
+        Assert.False(LocalAsrConfidence.Assess(Words(0.95, 30)).IsLowConfidence);          // clean
+        var garbled = Words(0.3, 8).Concat(Words(0.9, 22)).ToList();                        // avg≈0.74, lowRatio≈0.27
+        Assert.True(LocalAsrConfidence.Assess(garbled).IsLowConfidence);
+        Assert.False(LocalAsrConfidence.Assess(Words(0.2, 10)).IsLowConfidence);            // too few words
+        var borderline = Words(0.4, 3).Concat(Words(0.9, 27)).ToList();                     // avg≈0.85, lowRatio 0.1
+        Assert.False(LocalAsrConfidence.Assess(borderline).IsLowConfidence);
+    }
+
     // Identical to Swift cjkBoundaryParityCases — the two platforms must agree on these so the
     // macOS NaturalLanguage tokenizer and the Windows script-run segmenter never silently diverge.
     public static readonly (string Text, int Offset, bool Expected)[] CjkBoundaryParityCases =
@@ -935,7 +959,346 @@ public class AsrContractsTests
         var guardedStart = SrtTools.SrtTimeToSeconds(guarded[0].Start)!.Value;
         var unguardedStart = SrtTools.SrtTimeToSeconds(unguarded[0].Start)!.Value;
         Assert.True(guardedStart >= 2.51, "lyrics must not appear inside a leading silent prelude");
+        Assert.False(guarded[0].Text.StartsWith("あ", StringComparison.Ordinal), "low-confidence leading lyric noise inside the silent prelude should be dropped");
+        Assert.StartsWith("いつもの", guarded[0].Text, StringComparison.Ordinal);
         Assert.Equal(0.0, unguardedStart, precision: 3);
+    }
+
+    [Fact]
+    public void JapaneseLyricsKeepsSingleKanjiWordSuffixAttached()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "ado-word-boundary",
+            LanguageCode = "ja",
+            DurationSeconds = 24.0,
+            Words =
+            [
+                new AsrWord { Text = "ちっちゃな", StartSeconds = 8.17, EndSeconds = 12.61, Probability = 0.95 },
+                new AsrWord { Text = "頃", StartSeconds = 12.89, EndSeconds = 13.50, Probability = 0.95 },
+                new AsrWord { Text = "から", StartSeconds = 13.50, EndSeconds = 14.20, Probability = 0.95 },
+                new AsrWord { Text = "優等", StartSeconds = 14.20, EndSeconds = 17.87, Probability = 0.95 },
+                new AsrWord { Text = "生", StartSeconds = 18.15, EndSeconds = 18.50, Probability = 0.95 },
+                new AsrWord { Text = "気付いたら", StartSeconds = 18.50, EndSeconds = 21.00, Probability = 0.95 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var texts = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics)
+            .Select(cue => cue.Text)
+            .ToList();
+        Assert.Contains(texts, text => text.Contains("優等生", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, text => text.StartsWith("生", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void JapaneseLyricsDoesNotBorrowKanaWordHeadIntoPreviousLine()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "ado-kana-head-boundary",
+            LanguageCode = "ja",
+            DurationSeconds = 24.0,
+            Words =
+            [
+                new AsrWord { Text = "それ", StartSeconds = 3.93, EndSeconds = 4.05, Probability = 0.99 },
+                new AsrWord { Text = "が", StartSeconds = 4.05, EndSeconds = 4.38, Probability = 0.99 },
+                new AsrWord { Text = "何", StartSeconds = 4.38, EndSeconds = 4.68, Probability = 0.99 },
+                new AsrWord { Text = "か", StartSeconds = 4.71, EndSeconds = 5.01, Probability = 0.99 },
+                new AsrWord { Text = "見", StartSeconds = 5.06, EndSeconds = 5.37, Probability = 0.68 },
+                new AsrWord { Text = "せ", StartSeconds = 5.37, EndSeconds = 5.70, Probability = 0.99 },
+                new AsrWord { Text = "つ", StartSeconds = 5.70, EndSeconds = 6.03, Probability = 0.98 },
+                new AsrWord { Text = "けて", StartSeconds = 6.03, EndSeconds = 6.70, Probability = 0.99 },
+                new AsrWord { Text = "や", StartSeconds = 6.70, EndSeconds = 7.03, Probability = 0.99 },
+                new AsrWord { Text = "る", StartSeconds = 7.03, EndSeconds = 7.42, Probability = 0.99 },
+                new AsrWord { Text = "ち", StartSeconds = 7.97, EndSeconds = 8.47, Probability = 0.74 },
+                new AsrWord { Text = "っちゃ", StartSeconds = 8.47, EndSeconds = 11.64, Probability = 0.99 },
+                new AsrWord { Text = "な", StartSeconds = 11.64, EndSeconds = 12.69, Probability = 0.99 },
+                new AsrWord { Text = "頃", StartSeconds = 12.69, EndSeconds = 13.74, Probability = 0.99 },
+                new AsrWord { Text = "から", StartSeconds = 13.74, EndSeconds = 15.85, Probability = 0.99 },
+                new AsrWord { Text = "優", StartSeconds = 15.85, EndSeconds = 16.90, Probability = 0.74 },
+                new AsrWord { Text = "等", StartSeconds = 16.90, EndSeconds = 17.95, Probability = 0.99 },
+                new AsrWord { Text = "生", StartSeconds = 17.95, EndSeconds = 19.06, Probability = 0.99 },
+                new AsrWord { Text = "気", StartSeconds = 19.06, EndSeconds = 19.27, Probability = 0.97 },
+                new AsrWord { Text = "付", StartSeconds = 19.48, EndSeconds = 19.48, Probability = 0.56 },
+                new AsrWord { Text = "いた", StartSeconds = 19.61, EndSeconds = 19.90, Probability = 0.99 },
+                new AsrWord { Text = "ら", StartSeconds = 19.90, EndSeconds = 20.11, Probability = 0.99 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var texts = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics)
+            .Select(cue => cue.Text)
+            .ToList();
+        Assert.DoesNotContain(texts, text => text.EndsWith("やるち", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("ちっちゃ", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("優等生", StringComparison.Ordinal));
+        Assert.DoesNotContain(texts, text => text.StartsWith("生", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void JapaneseLyricsRejoinsSemanticTailsAcrossSungGaps()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-semantic-tails",
+            LanguageCode = "ja",
+            DurationSeconds = 78.0,
+            Words =
+            [
+                new AsrWord { Text = "そんな", StartSeconds = 25.46, EndSeconds = 25.66, Probability = 0.97 },
+                new AsrWord { Text = "も", StartSeconds = 25.66, EndSeconds = 25.83, Probability = 1.00 },
+                new AsrWord { Text = "ん", StartSeconds = 26.04, EndSeconds = 26.20, Probability = 1.00 },
+                new AsrWord { Text = "さ", StartSeconds = 26.20, EndSeconds = 26.48, Probability = 1.00 },
+                new AsrWord { Text = "これで", StartSeconds = 26.48, EndSeconds = 27.28, Probability = 0.97 },
+                new AsrWord { Text = "いい", StartSeconds = 27.28, EndSeconds = 27.82, Probability = 1.00 },
+                new AsrWord { Text = "知", StartSeconds = 27.82, EndSeconds = 28.08, Probability = 0.97 },
+                new AsrWord { Text = "ら", StartSeconds = 28.08, EndSeconds = 28.34, Probability = 1.00 },
+                new AsrWord { Text = "ず", StartSeconds = 28.34, EndSeconds = 28.60, Probability = 0.99 },
+                new AsrWord { Text = "知", StartSeconds = 28.60, EndSeconds = 28.86, Probability = 0.97 },
+                new AsrWord { Text = "ら", StartSeconds = 28.86, EndSeconds = 29.12, Probability = 1.00 },
+                new AsrWord { Text = "ず", StartSeconds = 29.12, EndSeconds = 29.38, Probability = 1.00 },
+                new AsrWord { Text = "隠", StartSeconds = 29.38, EndSeconds = 29.63, Probability = 0.99 },
+                new AsrWord { Text = "して", StartSeconds = 30.15, EndSeconds = 30.15, Probability = 1.00 },
+                new AsrWord { Text = "た", StartSeconds = 30.33, EndSeconds = 30.42, Probability = 0.99 },
+                new AsrWord { Text = "本当", StartSeconds = 30.90, EndSeconds = 31.23, Probability = 0.41 },
+                new AsrWord { Text = "の", StartSeconds = 31.23, EndSeconds = 31.63, Probability = 1.00 },
+                new AsrWord { Text = "声", StartSeconds = 31.63, EndSeconds = 32.03, Probability = 1.00 },
+                new AsrWord { Text = "を", StartSeconds = 32.03, EndSeconds = 32.46, Probability = 1.00 },
+                new AsrWord { Text = "響", StartSeconds = 32.46, EndSeconds = 32.80, Probability = 0.73 },
+                new AsrWord { Text = "か", StartSeconds = 32.80, EndSeconds = 33.14, Probability = 1.00 },
+                new AsrWord { Text = "せて", StartSeconds = 33.14, EndSeconds = 33.83, Probability = 1.00 },
+                new AsrWord { Text = "よ", StartSeconds = 33.83, EndSeconds = 34.20, Probability = 1.00 },
+                new AsrWord { Text = "青", StartSeconds = 53.26, EndSeconds = 53.70, Probability = 1.00 },
+                new AsrWord { Text = "い", StartSeconds = 53.70, EndSeconds = 54.14, Probability = 1.00 },
+                new AsrWord { Text = "世界", StartSeconds = 54.14, EndSeconds = 55.14, Probability = 1.00 },
+                new AsrWord { Text = "好", StartSeconds = 55.14, EndSeconds = 55.47, Probability = 1.00 },
+                new AsrWord { Text = "き", StartSeconds = 55.47, EndSeconds = 55.80, Probability = 1.00 },
+                new AsrWord { Text = "な", StartSeconds = 55.80, EndSeconds = 56.13, Probability = 1.00 },
+                new AsrWord { Text = "もの", StartSeconds = 56.13, EndSeconds = 56.79, Probability = 0.97 },
+                new AsrWord { Text = "を", StartSeconds = 56.79, EndSeconds = 57.12, Probability = 1.00 },
+                new AsrWord { Text = "好", StartSeconds = 57.12, EndSeconds = 57.45, Probability = 0.98 },
+                new AsrWord { Text = "き", StartSeconds = 57.65, EndSeconds = 57.78, Probability = 1.00 },
+                new AsrWord { Text = "だ", StartSeconds = 57.78, EndSeconds = 58.01, Probability = 1.00 },
+                new AsrWord { Text = "と", StartSeconds = 58.22, EndSeconds = 58.44, Probability = 0.25 },
+                new AsrWord { Text = "言", StartSeconds = 58.44, EndSeconds = 58.77, Probability = 1.00 },
+                new AsrWord { Text = "う", StartSeconds = 58.77, EndSeconds = 59.14, Probability = 1.00 },
+                new AsrWord { Text = "怖", StartSeconds = 59.14, EndSeconds = 59.47, Probability = 0.99 },
+                new AsrWord { Text = "く", StartSeconds = 59.47, EndSeconds = 59.80, Probability = 1.00 },
+                new AsrWord { Text = "て", StartSeconds = 59.80, EndSeconds = 60.13, Probability = 0.86 },
+                new AsrWord { Text = "仕", StartSeconds = 60.13, EndSeconds = 60.46, Probability = 1.00 },
+                new AsrWord { Text = "方", StartSeconds = 60.46, EndSeconds = 60.79, Probability = 1.00 },
+                new AsrWord { Text = "ない", StartSeconds = 60.79, EndSeconds = 61.45, Probability = 1.00 },
+                new AsrWord { Text = "した", StartSeconds = 65.89, EndSeconds = 66.41, Probability = 1.00 },
+                new AsrWord { Text = "んだ", StartSeconds = 66.41, EndSeconds = 67.00, Probability = 1.00 },
+                new AsrWord { Text = "手", StartSeconds = 67.00, EndSeconds = 68.22, Probability = 0.53 },
+                new AsrWord { Text = "を", StartSeconds = 69.44, EndSeconds = 69.44, Probability = 1.00 },
+                new AsrWord { Text = "伸", StartSeconds = 70.08, EndSeconds = 70.64, Probability = 1.00 },
+                new AsrWord { Text = "ば", StartSeconds = 70.65, EndSeconds = 71.87, Probability = 1.00 },
+                new AsrWord { Text = "せ", StartSeconds = 71.87, EndSeconds = 73.09, Probability = 1.00 },
+                new AsrWord { Text = "ば", StartSeconds = 73.09, EndSeconds = 74.25, Probability = 1.00 },
+                new AsrWord { Text = "伸", StartSeconds = 74.31, EndSeconds = 75.52, Probability = 0.99 },
+                new AsrWord { Text = "ば", StartSeconds = 75.52, EndSeconds = 76.72, Probability = 1.00 },
+                new AsrWord { Text = "す", StartSeconds = 76.76, EndSeconds = 77.96, Probability = 1.00 },
+                new AsrWord { Text = "ほど", StartSeconds = 77.96, EndSeconds = 80.41, Probability = 0.99 },
+                new AsrWord { Text = "に", StartSeconds = 80.41, EndSeconds = 81.68, Probability = 1.00 },
+                new AsrWord { Text = "遠", StartSeconds = 81.70, EndSeconds = 82.06, Probability = 1.00 },
+                new AsrWord { Text = "く", StartSeconds = 82.06, EndSeconds = 82.42, Probability = 1.00 },
+                new AsrWord { Text = "へ", StartSeconds = 82.42, EndSeconds = 82.78, Probability = 1.00 },
+                new AsrWord { Text = "行", StartSeconds = 82.78, EndSeconds = 83.14, Probability = 0.89 },
+                new AsrWord { Text = "く", StartSeconds = 83.14, EndSeconds = 83.52, Probability = 1.00 },
+                new AsrWord { Text = "思", StartSeconds = 83.52, EndSeconds = 83.83, Probability = 0.99 },
+                new AsrWord { Text = "う", StartSeconds = 83.83, EndSeconds = 84.14, Probability = 1.00 },
+                new AsrWord { Text = "ように", StartSeconds = 84.14, EndSeconds = 85.08, Probability = 0.98 },
+                new AsrWord { Text = "い", StartSeconds = 85.08, EndSeconds = 85.45, Probability = 0.40 },
+                new AsrWord { Text = "か", StartSeconds = 85.45, EndSeconds = 85.82, Probability = 1.00 },
+                new AsrWord { Text = "ない", StartSeconds = 85.82, EndSeconds = 86.56, Probability = 1.00 },
+                new AsrWord { Text = "今日", StartSeconds = 86.56, EndSeconds = 87.56, Probability = 1.00 },
+                new AsrWord { Text = "も", StartSeconds = 87.56, EndSeconds = 87.56, Probability = 1.00 },
+                new AsrWord { Text = "また", StartSeconds = 87.56, EndSeconds = 88.14, Probability = 0.81 },
+                new AsrWord { Text = "慌", StartSeconds = 88.14, EndSeconds = 88.42, Probability = 0.86 },
+                new AsrWord { Text = "ただ", StartSeconds = 88.42, EndSeconds = 89.00, Probability = 0.99 },
+                new AsrWord { Text = "しく", StartSeconds = 89.00, EndSeconds = 89.60, Probability = 0.99 },
+                new AsrWord { Text = "も", StartSeconds = 89.89, EndSeconds = 89.89, Probability = 0.91 },
+                new AsrWord { Text = "が", StartSeconds = 90.07, EndSeconds = 90.18, Probability = 0.99 },
+                new AsrWord { Text = "いて", StartSeconds = 90.64, EndSeconds = 90.77, Probability = 0.68 },
+                new AsrWord { Text = "る", StartSeconds = 90.77, EndSeconds = 91.08, Probability = 0.99 },
+                new AsrWord { Text = "悔", StartSeconds = 91.08, EndSeconds = 91.48, Probability = 1.00 },
+                new AsrWord { Text = "しい", StartSeconds = 91.48, EndSeconds = 92.32, Probability = 1.00 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+        Assert.Contains(cues, cue => cue.Text.Contains("隠してた", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("隠", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("して", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("好きだと言う", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("好き", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("だ", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("手を伸ばせば", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("手", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("を", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("もがいてる", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("もが", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("いて", StringComparison.Ordinal));
+        Assert.NotEmpty(joined);
+    }
+
+    [Fact]
+    public void JapaneseLyricsMergesFlashInterjectionWhenNeighborsAreReadable()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-flash-hora",
+            LanguageCode = "ja",
+            DurationSeconds = 42.0,
+            Words =
+            [
+                new AsrWord { Text = "隠", StartSeconds = 29.38, EndSeconds = 29.63, Probability = 0.99 },
+                new AsrWord { Text = "して", StartSeconds = 30.15, EndSeconds = 30.15, Probability = 1.00 },
+                new AsrWord { Text = "た", StartSeconds = 30.33, EndSeconds = 30.42, Probability = 0.99 },
+                new AsrWord { Text = "本当", StartSeconds = 30.90, EndSeconds = 31.23, Probability = 0.41 },
+                new AsrWord { Text = "の", StartSeconds = 31.23, EndSeconds = 31.63, Probability = 1.00 },
+                new AsrWord { Text = "声", StartSeconds = 31.63, EndSeconds = 32.03, Probability = 1.00 },
+                new AsrWord { Text = "を", StartSeconds = 32.03, EndSeconds = 32.46, Probability = 1.00 },
+                new AsrWord { Text = "響", StartSeconds = 32.46, EndSeconds = 32.80, Probability = 0.73 },
+                new AsrWord { Text = "か", StartSeconds = 32.80, EndSeconds = 33.14, Probability = 1.00 },
+                new AsrWord { Text = "せて", StartSeconds = 33.14, EndSeconds = 33.83, Probability = 1.00 },
+                new AsrWord { Text = "よ", StartSeconds = 33.83, EndSeconds = 34.20, Probability = 1.00 },
+                new AsrWord { Text = "ほ", StartSeconds = 34.20, EndSeconds = 34.48, Probability = 1.00 },
+                new AsrWord { Text = "ら", StartSeconds = 34.48, EndSeconds = 34.76, Probability = 1.00 },
+                new AsrWord { Text = "見", StartSeconds = 34.76, EndSeconds = 35.04, Probability = 0.97 },
+                new AsrWord { Text = "ない", StartSeconds = 35.04, EndSeconds = 35.60, Probability = 1.00 },
+                new AsrWord { Text = "ふ", StartSeconds = 35.60, EndSeconds = 35.88, Probability = 0.80 },
+                new AsrWord { Text = "り", StartSeconds = 35.88, EndSeconds = 36.16, Probability = 1.00 },
+                new AsrWord { Text = "して", StartSeconds = 36.68, EndSeconds = 36.72, Probability = 1.00 },
+                new AsrWord { Text = "いて", StartSeconds = 36.80, EndSeconds = 36.98, Probability = 1.00 },
+                new AsrWord { Text = "も", StartSeconds = 37.28, EndSeconds = 37.56, Probability = 1.00 },
+                new AsrWord { Text = "確", StartSeconds = 37.56, EndSeconds = 37.89, Probability = 0.95 },
+                new AsrWord { Text = "か", StartSeconds = 37.90, EndSeconds = 38.24, Probability = 1.00 },
+                new AsrWord { Text = "に", StartSeconds = 38.24, EndSeconds = 38.58, Probability = 1.00 },
+                new AsrWord { Text = "そこ", StartSeconds = 38.58, EndSeconds = 39.10, Probability = 1.00 },
+                new AsrWord { Text = "に", StartSeconds = 39.10, EndSeconds = 39.40, Probability = 1.00 },
+                new AsrWord { Text = "ある", StartSeconds = 39.40, EndSeconds = 40.20, Probability = 1.00 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+        Assert.DoesNotContain(cues, cue => cue.Text == "ほら");
+        Assert.Contains(cues, cue => cue.Text.Contains("ほら", StringComparison.Ordinal));
+        foreach (var cue in cues.Where(cue => cue.Text.Contains("ほら", StringComparison.Ordinal)))
+        {
+            var duration = SrtTools.SrtTimeToSeconds(cue.End)!.Value - SrtTools.SrtTimeToSeconds(cue.Start)!.Value;
+            Assert.True(duration >= 0.8, joined);
+        }
+    }
+
+    [Fact]
+    public void JapaneseLyricsRejoinsAdjectivePredicateContinuation()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-adjective-naru",
+            LanguageCode = "ja",
+            DurationSeconds = 108.0,
+            Words =
+            [
+                new AsrWord { Text = "ち", StartSeconds = 92.90, EndSeconds = 93.19, Probability = 0.99 },
+                new AsrWord { Text = "も", StartSeconds = 93.50, EndSeconds = 93.50, Probability = 0.95 },
+                new AsrWord { Text = "ただ", StartSeconds = 93.57, EndSeconds = 93.96, Probability = 0.53 },
+                new AsrWord { Text = "情", StartSeconds = 93.98, EndSeconds = 94.36, Probability = 1.00 },
+                new AsrWord { Text = "け", StartSeconds = 94.36, EndSeconds = 94.74, Probability = 0.99 },
+                new AsrWord { Text = "なく", StartSeconds = 94.74, EndSeconds = 95.50, Probability = 1.00 },
+                new AsrWord { Text = "て", StartSeconds = 95.50, EndSeconds = 95.88, Probability = 1.00 },
+                new AsrWord { Text = "涙", StartSeconds = 95.88, EndSeconds = 96.33, Probability = 1.00 },
+                new AsrWord { Text = "が", StartSeconds = 96.33, EndSeconds = 96.78, Probability = 1.00 },
+                new AsrWord { Text = "出", StartSeconds = 96.78, EndSeconds = 97.23, Probability = 0.99 },
+                new AsrWord { Text = "る", StartSeconds = 97.23, EndSeconds = 97.68, Probability = 1.00 },
+                new AsrWord { Text = "踏", StartSeconds = 97.68, EndSeconds = 97.93, Probability = 1.00 },
+                new AsrWord { Text = "み", StartSeconds = 97.93, EndSeconds = 98.19, Probability = 1.00 },
+                new AsrWord { Text = "込", StartSeconds = 98.19, EndSeconds = 98.44, Probability = 1.00 },
+                new AsrWord { Text = "む", StartSeconds = 98.44, EndSeconds = 98.70, Probability = 1.00 },
+                new AsrWord { Text = "ほど", StartSeconds = 98.70, EndSeconds = 99.24, Probability = 0.97 },
+                new AsrWord { Text = "苦", StartSeconds = 99.24, EndSeconds = 99.62, Probability = 1.00 },
+                new AsrWord { Text = "しく", StartSeconds = 99.62, EndSeconds = 100.38, Probability = 1.00 },
+                new AsrWord { Text = "なる", StartSeconds = 100.38, EndSeconds = 101.14, Probability = 0.98 },
+                new AsrWord { Text = "痛", StartSeconds = 101.14, EndSeconds = 101.56, Probability = 1.00 },
+                new AsrWord { Text = "く", StartSeconds = 101.56, EndSeconds = 101.98, Probability = 1.00 },
+                new AsrWord { Text = "も", StartSeconds = 101.98, EndSeconds = 102.40, Probability = 1.00 },
+                new AsrWord { Text = "なる", StartSeconds = 102.40, EndSeconds = 103.24, Probability = 1.00 },
+                new AsrWord { Text = "感じ", StartSeconds = 103.24, EndSeconds = 104.82, Probability = 0.78 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+        Assert.Contains(cues, cue => cue.Text.Contains("苦しくなる", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("苦しく", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("なる痛", StringComparison.Ordinal));
+        Assert.NotEmpty(joined);
+    }
+
+    [Fact]
+    public void JapaneseLyricsRejoinsFixedPhrasesAcrossSungGaps()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-fixed-phrases",
+            LanguageCode = "ja",
+            DurationSeconds = 132.0,
+            Words =
+            [
+                new AsrWord { Text = "この", StartSeconds = 111.40, EndSeconds = 111.71, Probability = 0.94 },
+                new AsrWord { Text = "道", StartSeconds = 111.98, EndSeconds = 112.08, Probability = 1.00 },
+                new AsrWord { Text = "を", StartSeconds = 112.08, EndSeconds = 112.46, Probability = 1.00 },
+                new AsrWord { Text = "重", StartSeconds = 112.46, EndSeconds = 112.88, Probability = 0.67 },
+                new AsrWord { Text = "い", StartSeconds = 112.88, EndSeconds = 113.30, Probability = 1.00 },
+                new AsrWord { Text = "瞼", StartSeconds = 113.30, EndSeconds = 113.72, Probability = 0.81 },
+                new AsrWord { Text = "こ", StartSeconds = 113.72, EndSeconds = 114.14, Probability = 0.76 },
+                new AsrWord { Text = "する", StartSeconds = 114.94, EndSeconds = 114.98, Probability = 0.99 },
+                new AsrWord { Text = "夜", StartSeconds = 115.07, EndSeconds = 115.55, Probability = 0.92 },
+                new AsrWord { Text = "に", StartSeconds = 115.55, EndSeconds = 116.12, Probability = 1.00 },
+                new AsrWord { Text = "し", StartSeconds = 116.12, EndSeconds = 116.42, Probability = 0.99 },
+                new AsrWord { Text = "が", StartSeconds = 116.42, EndSeconds = 116.72, Probability = 1.00 },
+                new AsrWord { Text = "み", StartSeconds = 116.72, EndSeconds = 117.02, Probability = 1.00 },
+                new AsrWord { Text = "つ", StartSeconds = 117.02, EndSeconds = 117.32, Probability = 1.00 },
+                new AsrWord { Text = "いた", StartSeconds = 117.32, EndSeconds = 117.93, Probability = 1.00 },
+                new AsrWord { Text = "好き", StartSeconds = 119.18, EndSeconds = 119.86, Probability = 1.00 },
+                new AsrWord { Text = "な", StartSeconds = 119.86, EndSeconds = 120.20, Probability = 1.00 },
+                new AsrWord { Text = "こと", StartSeconds = 120.20, EndSeconds = 120.89, Probability = 0.98 },
+                new AsrWord { Text = "を", StartSeconds = 120.89, EndSeconds = 121.23, Probability = 1.00 },
+                new AsrWord { Text = "続", StartSeconds = 121.57, EndSeconds = 121.57, Probability = 1.00 },
+                new AsrWord { Text = "ける", StartSeconds = 121.78, EndSeconds = 121.97, Probability = 1.00 },
+                new AsrWord { Text = "こと", StartSeconds = 122.26, EndSeconds = 122.98, Probability = 1.00 },
+                new AsrWord { Text = "それは", StartSeconds = 122.98, EndSeconds = 123.74, Probability = 1.00 },
+                new AsrWord { Text = "楽", StartSeconds = 123.74, EndSeconds = 123.99, Probability = 1.00 },
+                new AsrWord { Text = "しい", StartSeconds = 123.99, EndSeconds = 124.50, Probability = 1.00 },
+                new AsrWord { Text = "だけ", StartSeconds = 124.50, EndSeconds = 125.01, Probability = 1.00 },
+                new AsrWord { Text = "じゃない", StartSeconds = 125.54, EndSeconds = 125.83, Probability = 1.00 },
+                new AsrWord { Text = "本当", StartSeconds = 126.04, EndSeconds = 126.83, Probability = 1.00 },
+                new AsrWord { Text = "に", StartSeconds = 126.83, EndSeconds = 127.22, Probability = 1.00 },
+                new AsrWord { Text = "できる", StartSeconds = 127.22, EndSeconds = 128.42, Probability = 0.98 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" / ", cues.Select(cue => cue.Text));
+        Assert.Contains(cues, cue => cue.Text.Contains("重い瞼こする夜", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("瞼こ", StringComparison.Ordinal) || cue.Text.EndsWith("こ", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("する", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("続けること", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("続", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("ける", StringComparison.Ordinal));
+        Assert.Contains(cues, cue => cue.Text.Contains("だけじゃない", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.EndsWith("だけ", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("じゃ", StringComparison.Ordinal));
+        Assert.NotEmpty(joined);
     }
 
     [Fact]
@@ -1086,6 +1449,7 @@ public class AsrContractsTests
             LanguageCode = " ja ",
             ModelId = "whisper.cpp:small",
             Prompt = "title channel glossary",
+            MaxTextContextTokens = 0,
             WordTimestamps = true,
         };
 
@@ -1108,6 +1472,7 @@ public class AsrContractsTests
             "-dtw", "small", "-nfa",
             "-l", "ja",
             "--prompt", "title channel glossary",
+            "-mc", "0",
         ], plan.Arguments);
 
         // No token JSON requested -> DTW is pointless and must be omitted.
@@ -1128,6 +1493,7 @@ public class AsrContractsTests
             new AsrRequest { AudioPath = audio, ModelId = "whisper.cpp:test" },
             Path.Combine(Path.GetTempPath(), "moongate", "unknown"));
         Assert.DoesNotContain("-dtw", unknownModelPlan.Arguments);
+        Assert.DoesNotContain("-mc", unknownModelPlan.Arguments);
     }
 
     [Fact]
@@ -1174,6 +1540,19 @@ public class AsrContractsTests
             "title=Moon Gate Clip; language=en",
             AsrPromptBuilder.DefaultPrompt(video, "en"));
         Assert.Null(AsrPromptBuilder.DefaultPrompt(Path.Combine(Path.GetTempPath(), "   .mp4"), "auto"));
+    }
+
+    [Fact]
+    public void LyricsRecognitionProfileAvoidsPromptContextAndDialogueExemplar()
+    {
+        var video = Path.Combine(Path.GetTempPath(), "YOASOBI - 群青 Official Music Video.mp4");
+        var profile = AsrPromptBuilder.RecognitionProfile(video, "ja");
+
+        Assert.Equal(AsrRecognitionProfile.LyricsHighQuality, profile);
+        Assert.Equal(
+            "title=YOASOBI - 群青 Official Music Video; language=ja",
+            AsrPromptBuilder.DefaultPrompt(video, "ja", profile));
+        Assert.Equal(0, AsrPromptBuilder.MaxTextContextTokens(video, "ja", profile));
     }
 
     [Fact]
@@ -1300,6 +1679,41 @@ public class AsrContractsTests
         Assert.Equal(["梅雨", "明ける"], fragments.Select(fragment => fragment.Text).ToArray());
         Assert.Equal(0.0, fragments[0].StartSeconds, precision: 3);
         Assert.Equal(1.2, fragments[1].EndSeconds, precision: 3);
+    }
+
+    [Fact]
+    public void TranscriptMapperMergesLatinWhisperTokenPieces()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "latin-pieces",
+            LanguageCode = "it",
+            Words =
+            [
+                new AsrWord { Text = " Marco", StartSeconds = 1.39, EndSeconds = 2.00 },
+                new AsrWord { Text = " se", StartSeconds = 2.00, EndSeconds = 4.55 },
+                new AsrWord { Text = " n", StartSeconds = 4.56, EndSeconds = 5.84 },
+                new AsrWord { Text = "'", StartSeconds = 5.84, EndSeconds = 7.11 },
+                new AsrWord { Text = "è", StartSeconds = 7.11, EndSeconds = 9.66 },
+                new AsrWord { Text = " and", StartSeconds = 9.66, EndSeconds = 13.49 },
+                new AsrWord { Text = "ato", StartSeconds = 13.49, EndSeconds = 17.34 },
+                new AsrWord { Text = " e", StartSeconds = 17.34, EndSeconds = 17.43 },
+                new AsrWord { Text = " non", StartSeconds = 17.43, EndSeconds = 17.70 },
+                new AsrWord { Text = " r", StartSeconds = 17.70, EndSeconds = 17.79 },
+                new AsrWord { Text = "itor", StartSeconds = 17.79, EndSeconds = 18.15 },
+                new AsrWord { Text = "na", StartSeconds = 18.15, EndSeconds = 18.33 },
+                new AsrWord { Text = " più", StartSeconds = 18.33, EndSeconds = 18.72 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var fragments = AsrTranscriptMapper.SourceFragments(transcript);
+
+        Assert.Equal(["Marco", "se", "n'è", "andato", "e", "non", "ritorna", "più"], fragments.Select(fragment => fragment.Text).ToArray());
+        Assert.Equal(4.56, fragments[2].StartSeconds, precision: 3);
+        Assert.Equal(9.66, fragments[2].EndSeconds, precision: 3);
+        Assert.Equal(17.70, fragments[6].StartSeconds, precision: 3);
+        Assert.Equal(18.33, fragments[6].EndSeconds, precision: 3);
     }
 
     [Fact]
@@ -1507,6 +1921,551 @@ public class AsrContractsTests
         Assert.Contains("おはよう", joined, StringComparison.Ordinal);
         Assert.Contains("またね", joined, StringComparison.Ordinal);
         Assert.True(loopCount <= 1, "mixed kanji/kana/katakana hallucination loop should be fused");
+    }
+
+    [Fact]
+    public void JapaneseLyricsKeepsLegitimateRepeatedChorusWithParticles()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-legitimate-repeated-chorus",
+            LanguageCode = "ja",
+            DurationSeconds = 130.0,
+            Words =
+            [
+                new AsrWord { Text = "本当", StartSeconds = 61.48, EndSeconds = 62.60 },
+                new AsrWord { Text = "の", StartSeconds = 62.60, EndSeconds = 63.16 },
+                new AsrWord { Text = "自", StartSeconds = 63.16, EndSeconds = 63.72 },
+                new AsrWord { Text = "分", StartSeconds = 63.97, EndSeconds = 64.28 },
+                new AsrWord { Text = "で", StartSeconds = 64.53, EndSeconds = 64.53 },
+                new AsrWord { Text = "会", StartSeconds = 64.54, EndSeconds = 64.78 },
+                new AsrWord { Text = "え", StartSeconds = 64.78, EndSeconds = 65.03 },
+                new AsrWord { Text = "た", StartSeconds = 65.03, EndSeconds = 65.28 },
+                new AsrWord { Text = "気", StartSeconds = 65.28, EndSeconds = 65.53 },
+                new AsrWord { Text = "が", StartSeconds = 65.53, EndSeconds = 65.78 },
+                new AsrWord { Text = "した", StartSeconds = 65.78, EndSeconds = 66.29 },
+                new AsrWord { Text = "んだ", StartSeconds = 66.29, EndSeconds = 66.86 },
+                new AsrWord { Text = "ああ", StartSeconds = 66.86, EndSeconds = 67.74 },
+                new AsrWord { Text = "手", StartSeconds = 67.74, EndSeconds = 68.18 },
+                new AsrWord { Text = "を", StartSeconds = 68.18, EndSeconds = 68.62 },
+                new AsrWord { Text = "伸", StartSeconds = 68.62, EndSeconds = 69.05 },
+                new AsrWord { Text = "ば", StartSeconds = 69.35, EndSeconds = 69.49 },
+                new AsrWord { Text = "せ", StartSeconds = 69.51, EndSeconds = 69.93 },
+                new AsrWord { Text = "ば", StartSeconds = 69.93, EndSeconds = 70.37 },
+                new AsrWord { Text = "伸", StartSeconds = 70.37, EndSeconds = 70.80 },
+                new AsrWord { Text = "ば", StartSeconds = 70.80, EndSeconds = 71.24 },
+                new AsrWord { Text = "す", StartSeconds = 71.24, EndSeconds = 71.68 },
+                new AsrWord { Text = "ほど", StartSeconds = 71.68, EndSeconds = 72.56 },
+                new AsrWord { Text = "に", StartSeconds = 72.56, EndSeconds = 72.94 },
+                new AsrWord { Text = "遠", StartSeconds = 73.05, EndSeconds = 73.44 },
+                new AsrWord { Text = "く", StartSeconds = 73.44, EndSeconds = 73.88 },
+                new AsrWord { Text = "へ", StartSeconds = 73.88, EndSeconds = 74.32 },
+                new AsrWord { Text = "行", StartSeconds = 74.32, EndSeconds = 74.76 },
+                new AsrWord { Text = "く", StartSeconds = 74.76, EndSeconds = 75.24 },
+                new AsrWord { Text = "ああ", StartSeconds = 75.24, EndSeconds = 76.15 },
+                new AsrWord { Text = "手", StartSeconds = 76.15, EndSeconds = 76.60 },
+                new AsrWord { Text = "を", StartSeconds = 76.60, EndSeconds = 77.05 },
+                new AsrWord { Text = "伸", StartSeconds = 77.05, EndSeconds = 77.50 },
+                new AsrWord { Text = "ば", StartSeconds = 77.73, EndSeconds = 77.95 },
+                new AsrWord { Text = "せ", StartSeconds = 78.30, EndSeconds = 78.40 },
+                new AsrWord { Text = "ば", StartSeconds = 78.40, EndSeconds = 78.85 },
+                new AsrWord { Text = "伸", StartSeconds = 78.85, EndSeconds = 79.30 },
+                new AsrWord { Text = "ば", StartSeconds = 79.30, EndSeconds = 79.75 },
+                new AsrWord { Text = "す", StartSeconds = 79.75, EndSeconds = 80.20 },
+                new AsrWord { Text = "ほど", StartSeconds = 80.20, EndSeconds = 81.11 },
+                new AsrWord { Text = "に", StartSeconds = 81.11, EndSeconds = 81.62 },
+                new AsrWord { Text = "遠", StartSeconds = 81.62, EndSeconds = 82.89 },
+                new AsrWord { Text = "く", StartSeconds = 84.08, EndSeconds = 84.16 },
+                new AsrWord { Text = "へ", StartSeconds = 84.68, EndSeconds = 85.43 },
+                new AsrWord { Text = "行", StartSeconds = 85.43, EndSeconds = 86.70 },
+                new AsrWord { Text = "く", StartSeconds = 86.70, EndSeconds = 88.00 },
+                new AsrWord { Text = "あ", StartSeconds = 88.00, EndSeconds = 88.19 },
+                new AsrWord { Text = "なた", StartSeconds = 88.19, EndSeconds = 88.58 },
+                new AsrWord { Text = "は", StartSeconds = 88.58, EndSeconds = 88.77 },
+                new AsrWord { Text = "正", StartSeconds = 88.77, EndSeconds = 88.96 },
+                new AsrWord { Text = "しく", StartSeconds = 88.96, EndSeconds = 89.35 },
+                new AsrWord { Text = "も", StartSeconds = 89.35, EndSeconds = 89.54 },
+                new AsrWord { Text = "が", StartSeconds = 89.54, EndSeconds = 89.73 },
+                new AsrWord { Text = "いて", StartSeconds = 89.73, EndSeconds = 90.12 },
+                new AsrWord { Text = "る", StartSeconds = 90.38, EndSeconds = 90.38 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" ", cues.Select(cue => cue.Text));
+
+        Assert.True(joined.Split("手を伸ばせ", StringSplitOptions.None).Length - 1 >= 2);
+        Assert.Contains("遠くへ", joined, StringComparison.Ordinal);
+        Assert.Contains("行く", joined, StringComparison.Ordinal);
+        Assert.Contains("正しく", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("ば", StringComparison.Ordinal));
+        Assert.DoesNotContain(cues, cue => cue.Text.StartsWith("く", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrDetectorRoutesDenseJapaneseMusicLoopToLyricsProfile()
+    {
+        var words = new List<AsrWord>
+        {
+            new() { Text = "うせうせうせは", StartSeconds = 51.78, EndSeconds = 54.24 },
+            new() { Text = "あなたが思うより健康です", StartSeconds = 54.24, EndSeconds = 59.26 },
+        };
+        var loopTokens = new[] { "あなた", "が", "悪", "い", "頭", "の", "出来", "が", "違う", "ので" };
+        for (var repeatIndex = 0; repeatIndex < 24; repeatIndex++)
+        {
+            var baseTime = 70.0 + repeatIndex;
+            for (var tokenIndex = 0; tokenIndex < loopTokens.Length; tokenIndex++)
+            {
+                var start = baseTime + tokenIndex * 0.04;
+                words.Add(new AsrWord
+                {
+                    Text = loopTokens[tokenIndex],
+                    StartSeconds = start,
+                    EndSeconds = start + 0.03,
+                });
+            }
+        }
+        words.Add(new AsrWord { Text = "また次の歌詞に戻る", StartSeconds = 96.0, EndSeconds = 99.0 });
+
+        var transcript = new AsrTranscript
+        {
+            Id = "usseewa-dense-loop",
+            LanguageCode = "ja",
+            DurationSeconds = 105.0,
+            Words = words,
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            "Ado - うっせぇわ").Select(cue => cue.Text));
+        var loopCount = joined.Split("あなたが悪い頭の出来が違うので", StringSplitOptions.None).Length - 1;
+
+        Assert.Contains("うせうせうせ", joined, StringComparison.Ordinal);
+        Assert.Contains("健康", joined, StringComparison.Ordinal);
+        Assert.True(loopCount <= 1, "dense whole-phrase whisper loops should be fused after at most one readable occurrence");
+    }
+
+    [Fact]
+    public void JapaneseLyricsDropsCreditAndOutroHallucinationFragments()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-lyrics-credit-hallucination",
+            LanguageCode = "ja",
+            DurationSeconds = 90.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "作", StartSeconds = 0.20, EndSeconds = 2.49 },
+                new() { Text = "詞", StartSeconds = 2.49, EndSeconds = 4.98 },
+                new() { Text = "作", StartSeconds = 7.47, EndSeconds = 9.96 },
+                new() { Text = "曲", StartSeconds = 9.96, EndSeconds = 12.45 },
+                new() { Text = "編", StartSeconds = 14.94, EndSeconds = 17.43 },
+                new() { Text = "曲", StartSeconds = 17.43, EndSeconds = 19.92 },
+                new() { Text = "初", StartSeconds = 19.92, EndSeconds = 22.41 },
+                new() { Text = "音", StartSeconds = 22.41, EndSeconds = 24.90 },
+                new() { Text = "ミ", StartSeconds = 24.90, EndSeconds = 27.38 },
+                new() { Text = "ク", StartSeconds = 27.39, EndSeconds = 29.98 },
+                new() { Text = "鏡", StartSeconds = 37.62, EndSeconds = 38.30 },
+                new() { Text = "よ", StartSeconds = 38.30, EndSeconds = 38.80 },
+                new() { Text = "この世で一番", StartSeconds = 39.00, EndSeconds = 42.50 },
+                new() { Text = "ご視聴ありがとうございました", StartSeconds = 70.0, EndSeconds = 73.0 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.JapaneseLyrics).Select(cue => cue.Text));
+
+        Assert.DoesNotContain("作詞", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("作曲", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("編曲", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("初音ミク", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("ご視聴ありがとうございました", joined, StringComparison.Ordinal);
+        Assert.Contains("鏡よ", joined, StringComparison.Ordinal);
+        Assert.Contains("この世で一番", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LyricsDropsChineseCreditHallucinationLoop()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "chinese-lyrics-credit-loop",
+            LanguageCode = "zh",
+            DurationSeconds = 60.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "作", StartSeconds = 0.0, EndSeconds = 0.2 },
+                new() { Text = "词", StartSeconds = 0.2, EndSeconds = 0.4 },
+                new() { Text = ":", StartSeconds = 0.4, EndSeconds = 0.5 },
+                new() { Text = "李", StartSeconds = 0.5, EndSeconds = 0.7 },
+                new() { Text = "宗", StartSeconds = 0.7, EndSeconds = 0.9 },
+                new() { Text = "盛", StartSeconds = 0.9, EndSeconds = 1.0 },
+                new() { Text = "作", StartSeconds = 1.0, EndSeconds = 1.2 },
+                new() { Text = "曲", StartSeconds = 1.2, EndSeconds = 1.4 },
+                new() { Text = ":", StartSeconds = 1.4, EndSeconds = 1.5 },
+                new() { Text = "李", StartSeconds = 1.5, EndSeconds = 1.7 },
+                new() { Text = "宗", StartSeconds = 1.7, EndSeconds = 1.9 },
+                new() { Text = "盛", StartSeconds = 1.9, EndSeconds = 2.0 },
+                new() { Text = "作", StartSeconds = 2.0, EndSeconds = 2.2 },
+                new() { Text = "曲", StartSeconds = 2.2, EndSeconds = 2.4 },
+                new() { Text = ":", StartSeconds = 2.4, EndSeconds = 2.5 },
+                new() { Text = "李", StartSeconds = 2.5, EndSeconds = 2.7 },
+                new() { Text = "宗", StartSeconds = 2.7, EndSeconds = 2.9 },
+                new() { Text = "盛", StartSeconds = 2.9, EndSeconds = 3.0 },
+                new() { Text = "天青色等烟雨", StartSeconds = 23.0, EndSeconds = 26.0 },
+                new() { Text = "而我在等你", StartSeconds = 26.2, EndSeconds = 29.0 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.Lyrics).Select(cue => cue.Text));
+
+        Assert.DoesNotContain("作词", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("作曲", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("李宗盛", joined, StringComparison.Ordinal);
+        Assert.Contains("天青色等烟雨", joined, StringComparison.Ordinal);
+        Assert.Contains("而我在等你", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LyricsDropsEarlyCreditNameCueBeforeLongIntroGap()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "chinese-lyrics-intro-credit-name",
+            LanguageCode = "zh",
+            DurationSeconds = 60.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "李", StartSeconds = 1.02, EndSeconds = 1.38 },
+                new() { Text = "宗", StartSeconds = 1.38, EndSeconds = 1.76 },
+                new() { Text = "盛", StartSeconds = 1.76, EndSeconds = 2.35 },
+                new() { Text = "天青色等烟雨", StartSeconds = 23.43, EndSeconds = 26.00 },
+                new() { Text = "而我在等你", StartSeconds = 26.20, EndSeconds = 29.00 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.Lyrics).Select(cue => cue.Text));
+
+        Assert.DoesNotContain("李宗盛", joined, StringComparison.Ordinal);
+        Assert.Contains("天青色等烟雨", joined, StringComparison.Ordinal);
+        Assert.Contains("而我在等你", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LyricsDropsRepeatedLatinIntroFillerLoop()
+    {
+        var words = new List<AsrWord>();
+        for (var offset = 0; offset < 10; offset++)
+        {
+            var start = 0.32 + offset * 2.0;
+            words.Add(new AsrWord
+            {
+                Text = "Best ime",
+                StartSeconds = start,
+                EndSeconds = start + 1.65,
+            });
+        }
+        words.AddRange([
+            new() { Text = "Best ime Cause", StartSeconds = 23.80, EndSeconds = 24.10 },
+            new() { Text = "I'm", StartSeconds = 24.15, EndSeconds = 24.35 },
+            new() { Text = "in", StartSeconds = 24.40, EndSeconds = 24.55 },
+            new() { Text = "the", StartSeconds = 24.60, EndSeconds = 24.75 },
+            new() { Text = "stars", StartSeconds = 24.80, EndSeconds = 25.20 },
+            new() { Text = "tonight", StartSeconds = 25.25, EndSeconds = 25.80 },
+        ]);
+
+        var transcript = new AsrTranscript
+        {
+            Id = "latin-lyrics-intro-filler-loop",
+            LanguageCode = "en",
+            DurationSeconds = 120.0,
+            SourceModelId = "whisper.cpp:test",
+            Words = words,
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.Lyrics).Select(cue => cue.Text));
+
+        Assert.DoesNotContain("Best ime", joined, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("stars tonight", joined, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LyricsDropsLongLatinFillerOutroLoop()
+    {
+        var words = new List<AsrWord>
+        {
+            new() { Text = "Baby", StartSeconds = 7.9, EndSeconds = 8.4 },
+            new() { Text = "no", StartSeconds = 8.5, EndSeconds = 8.8 },
+            new() { Text = "me", StartSeconds = 8.9, EndSeconds = 9.1 },
+            new() { Text = "llames", StartSeconds = 9.2, EndSeconds = 9.8 },
+            new() { Text = "que", StartSeconds = 9.9, EndSeconds = 10.2 },
+            new() { Text = "ya", StartSeconds = 10.3, EndSeconds = 10.6 },
+            new() { Text = "estoy", StartSeconds = 10.7, EndSeconds = 11.1 },
+            new() { Text = "ocupada", StartSeconds = 11.2, EndSeconds = 12.1 },
+        };
+        for (var offset = 0; offset < 36; offset++)
+        {
+            var start = 125.0 + offset * 0.72;
+            words.Add(new AsrWord
+            {
+                Text = offset % 5 == 0 ? "mmm" : "yeah",
+                StartSeconds = start,
+                EndSeconds = start + 0.45,
+            });
+        }
+        words.AddRange(
+        [
+            new() { Text = "Gracias", StartSeconds = 154.0, EndSeconds = 154.4 },
+            new() { Text = "por", StartSeconds = 154.5, EndSeconds = 154.7 },
+            new() { Text = "ver", StartSeconds = 154.8, EndSeconds = 155.0 },
+            new() { Text = "el", StartSeconds = 155.1, EndSeconds = 155.2 },
+            new() { Text = "video", StartSeconds = 155.3, EndSeconds = 155.8 },
+        ]);
+
+        var transcript = new AsrTranscript
+        {
+            Id = "latin-filler-outro-loop",
+            LanguageCode = "es",
+            DurationSeconds = 158.9,
+            SourceModelId = "whisper.cpp:test",
+            Words = words,
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.Lyrics).Select(cue => cue.Text));
+
+        Assert.Contains("Baby", joined, StringComparison.Ordinal);
+        Assert.Contains("ocupada", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("yeah yeah yeah", joined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("mmm mmm", joined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Gracias", joined, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LocalAsrDetectorRoutesRepeatedJapaneseOutroBoilerplateToLyricsProfile()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "radwimps-outro-boilerplate",
+            LanguageCode = "ja",
+            DurationSeconds = 130.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "やっと目を覚ましたかい", StartSeconds = 21.14, EndSeconds = 25.74 },
+                new() { Text = "ご視聴ありがとうございました", StartSeconds = 93.94, EndSeconds = 96.03 },
+                new() { Text = "ご視聴ありがとうございました", StartSeconds = 96.31, EndSeconds = 100.43 },
+                new() { Text = "何億何光年分の物語を", StartSeconds = 116.73, EndSeconds = 121.28 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            "RADWIMPS - 前前前世").Select(cue => cue.Text));
+
+        Assert.Contains("やっと目を覚ました", joined, StringComparison.Ordinal);
+        Assert.Contains("何億何光年分", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("ご視聴ありがとうございました", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void JapaneseLyricsDropsIntroHallucinationAndMergesLeadingOrphans()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "radwimps-intro-leading-orphans",
+            LanguageCode = "ja",
+            DurationSeconds = 130.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "彼女の", StartSeconds = 0.00, EndSeconds = 3.46 },
+                new() { Text = "やっと目を覚ましたかい", StartSeconds = 20.94, EndSeconds = 25.32 },
+                new() { Text = "ど", StartSeconds = 104.84, EndSeconds = 105.22 },
+                new() { Text = "っ", StartSeconds = 105.22, EndSeconds = 105.60 },
+                new() { Text = "から話すかな君が眠っていた", StartSeconds = 106.36, EndSeconds = 110.47 },
+                new() { Text = "何", StartSeconds = 114.96, EndSeconds = 115.86 },
+                new() { Text = "億何光年分の物語を", StartSeconds = 116.53, EndSeconds = 121.28 },
+            ],
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(" ", cues.Select(cue => cue.Text));
+
+        Assert.DoesNotContain("彼女の", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(cues, cue => cue.Text == "ど");
+        Assert.DoesNotContain(cues, cue => cue.Text == "何");
+        Assert.Contains("どから話すかな", joined, StringComparison.Ordinal);
+        Assert.Contains("何億何光年分", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrDetectorRoutesJapaneseLiveTitleAndDropsTerminalThanks()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-live-terminal-thanks",
+            LanguageCode = "ja",
+            DurationSeconds = 130.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "暗闇の中に切り締めた", StartSeconds = 108.20, EndSeconds = 113.49 },
+                new() { Text = "ご", StartSeconds = 113.50, EndSeconds = 113.91 },
+                new() { Text = "視", StartSeconds = 113.91, EndSeconds = 114.32 },
+                new() { Text = "聴", StartSeconds = 114.32, EndSeconds = 114.72 },
+                new() { Text = "ありがとうございました", StartSeconds = 114.72, EndSeconds = 119.30 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            "YOASOBI - 優しい彗星 live").Select(cue => cue.Text));
+
+        Assert.Contains("暗闇の中", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("ご視聴", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("ありがとうございました", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrDetectorRoutesIntroBgmHallucinationToLyricsProfile()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "kanden-intro-bgm",
+            LanguageCode = "ja",
+            DurationSeconds = 130.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "B", StartSeconds = 0.22, EndSeconds = 6.66 },
+                new() { Text = "GM", StartSeconds = 6.66, EndSeconds = 20.00 },
+                new() { Text = "逃げ出したい夜のオンライン", StartSeconds = 20.14, EndSeconds = 23.86 },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            "Kenshi Yonezu - Kanden").Select(cue => cue.Text));
+
+        Assert.DoesNotContain("B", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("GM", joined, StringComparison.Ordinal);
+        Assert.Contains("逃げ出したい", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void JapaneseLyricsSuppressesApproximateLoopHallucinationIsland()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "yasashii-suisei-loop-hallucination",
+            LanguageCode = "ja",
+            DurationSeconds = 222.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new() { Text = "幸せだった確かにほら救わ", StartSeconds = 117.28, EndSeconds = 121.08 },
+                new() { Text = "れたんだよ、あなたに", StartSeconds = 121.16, EndSeconds = 126.71 },
+                new() { Text = "あも恵み合わせ、なたにばどうしよう、あなたにも", StartSeconds = 131.22, EndSeconds = 132.42 },
+                new() { Text = "恵み合わせあなたに、恵もわみ合なたせあにも", StartSeconds = 132.50, EndSeconds = 133.40 },
+                new() { Text = "恵み合わせあなたにも、恵み合わせあなたにも", StartSeconds = 133.48, EndSeconds = 135.10 },
+                new() { Text = "恵み合せわ、あなたに", StartSeconds = 135.18, EndSeconds = 137.22 },
+                new() { Text = "も恵み合わせあなた", StartSeconds = 137.30, EndSeconds = 138.048 },
+                new() { Text = "にも、恵み合わせあ", StartSeconds = 138.048, EndSeconds = 138.795 },
+                new() { Text = "なた恵にもわみ合せあ", StartSeconds = 138.795, EndSeconds = 151.48 },
+                new() { Text = "なたにも恵み合わせ、あなた", StartSeconds = 156.82, EndSeconds = 157.72 },
+                new() { Text = "にも恵み合わせ、あなた", StartSeconds = 158.34, EndSeconds = 159.24 },
+                new() { Text = "ありがとうございました。", StartSeconds = 220.76, EndSeconds = 221.95 },
+            ],
+        };
+
+        var cues = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
+        var joined = string.Join(' ', cues.Select(cue => cue.Text));
+
+        Assert.Contains("れたんだよ、あなたに", joined, StringComparison.Ordinal);
+        Assert.Contains("ありがとうございました", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("恵み合わせ", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("なたにも恵み", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void JapaneseLyricsKeepsReadableRepeatedChorusLines()
+    {
+        var words = new List<AsrWord>();
+        for (var repeatIndex = 0; repeatIndex < 5; repeatIndex++)
+        {
+            var start = repeatIndex * 4.0;
+            words.Add(new AsrWord { Text = "好きだよ", StartSeconds = start, EndSeconds = start + 1.2 });
+        }
+        var transcript = new AsrTranscript
+        {
+            Id = "readable-repeated-chorus",
+            LanguageCode = "ja",
+            Words = words,
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var joined = string.Join(' ', AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.JapaneseLyrics).Select(cue => cue.Text));
+        var repeatCount = joined.Split("好きだよ", StringSplitOptions.None).Length - 1;
+
+        Assert.Equal(5, repeatCount);
+    }
+
+    [Fact]
+    public void JapaneseLyricsSuppressesApproximateDuplicateInsideCue()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "gunjou-internal-duplicate-noise",
+            LanguageCode = "ja",
+            DurationSeconds = 140.0,
+            SourceModelId = "whisper.cpp:test",
+            Words =
+            [
+                new AsrWord
+                {
+                    Text = "好きなことを続けること、好こときをな続ことける、そ",
+                    StartSeconds = 119.88,
+                    EndSeconds = 124.62,
+                },
+                new AsrWord
+                {
+                    Text = "れは楽しいだけじゃない、本当にできる不安になけどる。",
+                    StartSeconds = 124.62,
+                    EndSeconds = 130.46,
+                },
+                new AsrWord
+                {
+                    Text = "ああ、何枚でもほら、何枚でもでもら枚",
+                    StartSeconds = 130.88,
+                    EndSeconds = 133.85,
+                },
+            ],
+        };
+
+        var joined = string.Join(" ", AsrTranscriptMapper.SourceCues(
+            transcript,
+            SubtitleTimingProfile.JapaneseLyrics).Select(cue => cue.Text));
+
+        Assert.Contains("好きなことを続けること", joined, StringComparison.Ordinal);
+        Assert.Contains("何枚でもほら", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("好こときをな続ことける", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("何枚でもでもら枚", joined, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2091,6 +3050,54 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void WhisperCppJsonParserMergesLatinTokenPieces()
+    {
+        const string json = """
+        {
+          "result": { "language": "it" },
+          "transcription": [
+            {
+              "text": " Marco se n'è andato e non ritorna più",
+              "offsets": { "from": 0, "to": 18720 },
+              "tokens": [
+                { "text": " Marco", "offsets": { "from": 1390, "to": 2000 }, "p": 0.92 },
+                { "text": " se", "offsets": { "from": 2000, "to": 4550 }, "p": 0.37 },
+                { "text": " n", "offsets": { "from": 4560, "to": 5840 }, "p": 0.40 },
+                { "text": "'", "offsets": { "from": 5840, "to": 7110 }, "p": 0.99 },
+                { "text": "è", "offsets": { "from": 7110, "to": 9660 }, "p": 0.99 },
+                { "text": " and", "offsets": { "from": 9660, "to": 13490 }, "p": 0.98 },
+                { "text": "ato", "offsets": { "from": 13490, "to": 17340 }, "p": 0.99 },
+                { "text": " e", "offsets": { "from": 17340, "to": 17430 }, "p": 0.91 },
+                { "text": " non", "offsets": { "from": 17430, "to": 17700 }, "p": 0.99 },
+                { "text": " r", "offsets": { "from": 17700, "to": 17790 }, "p": 0.97 },
+                { "text": "itor", "offsets": { "from": 17790, "to": 18150 }, "p": 0.99 },
+                { "text": "na", "offsets": { "from": 18150, "to": 18330 }, "p": 0.99 },
+                { "text": " più", "offsets": { "from": 18330, "to": 18720 }, "p": 0.98 }
+              ]
+            }
+          ]
+        }
+        """;
+        var request = new AsrRequest
+        {
+            AudioPath = "/tmp/audio.wav",
+            LanguageCode = "it",
+            ModelId = "whisper.cpp:large-v3-turbo-q5_0",
+        };
+
+        var transcript = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(json),
+            request,
+            transcriptId: "clip-it");
+
+        Assert.Equal(["Marco", "se", "n'è", "andato", "e", "non", "ritorna", "più"], transcript.Words.Select(word => word.Text).ToArray());
+        Assert.Equal(4.56, transcript.Words[2].StartSeconds, precision: 3);
+        Assert.Equal(9.66, transcript.Words[2].EndSeconds, precision: 3);
+        Assert.Equal(17.70, transcript.Words[6].StartSeconds, precision: 3);
+        Assert.Equal(18.33, transcript.Words[6].EndSeconds, precision: 3);
+    }
+
+    [Fact]
     public void WhisperCppJsonParserFallsBackToSegmentTextWhenNoTokenWords()
     {
         const string json = """
@@ -2266,7 +3273,7 @@ public class AsrContractsTests
                 audioExtractor: audioExtractor);
             var progress = new List<AsrProgress>();
 
-            var output = await generator.GenerateSourceSubtitleAsync(video, "ja", null, progress.Add);
+            var output = (await generator.GenerateSourceSubtitleAsync(video, "ja", null, progress.Add)).Url;
 
             Assert.Equal("clip.local-asr.ja.srt", Path.GetFileName(output));
             var parsed = SrtTools.ParseSrt(File.ReadAllText(output));
@@ -2361,9 +3368,9 @@ public class AsrContractsTests
                 promptProvider: AsrPromptBuilder.DefaultPrompt,
                 audioExtractor: audioExtractor);
 
-            var firstOutput = await generator.GenerateSourceSubtitleAsync(video, "auto", null, _ => { });
+            var firstOutput = (await generator.GenerateSourceSubtitleAsync(video, "auto", null, _ => { })).Url;
             var secondProgress = new List<AsrProgress>();
-            var secondOutput = await generator.GenerateSourceSubtitleAsync(video, "auto", null, secondProgress.Add);
+            var secondOutput = (await generator.GenerateSourceSubtitleAsync(video, "auto", null, secondProgress.Add)).Url;
 
             Assert.Equal(firstOutput, secondOutput);
             Assert.Equal("clip.local-asr.ja.srt", Path.GetFileName(secondOutput));

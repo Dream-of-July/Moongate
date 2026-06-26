@@ -448,9 +448,26 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
+                        <TextBlock Text="{DynamicResource L.Ready.SubtitleLanguageSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
                         <Border Style="{StaticResource Card}" Padding="12,8">
                             <StackPanel>
+                                <!-- 主区域：推荐语言（点击即选）+ 自动定源说明 -->
+                                <StackPanel Visibility="{Binding HasRecommendedLanguage, Converter={StaticResource BoolToVis}}">
+                                    <RadioButton GroupName="SubtitleSource" Margin="0,5" VerticalContentAlignment="Center"
+                                                 IsChecked="{Binding RecommendedLanguageOption.IsSelected}"
+                                                 DataContext="{Binding RecommendedLanguageOption}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding DisplayLabel}"/>
+                                            <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0">
+                                                <TextBlock Text="{DynamicResource L.Ready.RecommendedBadge}" FontSize="10.5"
+                                                           Foreground="{DynamicResource SecondaryTextBrush}"/>
+                                            </Border>
+                                        </StackPanel>
+                                    </RadioButton>
+                                    <TextBlock Text="{DynamicResource L.Ready.AutoSourceExplanation}" Style="{StaticResource Caption}"
+                                               TextWrapping="Wrap" Margin="0,2,0,4"/>
+                                </StackPanel>
+                                <!-- “不需要字幕” -->
                                 <RadioButton Content="{DynamicResource L.Ready.NoSubtitleSource}"
                                              GroupName="SubtitleSource"
                                              Margin="0,5"
@@ -458,32 +475,32 @@
                                 <TextBlock Text="{DynamicResource L.Ready.NoSubtitles}" Margin="0,4"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            Visibility="{Binding HasNoSubtitles, Converter={StaticResource BoolToVis}}"/>
-                                <ItemsControl ItemsSource="{Binding SubtitleOptions}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <RadioButton IsChecked="{Binding IsPrimarySource}" GroupName="SubtitleSource" Margin="0,5" VerticalContentAlignment="Center">
-                                                <StackPanel>
+                                <!-- 展开区：其他语言 + 来源徽标 -->
+                                <Expander Header="{DynamicResource L.Ready.MoreLanguages}" Margin="0,6,0,0"
+                                          IsExpanded="{Binding LanguageSectionExpanded}"
+                                          Visibility="{Binding HasOtherLanguages, Converter={StaticResource BoolToVis}}">
+                                    <ItemsControl ItemsSource="{Binding OtherLanguageOptions}" Margin="0,4,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <RadioButton IsChecked="{Binding IsSelected}" GroupName="SubtitleSource" Margin="0,5" VerticalContentAlignment="Center">
                                                     <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Text="{Binding Label}"/>
+                                                        <TextBlock Text="{Binding DisplayLabel}"/>
                                                         <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0"
-                                                                Visibility="{Binding IsAuto, Converter={StaticResource BoolToVis}}">
+                                                                Visibility="{Binding ShowAutoBadge, Converter={StaticResource BoolToVis}}">
                                                             <TextBlock Text="{DynamicResource L.Ready.AutoTag}" FontSize="10.5"
                                                                        Foreground="{DynamicResource SecondaryTextBrush}"/>
                                                         </Border>
                                                         <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0"
-                                                                Visibility="{Binding IsLocalAsr, Converter={StaticResource BoolToVis}}">
+                                                                Visibility="{Binding ShowLocalAsrBadge, Converter={StaticResource BoolToVis}}">
                                                             <TextBlock Text="{DynamicResource L.Ready.LocalASR}" FontSize="10.5"
                                                                        Foreground="{DynamicResource SecondaryTextBrush}"/>
                                                         </Border>
                                                     </StackPanel>
-                                                    <TextBlock Text="{DynamicResource L.Ready.LocalASRHint}" Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                               TextWrapping="Wrap"
-                                                               Visibility="{Binding IsLocalAsr, Converter={StaticResource BoolToVis}}"/>
-                                                </StackPanel>
-                                            </RadioButton>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
+                                                </RadioButton>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Expander>
                             </StackPanel>
                         </Border>
 

@@ -120,6 +120,16 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("evaluator: runtimeReadinessEvaluator"))
     }
 
+    func testBatchSubtitleSourceUsesLanguageRecommendation() throws {
+        let source = try viewModelSource()
+        let processBatchBody = try XCTUnwrap(functionBody(prefix: "private func processBatch", in: source))
+
+        XCTAssertTrue(processBatchBody.contains("SubtitleLanguageRecommender.recommend("))
+        XCTAssertTrue(processBatchBody.contains("availableSubtitleChoices(for: info)"))
+        XCTAssertTrue(processBatchBody.contains("recommended.preferredTrack"))
+        XCTAssertFalse(processBatchBody.contains("info.subtitles.first(where: { !$0.isAuto }) ?? info.subtitles.first"))
+    }
+
     func testSummaryAvailabilityUsesSummaryRuntimeReadiness() throws {
         let source = try viewModelSource()
         let refreshBody = try XCTUnwrap(functionBody(prefix: "func refreshSummaryRuntimeReadiness", in: source))
@@ -262,6 +272,26 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(availableBody.contains("sourceKind: .localASR"))
         XCTAssertTrue(availableBody.contains("provider: \"whisper.cpp\""))
         XCTAssertTrue(availableBody.contains("variant: \"local\""))
+    }
+
+    func testReadyPageUsesLanguageFirstRecommendationAndThreadsPreferredLanguage() throws {
+        let source = try viewModelSource()
+
+        // 语言优先 API：聚合 + 推荐 + 选择，全部委托给共享 SubtitleLanguageRecommender。
+        XCTAssertTrue(source.contains("func recommendedLanguage(for info: VideoInfo) -> SubtitleLanguageChoice?"))
+        XCTAssertTrue(source.contains("func otherLanguages(for info: VideoInfo) -> [SubtitleLanguageChoice]"))
+        XCTAssertTrue(source.contains("SubtitleLanguageRecommender.recommend("))
+        XCTAssertTrue(source.contains("func selectLanguage(_ language: SubtitleLanguageChoice)"))
+        XCTAssertTrue(source.contains("primarySubtitleTrackID = track.id"))
+        XCTAssertTrue(source.contains("@Published var languageSectionExpanded: Bool = false"))
+
+        // 恢复优先级：上次手选/语言未命中时，回退到推荐语言。
+        let restoreBody = try XCTUnwrap(functionBody(prefix: "private func restoreDownloadOptions", in: source))
+        XCTAssertTrue(restoreBody.contains("recommendedLanguage(for: info)?.preferredTrack"))
+        XCTAssertTrue(restoreBody.contains("languageSectionExpanded = false"))
+
+        // 构造请求填 preferredSubtitleLanguageCode（语言优先选择）。
+        XCTAssertTrue(source.contains("preferredSubtitleLanguageCode: primarySubtitleTrackIDSnapshot.map(normalizedLang)"))
     }
 
     func testDownloadsUseAppOwnedDirectoryForStorageSafety() throws {

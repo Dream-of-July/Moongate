@@ -238,22 +238,22 @@ public static partial class SrtTools
             .ToList();
         if (visibleLines.Count == 0) return null;
         var visibleText = string.Join('\n', visibleLines);
+        var displayText = RemoveVttRollingPrefix(visibleText, previousVisible);
+        if (displayText.Length == 0) return null;
 
         var body = string.Join('\n', bodyLines);
         var matches = VttInlineTimeRegex().Matches(body);
         if (matches.Count == 0)
         {
-            var timingText = RemoveVttRollingPrefix(visibleText, previousVisible);
-            if (timingText.Length == 0) return (visibleText, []);
-            var tokens = timingText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            var shouldCapNoInlineHold = timingText != visibleText
+            var tokens = displayText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var shouldCapNoInlineHold = displayText != visibleText
                 && cueEnd - cueStart > SubtitleTimingPlanner.VttUntimedLongCueSeconds;
             var cappedEnd = shouldCapNoInlineHold
                 ? Math.Min(
                     cueEnd,
                     cueStart + Math.Max(1, tokens.Length) * SubtitleTimingPlanner.VttUntimedMaxSecondsPerToken)
                 : cueEnd;
-            return (visibleText, [new SubtitleCueSourceFragment(cueStart, cappedEnd, timingText)]);
+            return (displayText, [new SubtitleCueSourceFragment(cueStart, cappedEnd, displayText)]);
         }
 
         var fragments = new List<SubtitleCueSourceFragment>();
@@ -310,7 +310,7 @@ public static partial class SrtTools
         }
         AppendSegment(body[cursor..], segmentStart, cueEnd, capTokenSpan: true);
 
-        return (visibleText, fragments);
+        return (displayText, fragments);
     }
 
     private static string StripVttMarkup(string text)
@@ -811,8 +811,9 @@ public static partial class SrtTools
         var cursor = 0;
         var previousEnd = item.Start;
         var previousEndedSentence = false;
-        foreach (var piece in pieces)
+        foreach (var rawPiece in pieces)
         {
+            var piece = NormalizeWhitespace(rawPiece);
             var pieceTokens = TimingUnits(piece);
             var pieceTokenCount = pieceTokens.Count;
             if (pieceTokenCount == 0 || cursor >= timings.Count) return null;
@@ -902,7 +903,8 @@ public static partial class SrtTools
                 && !speechAlignTimings
                 && originalDuration <= EmergencyReadableCueSeconds
                 && visibleLines.Length > 1
-                && SubtitleTimingPlanner.ContainsCjkText(item.Text))
+                && SubtitleTimingPlanner.ContainsCjkText(item.Text)
+                && !item.HasSourceAnchors)
             {
                 output.Add(item with { Order = output.Count });
                 continue;
@@ -911,9 +913,10 @@ public static partial class SrtTools
             var cjkUnitCount = SpeechTokens(item.Text).Count == 0 && SubtitleTimingPlanner.ContainsCjkText(item.Text)
                 ? TimingUnits(item.Text).Count
                 : 0;
-            var canUseSourceAnchors = speechAlignTimings
-                && item.Fragments.Count > 0
+            var canUseSourceAnchors = item.Fragments.Count > 0
+                && (speechAlignTimings || item.HasSourceAnchors)
                 && (item.HasSourceAnchors || originalDuration <= HardDurationSeconds);
+            var hasGranularSourceAnchors = canUseSourceAnchors && item.Fragments.Count > 1;
             var shouldAlignToSpeech = SubtitleTimingPlanner.ShouldAlignToSpeechWindow(
                 item.Text,
                 originalDuration,
@@ -924,7 +927,7 @@ public static partial class SrtTools
                 ? Math.Min(item.End, item.Start + SpeechAlignedVisibleSeconds(item.Text))
                 : item.End;
             var effectiveItem = item with { End = effectiveEnd };
-            var sentenceDrivenTargetParts = canUseSourceAnchors ? SplitSentencePieces(effectiveItem.Text).Count : 1;
+            var sentenceDrivenTargetParts = hasGranularSourceAnchors ? SplitSentencePieces(effectiveItem.Text).Count : 1;
             var anchoredTimings = canUseSourceAnchors ? TokenTimings(effectiveItem, speechAlignTimings) : [];
             var duration = anchoredTimings.Count == 0
                 ? effectiveItem.End - effectiveItem.Start
@@ -933,7 +936,7 @@ public static partial class SrtTools
                 && SubtitleTimingPlanner.ContainsHangulText(item.Text)
                 && item.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length > 1;
             var noAnchorUnspacedCjk = cjkUnitCount > 0 && !canUseSourceAnchors && !hasCjkWhitespaceWordBoundaries;
-            var cjkReadableSplitThreshold = canUseSourceAnchors
+            var cjkReadableSplitThreshold = hasGranularSourceAnchors
                 ? 4.0
                 : noAnchorUnspacedCjk ? HardDurationSeconds : EmergencyReadableCueSeconds;
             var shouldSplitCjkByReadableWindow = cjkUnitCount > 18
@@ -2606,8 +2609,8 @@ internal sealed record TranslationPromptPresetProfile(
             ["准确", "自然", "清楚", "保守"]),
         TranslationPromptPreset.SongLyrics => new(
             "歌曲、歌词、MV、现场演唱或翻唱；常有意象、旋律、重复、副歌、短句呼吸和较少完整标点。",
-            "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
-            "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
+            "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。源转写常被切成很碎的小段，请主动把相邻碎段合并成完整乐句：宁可一行长一点，也不要让某行以助词（が/を/に/は/へ/と/の 等）悬空结尾，或把一个词（如「感じた」「伸ばせば」「さんざめく」）拆到两行。但每行也不要过长，大致控制在一屏能读完（约 20 个假名/汉字以内）；若一个乐句很长，请在它内部的自然停顿、换气或语气转折处再切成多行，只要每次切分都不拆断词、不让助词悬空结尾即可。务必逐字保留原文每一个假名和汉字，只能添加标点，绝不改字、补字、删字或纠正疑似错字（一旦改字，整段重排会被判定对不齐而被放弃，反而退回更碎的断行）。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
+            "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请先通读整段上下文，再当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词；不要让某行以悬空助词或半截词组结尾。歌词重排示例（把被切碎的相邻行补成完整中文乐句）：「今日も渋谷の街に朝が」「降るどこか虚しいような」→「今天 晨光又落在涩谷街头」「像是藏着一丝说不清的空虚」；「怖くて仕方ない」「けど本当の自分」→「怕得无以复加」「却撞见了真正的自己」。若源字幕出现明显 ASR 错字、乱码或重复碎片，只翻译可高置信的歌词意象，不要把乱码逐字译出或放大。源里偶发的 ASR 错字常『单看像个词、放进整句却语义突兀、与上下文意象矛盾』（如把『青あざ＝淤青』听成『青朝＝蓝色清晨』、把『笑って』听成『言って』）：遇到这种突兀词，不要因为它单看像词就逐字直译，而要顺着该乐句整体的情绪与意象译成通顺的一句，必要时把该词弱化或模糊处理。但无论如何不得凭空加入原文没有的具体情节、人名或事件——拿不准时宁可译得含蓄笼统、宁可弱化，也绝不编造或放大。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
             ["诗意", "意象", "节奏", "副歌", "可吟唱"]),
         TranslationPromptPreset.Anime => new(
             "动漫、动画、番剧或角色对白；常有角色称呼、敬语、口癖、语气词、短反馈和夸张情绪。",
@@ -2671,6 +2674,54 @@ public sealed record TranslationPromptAdvice(
     string SourceLanguageCode = "unknown",
     IReadOnlyList<string>? Characters = null,
     IReadOnlyList<string>? TranslationNotes = null);
+
+public enum SubtitleSourceAssessment
+{
+    Trusted,
+    Usable,
+    Suspicious,
+    Bad,
+    Missing,
+    Unknown,
+}
+
+public enum RecommendedSubtitleSourceAction
+{
+    KeepPlatform,
+    UseLocalAsr,
+    KeepManual,
+    RetryWithLocalAsr,
+    FailWithNote,
+}
+
+public sealed record SubtitlePipelineAsrHints(
+    bool DisablePromptContext = false,
+    bool PreferVad = false,
+    bool SuppressIntroHallucination = false);
+
+public sealed record SubtitlePipelineAdvice(
+    string Summary,
+    string Context,
+    IReadOnlyList<string> Terms,
+    TranslationPromptPreset Preset,
+    string SourceLanguageCode,
+    IReadOnlyList<string> Characters,
+    IReadOnlyList<string> TranslationNotes,
+    SubtitleSourceAssessment SourceAssessment,
+    RecommendedSubtitleSourceAction RecommendedSourceAction,
+    SubtitleTimingProfile TimingProfile,
+    SubtitlePipelineAsrHints AsrHints,
+    IReadOnlyList<string> QualityRisks)
+{
+    public TranslationPromptAdvice ToTranslationPromptAdvice() => new(
+        Summary,
+        Context,
+        Terms,
+        Preset,
+        SourceLanguageCode,
+        Characters,
+        TranslationNotes);
+}
 
 /// <summary>
 /// 通过设置里选择的协议翻译字幕。服务地址、模型、凭证全部来自 AppSettings。
@@ -2746,6 +2797,15 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         return prompt;
     }
 
+    internal static string SubtitlePipelinePlanningSystemPrompt =>
+        "你是字幕流水线规划器。先通读样本，判断源语言、内容类型、字幕源质量、是否需要本地 ASR、ASR 分段策略和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：" +
+        "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"sourceLanguageCode\":\"ja|en|zh|yue|ko|es|fr|it|unknown\",\"preset\":\"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"characters\":[\"人物/角色/身份：简要说明，最多8个\"],\"translationNotes\":[\"影响翻译的注意事项，最多8条\"],\"sourceAssessment\":\"trusted|usable|suspicious|bad|missing|unknown\",\"recommendedSourceAction\":\"keepPlatform|useLocalASR|keepManual|retryWithLocalASR|failWithNote\",\"timingProfile\":\"speech|lyrics|japaneseLyrics|anime\",\"asrHints\":{\"disablePromptContext\":false,\"preferVAD\":false,\"suppressIntroHallucination\":false},\"qualityRisks\":[\"romajiLoop|lyricsContext|longSilence|translationContinuity|languageMismatch|lowCoverage|unknown\"]}。" +
+        "判断规则：人工/官方字幕通常 trusted + keepManual；高质量同语言平台字幕 usable + keepPlatform；自动字幕若出现乱码、罗马音循环、语言不匹配、低覆盖或重复滚动，标为 suspicious/bad 并选择 useLocalASR；字幕缺失时标为 missing 并选择 useLocalASR；本地 ASR 失败且没有可用源时才 failWithNote。" +
+        "timingProfile 必须服务后续确定性分段：普通讲话用 speech，歌曲/歌词用 lyrics，日语歌曲/歌词用 japaneseLyrics，动漫/动画对白用 anime。J-pop/MV/现场演唱若是日语歌词，asrHints.disablePromptContext、preferVAD、suppressIntroHallucination 优先为 true。" +
+        "preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：\n" +
+        TranslationPresetPlanningHints() +
+        "\n安全边界：你只做判断和规划，不能直接写时间轴，不能覆盖 local-ASR 源字幕，不能修改、增删或伪造源字幕文字；不要把自动翻译字幕当作源语言真相。terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段写 unknown 或空数组。";
+
     internal static TranslationPromptAdvice? ParseTranslationPromptAdvice(string text)
     {
         var trimmed = text.Trim();
@@ -2799,6 +2859,127 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         {
             return null;
         }
+    }
+
+    internal static SubtitlePipelineAdvice? ParseSubtitlePipelineAdvice(string text)
+    {
+        var trimmed = text.Trim();
+        string json;
+        if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
+        {
+            json = trimmed;
+        }
+        else
+        {
+            var start = trimmed.IndexOf('{');
+            var end = trimmed.LastIndexOf('}');
+            if (start < 0 || end < start) return null;
+            json = trimmed[start..(end + 1)];
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var summary = root.TryGetProperty("summary", out var s) && s.ValueKind == JsonValueKind.String
+                ? s.GetString()?.Trim() ?? "" : "";
+            if (summary.Length == 0) return null;
+            var context = root.TryGetProperty("context", out var contextElement) && contextElement.ValueKind == JsonValueKind.String
+                ? contextElement.GetString()?.Trim() ?? "" : "";
+            var terms = ReadAdviceStringArray(root, "terms");
+            var characters = ReadAdviceStringArray(root, "characters");
+            var translationNotes = ReadAdviceStringArray(root, "translationNotes");
+            var qualityRisks = ReadAdviceStringArray(root, "qualityRisks");
+            var sourceLanguageCode = NormalizeSourceLanguageCode(
+                root.TryGetProperty("sourceLanguageCode", out var slc) && slc.ValueKind == JsonValueKind.String
+                    ? slc.GetString() : null);
+            var preset = ParsePromptPreset(root.TryGetProperty("preset", out var p) && p.ValueKind == JsonValueKind.String
+                ? p.GetString() : null);
+            var assessment = ParseSourceAssessment(root.TryGetProperty("sourceAssessment", out var assessmentElement)
+                && assessmentElement.ValueKind == JsonValueKind.String
+                    ? assessmentElement.GetString() : null);
+            var action = ParseRecommendedSourceAction(root.TryGetProperty("recommendedSourceAction", out var actionElement)
+                && actionElement.ValueKind == JsonValueKind.String
+                    ? actionElement.GetString() : null);
+            var timingProfile = ParseTimingProfile(root.TryGetProperty("timingProfile", out var timingElement)
+                && timingElement.ValueKind == JsonValueKind.String
+                    ? timingElement.GetString() : null);
+            var asrHints = ReadAsrHints(root);
+
+            return new SubtitlePipelineAdvice(
+                summary,
+                context,
+                terms,
+                preset,
+                sourceLanguageCode,
+                characters,
+                translationNotes,
+                assessment,
+                action,
+                timingProfile,
+                asrHints,
+                qualityRisks);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static TranslationPromptPreset ParsePromptPreset(string? raw) => raw?.Trim() switch
+    {
+        "songLyrics" => TranslationPromptPreset.SongLyrics,
+        "anime" => TranslationPromptPreset.Anime,
+        "interviewConversation" => TranslationPromptPreset.InterviewConversation,
+        "tutorialHowTo" => TranslationPromptPreset.TutorialHowTo,
+        "lectureCourse" => TranslationPromptPreset.LectureCourse,
+        "newsExplainer" => TranslationPromptPreset.NewsExplainer,
+        "reviewProduct" => TranslationPromptPreset.ReviewProduct,
+        "vlogLifestyle" => TranslationPromptPreset.VlogLifestyle,
+        "shortSocial" => TranslationPromptPreset.ShortSocial,
+        "documentaryNarrative" => TranslationPromptPreset.DocumentaryNarrative,
+        "gamingEntertainment" => TranslationPromptPreset.GamingEntertainment,
+        _ => TranslationPromptPreset.General,
+    };
+
+    private static SubtitleSourceAssessment ParseSourceAssessment(string? raw) => raw?.Trim() switch
+    {
+        "trusted" => SubtitleSourceAssessment.Trusted,
+        "usable" => SubtitleSourceAssessment.Usable,
+        "suspicious" => SubtitleSourceAssessment.Suspicious,
+        "bad" => SubtitleSourceAssessment.Bad,
+        "missing" => SubtitleSourceAssessment.Missing,
+        _ => SubtitleSourceAssessment.Unknown,
+    };
+
+    private static RecommendedSubtitleSourceAction ParseRecommendedSourceAction(string? raw) => raw?.Trim() switch
+    {
+        "useLocalASR" => RecommendedSubtitleSourceAction.UseLocalAsr,
+        "keepManual" => RecommendedSubtitleSourceAction.KeepManual,
+        "retryWithLocalASR" => RecommendedSubtitleSourceAction.RetryWithLocalAsr,
+        "failWithNote" => RecommendedSubtitleSourceAction.FailWithNote,
+        _ => RecommendedSubtitleSourceAction.KeepPlatform,
+    };
+
+    private static SubtitleTimingProfile ParseTimingProfile(string? raw) => raw?.Trim() switch
+    {
+        "lyrics" => SubtitleTimingProfile.Lyrics,
+        "japaneseLyrics" => SubtitleTimingProfile.JapaneseLyrics,
+        "anime" => SubtitleTimingProfile.Anime,
+        _ => SubtitleTimingProfile.Speech,
+    };
+
+    private static SubtitlePipelineAsrHints ReadAsrHints(JsonElement root)
+    {
+        if (!root.TryGetProperty("asrHints", out var hints) || hints.ValueKind != JsonValueKind.Object)
+        {
+            return new SubtitlePipelineAsrHints();
+        }
+        static bool ReadBool(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+        return new SubtitlePipelineAsrHints(
+            ReadBool(hints, "disablePromptContext"),
+            ReadBool(hints, "preferVAD"),
+            ReadBool(hints, "suppressIntroHallucination"));
     }
 
     /// <summary>列表清洗：trim、去空、最多 8 条。terms/characters/translationNotes 共用，对应 Swift normalizedList。</summary>
@@ -2872,10 +3053,13 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         var cues = SrtTools.CleanCues(parsed);
         // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
         // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
-        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句，分段全靠 LLM 重断句——
-        // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
+        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句；翻译时可使用 LLM 重分段的
+        // 内存视图，但不能写回源 .srt，避免模型改词/重复污染可复查的 ASR 源字幕；
         // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
         var isLocalAsrSource = Path.GetFileName(srtFile).ToLowerInvariant().Contains(".local-asr.");
+        // 源语言从文件名推断（如 "video.ja.srt" → "ja"），用于给提示词点名源语言并触发日语重排示例。
+        var sourceLanguageCode = TranslationLanguage.SourceLanguageIdentifierFromSubtitleFile(srtFile);
+        cues = SanitizedSourceCuesForTranslation(cues, sourceLanguageCode);
         var advice = await MakeTranslationPromptAdviceAsync(cues, ct).ConfigureAwait(false);
         if (advice is null && isLocalAsrSource)
         {
@@ -2888,16 +3072,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 cues,
                 advice?.Preset ?? TranslationPromptPreset.General,
                 ct).ConfigureAwait(false);
-            if (isLocalAsrSource && reseg.Count != cues.Count)
-            {
-                try { await File.WriteAllTextAsync(srtFile, SrtTools.SerializeSrt(reseg), ct).ConfigureAwait(false); }
-                catch { /* 写回源字幕失败不影响翻译流程 */ }
-            }
             cues = reseg;
         }
-        // 源语言从文件名推断（如 "video.ja.srt" → "ja"），用于给提示词点名源语言并触发日语重排示例。
-        var sourceLanguageCode = TranslationLanguage.SourceLanguageIdentifierFromSubtitleFile(srtFile);
-
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
         var chunkRanges = new List<(int Start, int Count)>();
@@ -3002,6 +3178,79 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         return outputPath;
     }
 
+    internal static List<SubtitleCue> SanitizedSourceCuesForTranslation(
+        IReadOnlyList<SubtitleCue> cues,
+        string? sourceLanguageCode)
+    {
+        var normalizedSource = TranslationLanguage.NormalizedScript(sourceLanguageCode ?? "");
+        var cjk = normalizedSource is "ja" or "ko" or "yue" || normalizedSource.StartsWith("zh", StringComparison.Ordinal);
+        if (!cjk) return cues.ToList();
+        var filtered = cues.Where(cue => !IsObviousCjkRomanizedGarbageCue(cue.Text)).ToList();
+        if (filtered.Count == 0) return cues.ToList();
+        return filtered.Select((cue, offset) => new SubtitleCue(
+            offset + 1,
+            cue.Start,
+            cue.End,
+            StripParentheticalLatinGlossesForCjk(cue.Text),
+            cue.SourceFragments)).ToList();
+    }
+
+    private static string StripParentheticalLatinGlossesForCjk(string text)
+    {
+        if (!ContainsCjkScalar(text)) return text;
+        var builder = new StringBuilder();
+        var index = 0;
+        while (index < text.Length)
+        {
+            var current = text[index];
+            var close = current switch
+            {
+                '(' => ')',
+                '（' => '）',
+                _ => '\0',
+            };
+            if (close != '\0')
+            {
+                var closeIndex = text.IndexOf(close, index + 1);
+                if (closeIndex > index)
+                {
+                    var inner = text.Substring(index + 1, closeIndex - index - 1);
+                    if (ContainsLatinLetter(inner) && !ContainsCjkScalar(inner))
+                    {
+                        index = closeIndex + 1;
+                        continue;
+                    }
+                }
+            }
+            builder.Append(current);
+            index++;
+        }
+        return builder.ToString().Trim();
+    }
+
+    private static bool ContainsCjkScalar(string text) =>
+        text.Any(IsCjkScalar);
+
+    private static bool ContainsLatinLetter(string text) =>
+        text.Any(ch => ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
+
+    private static bool IsObviousCjkRomanizedGarbageCue(string text)
+    {
+        var report = PlatformSubtitleQualityGate.QualityReport(
+            [new SubtitleCue(1, "00:00:00,000", "00:00:01,000", text)],
+            "ja",
+            "ja");
+        if (report.CjkScalarRatio != 0 || report.LatinScalarRatio <= 0) return false;
+        var latinTokens = Regex.Matches(text, "[A-Za-z]+")
+            .Select(match => match.Value.ToLowerInvariant())
+            .Where(token => token.Length > 0)
+            .ToList();
+        if (latinTokens.Count is < 1 or > 4) return false;
+        string[] knownGarbage = ["ni", "nani", "dare", "ana", "anas", "carano", "car", "me", "ani", "box"];
+        var garbage = new HashSet<string>(knownGarbage, StringComparer.Ordinal);
+        return latinTokens.All(token => garbage.Contains(token));
+    }
+
     /// <summary>
     /// 翻译一块字幕，返回 [全局编号: 译文]。
     /// 译文被输出上限截断时按减半的条数自动重试：最多再分两层、每块最小 8 条；仍截断则抛错。
@@ -3103,31 +3352,24 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         CancellationToken ct)
     {
         if (!_settings.SmartTranslationPromptsEnabled) return null;
-        // 增强模式依赖可生成文本的总结模型；未配置则给出可操作的报错，而不是默默发空请求。
+        // AI 翻译规划依赖可生成文本的总结模型；未配置则给出可操作的报错，而不是默默发空请求。
         if (!_settings.IsSummaryConfigured)
         {
             throw MoongateException.TranslateFailed(L10n.T(
-                "增强模式需要可生成文本的总结模型，请在 AI 总结设置里填写模型。",
-                "增強模式需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
-                "Enhanced mode requires a summary model that can generate text. Configure a summary model in AI summary settings."));
+                "AI 翻译规划需要可生成文本的总结模型，请在 AI 总结设置里填写模型。",
+                "AI 翻譯規劃需要可生成文字的摘要模型，請在 AI 摘要設定裡填寫模型。",
+                "AI translation planning requires a summary model that can generate text. Configure a summary model in AI summary settings."));
         }
-        var presetHints = TranslationPresetPlanningHints();
-        var system =
-            "你是字幕内容规划器。先通读样本，理解这段视频的源语言、内容类型、人物和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：" +
-            "{\"summary\":\"不超过80字的中文摘要\",\"context\":\"不超过160字，写清人物、组织、场景、发生的事和主题\",\"sourceLanguageCode\":\"ja|en|zh|yue|ko|es|fr|it|unknown\",\"preset\":\"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment\",\"terms\":[\"原文专名或术语：目标语言说明，最多8个\"],\"characters\":[\"人物/角色/身份：简要说明，最多8个\"],\"translationNotes\":[\"影响翻译的注意事项，最多8条\"]}。" +
-            "summary 写整体内容；context 写会影响翻译的背景；sourceLanguageCode 从给定集合里选最贴近的，拿不准就写 unknown；characters 写登场人物或角色及其身份、与他人的关系或称呼习惯；translationNotes 写具体的翻译策略，如敬语、角色口癖、专名保留、歌词意象、数字单位、上下文承接等。" +
-            "所有字段都不得编造：terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段就写 unknown 或留空数组，绝不要凭空生成人物、剧情或译名。" +
-            "preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：\n" +
-            presetHints;
         var userContent = $"目标译文语言：{TranslationLanguage.DisplayName(_settings.TranslationTargetLanguage)}\n" +
             "字幕内容分析样本：\n" + SubtitleAnalysisSample(cues);
         var reply = await TranslationApi.SendConfiguredMessageAsync(
-            _settings.ForSummary(), system, userContent, maxTokens: 1500, _handler, ct).ConfigureAwait(false);
-        return ParseTranslationPromptAdvice(reply.Text)
+            _settings.ForSummary(), SubtitlePipelinePlanningSystemPrompt, userContent, maxTokens: 1500, _handler, ct).ConfigureAwait(false);
+        return ParseSubtitlePipelineAdvice(reply.Text)?.ToTranslationPromptAdvice()
+            ?? ParseTranslationPromptAdvice(reply.Text)
             ?? throw MoongateException.TranslateFailed(L10n.T(
-                "增强模式分析返回格式异常，请重试或关闭增强模式。",
-                "增強模式分析返回格式異常，請重試或關閉增強模式。",
-                "Enhanced mode analysis returned an invalid format. Try again or turn off enhanced mode."));
+                "AI 翻译规划分析返回格式异常，请重试或关闭 AI 翻译规划。",
+                "AI 翻譯規劃分析返回格式異常，請重試或關閉 AI 翻譯規劃。",
+                "AI translation planning analysis returned an invalid format. Try again or turn off AI translation planning."));
     }
 
     private static string TranslationPresetPlanningHints() =>
@@ -3318,6 +3560,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     // 合并判据：一段同时「时长 < 此秒数」且「token < 下面的 token 数」才算碎句，并入前一段。
     private const double ResegmentMinSegmentSeconds = 3.0;
     private const int ResegmentMinMergeTokens = 3;
+    private const int JapaneseLyricDuplicateMinCharacters = 6;
+    private const double JapaneseLyricDuplicateMinOverlap = 0.72;
 
     /// <summary>归一化单个 token 用于对齐比较：小写 + 去掉首尾标点（保留内部，如 well-known）。</summary>
     private static string NormalizeAlignToken(string raw)
@@ -3379,6 +3623,75 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             if (NormalizeAlignToken(s).Length > 0) units.Add(s);
         }
         return units;
+    }
+
+    private static bool ContainsSuspiciousJapaneseLyricInternalDuplicateNoise(string text)
+    {
+        var normalizedSeparators = text.Replace('，', '、').Replace(',', '、');
+        var parts = normalizedSeparators.Split('、');
+        if (parts.Length < 2) return false;
+        var previous = new List<string>();
+        foreach (var part in parts)
+        {
+            var normalized = NormalizedJapaneseLyricDuplicateText(part);
+            if (IsApproximateJapaneseLyricDuplicateSegment(normalized, previous))
+            {
+                return true;
+            }
+            if (normalized.Length > 0) previous.Add(normalized);
+        }
+        return false;
+    }
+
+    private static string NormalizedJapaneseLyricDuplicateText(string text)
+    {
+        var builder = new StringBuilder();
+        foreach (var ch in text)
+        {
+            if (IsCjkScalar(ch)) builder.Append(ch);
+        }
+        return builder.ToString();
+    }
+
+    private static bool IsApproximateJapaneseLyricDuplicateSegment(string candidate, IReadOnlyList<string> previous)
+    {
+        if (candidate.Length < JapaneseLyricDuplicateMinCharacters) return false;
+        foreach (var original in previous.TakeLast(3))
+        {
+            if (original.Length < JapaneseLyricDuplicateMinCharacters
+                || string.Equals(original, candidate, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var smaller = Math.Min(original.Length, candidate.Length);
+            var larger = Math.Max(original.Length, candidate.Length);
+            if ((double)smaller / larger < 0.55) continue;
+            if (JapaneseCharacterOverlapRatio(original, candidate) >= JapaneseLyricDuplicateMinOverlap)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static double JapaneseCharacterOverlapRatio(string lhs, string rhs)
+    {
+        var denominator = Math.Min(lhs.Length, rhs.Length);
+        if (denominator <= 0) return 0;
+        var counts = new Dictionary<char, int>();
+        foreach (var ch in lhs)
+        {
+            counts[ch] = counts.GetValueOrDefault(ch) + 1;
+        }
+        var overlap = 0;
+        foreach (var ch in rhs)
+        {
+            var count = counts.GetValueOrDefault(ch);
+            if (count <= 0) continue;
+            overlap += 1;
+            counts[ch] = count - 1;
+        }
+        return (double)overlap / denominator;
     }
 
     /// <summary>展平后的单个 token：归一化文本 + 所属原 cue 索引 + 在该 cue 内的位置（用于本地时间插值）。</summary>
@@ -3516,6 +3829,12 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             var count = Math.Min(ResegmentChunkCues, cues.Count - start);
             var chunk = await SegmentChunkAsync(cues, start, count, preset, ct).ConfigureAwait(false);
             sentences.AddRange(chunk);
+        }
+        if (preset == TranslationPromptPreset.SongLyrics
+            && ContainsSuspiciousJapaneseLyricInternalDuplicateNoise(string.Join("、", sentences)))
+        {
+            ResegmentLog($"歌词断句疑似包含 cue 内乱码重复，保留原 {cues.Count} 条字幕");
+            return [.. cues];
         }
 
         // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。

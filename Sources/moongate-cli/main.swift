@@ -3,6 +3,10 @@ import MoongateCore
 #endif
 import Foundation
 
+#if canImport(Security)
+AppSettings.credentialStore = KeychainCredentialStore()
+#endif
+
 // MARK: - 输出辅助
 
 func printErr(_ message: String) {
@@ -17,7 +21,7 @@ let usageText = """
 [--subs en,zh] [--auto-subs en] [--dest 路径]
   moongate-cli translate <srt路径> [--style bilingual|zh] [--provider anthropic|openai] [--engine 引擎] [--base 服务地址] [--model 模型] [--token 凭证]
   moongate-cli clean-srt <srt路径>          （只清洗不翻译，输出 <名>.clean.srt，便于检查清洗效果）
-  moongate-cli local-asr-srt --asr-words <json> --language <lang> --out <srt路径> [--file-name <原视频名>]
+  moongate-cli local-asr-srt --asr-words <json> --language <lang> --out <srt路径> [--file-name <原视频名>] [--timing-profile speech|lyrics|japaneseLyrics|anime] [--silencedetect-log <ffmpeg日志>]
   moongate-cli burn <视频> <srt> [--max-height N | --keep-resolution]
   moongate-cli ping-llm [--provider anthropic|openai] [--engine 引擎] [--base 服务地址] [--model 模型] [--token 凭证]
 
@@ -53,7 +57,14 @@ struct ASRWordsJSON: Decodable {
     let words: [Word]
 }
 
-func writeLocalASRSRT(wordsJSON: URL, languageCode: String, outputURL: URL, fileName: String? = nil) throws {
+func writeLocalASRSRT(
+    wordsJSON: URL,
+    languageCode: String,
+    outputURL: URL,
+    fileName: String? = nil,
+    audioActivity: ASRAudioActivity? = nil,
+    timingProfile: SubtitleTimingProfile? = nil
+) throws {
     let payload = try JSONDecoder().decode(ASRWordsJSON.self, from: Data(contentsOf: wordsJSON))
     let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
     let transcript = ASRTranscript(
@@ -71,10 +82,12 @@ func writeLocalASRSRT(wordsJSON: URL, languageCode: String, outputURL: URL, file
         sourceModelID: "subtitle_timing_eval"
     )
     let cues: [SubtitleCue]
-    if let fileName, !fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        cues = ASRTranscriptMapper.sourceCues(from: transcript, fileName: fileName)
+    if let timingProfile {
+        cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: timingProfile, audioActivity: audioActivity)
+    } else if let fileName, !fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        cues = ASRTranscriptMapper.sourceCues(from: transcript, fileName: fileName, audioActivity: audioActivity)
     } else {
-        cues = ASRTranscriptMapper.sourceCues(from: transcript)
+        cues = ASRTranscriptMapper.sourceCues(from: transcript, audioActivity: audioActivity)
     }
     guard !cues.isEmpty else {
         throw MoongateError.translateFailed("Local ASR words did not contain any usable timed speech.")
@@ -106,6 +119,7 @@ func applyLLMFlags(
 ) -> Bool {
     var index = start
     var tokenOverridden = false
+    var endpointOverridden = false
     while index < arguments.count {
         let flag = arguments[index]
         guard index + 1 < arguments.count else {
@@ -126,8 +140,10 @@ func applyLLMFlags(
             switch value {
             case "anthropic", "claude":
                 settings.setTranslationProvider(.anthropic)
+                endpointOverridden = true
             case "openai":
                 settings.setTranslationProvider(.openai)
+                endpointOverridden = true
             default:
                 printErr("未知接口协议：\(value)（支持 anthropic / openai）")
                 exit(1)
@@ -142,18 +158,25 @@ func applyLLMFlags(
             } else {
                 settings.translationEngine = engine
             }
+            endpointOverridden = true
         case "--base":
             settings.translationBaseURL = value
+            endpointOverridden = true
         case "--model":
             settings.translationModel = value
+            endpointOverridden = true
         case "--token":
             settings.translationAuthToken = value
             tokenOverridden = true
+            endpointOverridden = true
         default:
             printErr("未知选项：\(flag)\n" + usageText)
             exit(1)
         }
         index += 2
+    }
+    if endpointOverridden {
+        settings.translationFollowsDefault = false
     }
     return tokenOverridden
 }
@@ -376,6 +399,8 @@ do {
         var languageCode = ""
         var outputURL: URL?
         var fileName: String?
+        var silencedetectLogURL: URL?
+        var timingProfile: SubtitleTimingProfile?
         var index = 1
         while index < cliArguments.count {
             let flag = cliArguments[index]
@@ -393,6 +418,14 @@ do {
                 outputURL = URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
             case "--file-name":
                 fileName = value
+            case "--timing-profile":
+                guard let parsed = SubtitleTimingProfile(rawValue: value) else {
+                    printErr("未知 timing profile：\(value)（支持 speech / lyrics / japaneseLyrics / anime）")
+                    exit(1)
+                }
+                timingProfile = parsed
+            case "--silencedetect-log":
+                silencedetectLogURL = URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
             default:
                 printErr("未知选项：\(flag)\n" + usageText)
                 exit(1)
@@ -403,7 +436,17 @@ do {
             printErr("local-asr-srt 需要 --asr-words 与 --out。\n" + usageText)
             exit(1)
         }
-        try writeLocalASRSRT(wordsJSON: wordsURL, languageCode: languageCode, outputURL: outputURL, fileName: fileName)
+        let audioActivity = try silencedetectLogURL.map {
+            try ASRAudioActivity.parseSilencedetectOutput(String(contentsOf: $0, encoding: .utf8))
+        }
+        try writeLocalASRSRT(
+            wordsJSON: wordsURL,
+            languageCode: languageCode,
+            outputURL: outputURL,
+            fileName: fileName,
+            audioActivity: audioActivity,
+            timingProfile: timingProfile
+        )
         print("输出：\(outputURL.path)")
 
     case "burn":

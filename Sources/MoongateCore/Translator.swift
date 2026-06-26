@@ -190,25 +190,25 @@ private func parseVTTCueBody(
         .filter { !$0.isEmpty }
     guard !visibleLines.isEmpty else { return nil }
     let visibleText = visibleLines.joined(separator: "\n")
+    let displayText = removeVTTRollingPrefix(visibleText, previousVisible: previousVisible)
+    guard !displayText.isEmpty else { return nil }
 
     let body = bodyLines.joined(separator: "\n")
     guard let inlineRegex = vttInlineTimeRegex else {
-        return (visibleText, [])
+        return (displayText, [])
     }
     let matches = inlineRegex.matches(in: body, range: NSRange(body.startIndex..., in: body))
     guard !matches.isEmpty else {
-        let timingText = removeVTTRollingPrefix(visibleText, previousVisible: previousVisible)
-        guard !timingText.isEmpty else { return (visibleText, []) }
-        let tokens = timingText.split(whereSeparator: { $0.isWhitespace })
-        let shouldCapNoInlineHold = timingText != visibleText
+        let tokens = displayText.split(whereSeparator: { $0.isWhitespace })
+        let shouldCapNoInlineHold = displayText != visibleText
             && cueEnd - cueStart > SubtitleTimingPlanner.vttUntimedLongCueSeconds
         let cappedEnd = shouldCapNoInlineHold ? min(
             cueEnd,
             cueStart + Double(max(1, tokens.count)) * SubtitleTimingPlanner.vttUntimedMaxSecondsPerToken
         ) : cueEnd
         return (
-            visibleText,
-            [SubtitleCueSourceFragment(startSeconds: cueStart, endSeconds: cappedEnd, text: timingText)]
+            displayText,
+            [SubtitleCueSourceFragment(startSeconds: cueStart, endSeconds: cappedEnd, text: displayText)]
         )
     }
 
@@ -270,7 +270,7 @@ private func parseVTTCueBody(
     }
     appendSegment(body[cursor..<body.endIndex], start: segmentStart, end: cueEnd, capTokenSpan: true)
 
-    return (visibleText, fragments)
+    return (displayText, fragments)
 }
 
 private func stripVTTMarkup(_ text: String) -> String {
@@ -1375,6 +1375,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         var previousEnd = item.start
         var previousEndedSentence = false
         for piece in pieces {
+            let piece = collapseSubtitleWhitespace(piece)
             let pieceTokens = timingUnits(piece)
             let pieceTokenCount = pieceTokens.count
             guard pieceTokenCount > 0, cursor < timings.count else { return nil }
@@ -1438,7 +1439,8 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                !speechAlignTimings,
                originalDuration <= emergencyReadableCueSeconds,
                visibleLines.count > 1,
-               SubtitleTimingPlanner.containsCJKText(item.text) {
+               SubtitleTimingPlanner.containsCJKText(item.text),
+               !item.hasSourceAnchors {
                 output.append(Timed(
                     start: item.start,
                     end: item.end,
@@ -1453,9 +1455,10 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
             let cjkUnitCount = speechTokens(item.text).isEmpty && SubtitleTimingPlanner.containsCJKText(item.text)
                 ? timingUnits(item.text).count
                 : 0
-            let canUseSourceAnchors = speechAlignTimings
-                && !item.fragments.isEmpty
+            let canUseSourceAnchors = !item.fragments.isEmpty
+                && (speechAlignTimings || item.hasSourceAnchors)
                 && (item.hasSourceAnchors || originalDuration <= hardDuration)
+            let hasGranularSourceAnchors = canUseSourceAnchors && item.fragments.count > 1
             let shouldAlignToSpeech = SubtitleTimingPlanner.shouldAlignToSpeechWindow(
                 text: item.text,
                 originalDuration: originalDuration,
@@ -1474,7 +1477,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 fragments: item.fragments,
                 hasSourceAnchors: item.hasSourceAnchors
             )
-            let sentenceDrivenTargetParts = canUseSourceAnchors ? splitSentencePieces(effectiveItem.text).count : 1
+            let sentenceDrivenTargetParts = hasGranularSourceAnchors ? splitSentencePieces(effectiveItem.text).count : 1
             let anchoredTimings = canUseSourceAnchors
                 ? tokenTimings(for: effectiveItem, speechAlignTimings: speechAlignTimings)
                 : []
@@ -1485,7 +1488,7 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 && SubtitleTimingPlanner.containsHangulText(item.text)
                 && item.text.split(whereSeparator: { $0.isWhitespace }).count > 1
             let noAnchorUnspacedCJK = cjkUnitCount > 0 && !canUseSourceAnchors && !hasCJKWhitespaceWordBoundaries
-            let cjkReadableSplitThreshold = canUseSourceAnchors
+            let cjkReadableSplitThreshold = hasGranularSourceAnchors
                 ? 4.0
                 : (noAnchorUnspacedCJK ? hardDuration : emergencyReadableCueSeconds)
             let shouldSplitCJKByReadableWindow = cjkUnitCount > 18
@@ -1926,11 +1929,11 @@ private enum TranslatorL10n {
     }
 
     static var smartPromptNeedsSummaryModel: String {
-        CoreL10n.text(en: "Enhanced mode requires a summary model that can generate text. Choose a cloud API or local Apple Intelligence in AI summary settings.", zhHans: "增强模式需要可生成文本的总结模型，请在 AI 总结设置里选择云端 API 或本地 Apple Intelligence。", zhHant: "增強模式需要可生成文字的摘要模型，請在 AI 摘要設定裡選擇雲端 API 或本機 Apple Intelligence。")
+        CoreL10n.text(en: "AI translation planning requires a summary model that can generate text. Choose a cloud API or local Apple Intelligence in AI summary settings.", zhHans: "AI 翻译规划需要可生成文本的总结模型，请在 AI 总结设置里选择云端 API 或本地 Apple Intelligence。", zhHant: "AI 翻譯規劃需要可生成文字的摘要模型，請在 AI 摘要設定裡選擇雲端 API 或本機 Apple Intelligence。")
     }
 
     static var smartAnalysisInvalid: String {
-        CoreL10n.text(en: "Enhanced mode analysis returned an invalid format. Retry or turn off enhanced mode.", zhHans: "增强模式分析返回格式异常，请重试或关闭增强模式。", zhHant: "增強模式分析回傳格式異常，請重試或關閉增強模式。")
+        CoreL10n.text(en: "AI translation planning analysis returned an invalid format. Retry or turn off AI translation planning.", zhHans: "AI 翻译规划分析返回格式异常，请重试或关闭 AI 翻译规划。", zhHant: "AI 翻譯規劃分析回傳格式異常，請重試或關閉 AI 翻譯規劃。")
     }
 
     static var truncatedMarker: String {
@@ -2615,8 +2618,8 @@ extension TranslationPromptPreset {
         case .songLyrics:
             return TranslationPromptPresetProfile(
                 planningHint: "歌曲、歌词、MV、现场演唱或翻唱；常有意象、旋律、重复、副歌、短句呼吸和较少完整标点。",
-                segmentationGuidance: "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
-                translationGuidance: "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
+                segmentationGuidance: "你是歌词字幕断行助手。下面是一段逐字、缺少标点的歌曲或 MV 自动语音字幕转写。请在不改动、不增减、不翻译任何词的前提下，仅添加必要标点，并按歌词行、乐句、换气、节拍和副歌重复重新断行；不要把日语词语、助词、活用尾、押韵片段或固定短语切断。源转写常被切成很碎的小段，请主动把相邻碎段合并成完整乐句：宁可一行长一点，也不要让某行以助词（が/を/に/は/へ/と/の 等）悬空结尾，或把一个词（如「感じた」「伸ばせば」「さんざめく」）拆到两行。但每行也不要过长，大致控制在一屏能读完（约 20 个假名/汉字以内）；若一个乐句很长，请在它内部的自然停顿、换气或语气转折处再切成多行，只要每次切分都不拆断词、不让助词悬空结尾即可。务必逐字保留原文每一个假名和汉字，只能添加标点，绝不改字、补字、删字或纠正疑似错字（一旦改字，整段重排会被判定对不齐而被放弃，反而退回更碎的断行）。每个歌词行输出为一行，格式严格为 编号|歌词行（编号从 1 递增）。只能输出这些行，不要解释。",
+                translationGuidance: "这段字幕更接近歌曲、歌词或带旋律的演唱内容。请先通读整段上下文，再当作要发表的中文歌词译本来打磨：更灵动、有诗意，重视意象、情绪、节奏、副歌重复、短句呼吸感、文学性和可吟唱感；用词可以更凝练、更有画面感，不必逐字贴着原句。相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词；不要让某行以悬空助词或半截词组结尾。歌词重排示例（把被切碎的相邻行补成完整中文乐句）：「今日も渋谷の街に朝が」「降るどこか虚しいような」→「今天 晨光又落在涩谷街头」「像是藏着一丝说不清的空虚」；「怖くて仕方ない」「けど本当の自分」→「怕得无以复加」「却撞见了真正的自己」。若源字幕出现明显 ASR 错字、乱码或重复碎片，只翻译可高置信的歌词意象，不要把乱码逐字译出或放大。源里偶发的 ASR 错字常『单看像个词、放进整句却语义突兀、与上下文意象矛盾』（如把『青あざ＝淤青』听成『青朝＝蓝色清晨』、把『笑って』听成『言って』）：遇到这种突兀词，不要因为它单看像词就逐字直译，而要顺着该乐句整体的情绪与意象译成通顺的一句，必要时把该词弱化或模糊处理。但无论如何不得凭空加入原文没有的具体情节、人名或事件——拿不准时宁可译得含蓄笼统、宁可弱化，也绝不编造或放大。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实。",
                 qualityAnchors: ["诗意", "意象", "节奏", "副歌", "可吟唱"]
             )
         case .anime:
@@ -2772,6 +2775,170 @@ public struct TranslationPromptAdvice: Codable, Sendable, Equatable {
     }
 }
 
+public enum SubtitleSourceAssessment: String, Codable, Sendable, Equatable, CaseIterable {
+    case trusted
+    case usable
+    case suspicious
+    case bad
+    case missing
+    case unknown
+}
+
+public enum RecommendedSubtitleSourceAction: String, Codable, Sendable, Equatable, CaseIterable {
+    case keepPlatform
+    case useLocalASR
+    case keepManual
+    case retryWithLocalASR
+    case failWithNote
+}
+
+public struct SubtitlePipelineASRHints: Codable, Sendable, Equatable {
+    public let disablePromptContext: Bool
+    public let preferVAD: Bool
+    public let suppressIntroHallucination: Bool
+
+    public init(
+        disablePromptContext: Bool = false,
+        preferVAD: Bool = false,
+        suppressIntroHallucination: Bool = false
+    ) {
+        self.disablePromptContext = disablePromptContext
+        self.preferVAD = preferVAD
+        self.suppressIntroHallucination = suppressIntroHallucination
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case disablePromptContext, preferVAD, suppressIntroHallucination
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        disablePromptContext = try c.decodeIfPresent(Bool.self, forKey: .disablePromptContext) ?? false
+        preferVAD = try c.decodeIfPresent(Bool.self, forKey: .preferVAD) ?? false
+        suppressIntroHallucination = try c.decodeIfPresent(Bool.self, forKey: .suppressIntroHallucination) ?? false
+    }
+}
+
+public struct SubtitlePipelineAdvice: Codable, Sendable, Equatable {
+    public let summary: String
+    public let context: String
+    public let terms: [String]
+    public let preset: TranslationPromptPreset
+    public let sourceLanguageCode: String
+    public let characters: [String]
+    public let translationNotes: [String]
+    public let sourceAssessment: SubtitleSourceAssessment
+    public let recommendedSourceAction: RecommendedSubtitleSourceAction
+    public let timingProfile: SubtitleTimingProfile
+    public let asrHints: SubtitlePipelineASRHints
+    public let qualityRisks: [String]
+
+    public var translationAdvice: TranslationPromptAdvice {
+        TranslationPromptAdvice(
+            summary: summary,
+            context: context,
+            terms: terms,
+            preset: preset,
+            sourceLanguageCode: sourceLanguageCode,
+            characters: characters,
+            translationNotes: translationNotes
+        )
+    }
+
+    public init(
+        summary: String,
+        context: String = "",
+        terms: [String] = [],
+        preset: TranslationPromptPreset = .general,
+        sourceLanguageCode: String = "unknown",
+        characters: [String] = [],
+        translationNotes: [String] = [],
+        sourceAssessment: SubtitleSourceAssessment = .unknown,
+        recommendedSourceAction: RecommendedSubtitleSourceAction = .keepPlatform,
+        timingProfile: SubtitleTimingProfile = .speech,
+        asrHints: SubtitlePipelineASRHints = SubtitlePipelineASRHints(),
+        qualityRisks: [String] = []
+    ) {
+        self.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.context = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.terms = Self.normalizedList(terms)
+        self.preset = preset
+        self.sourceLanguageCode = Self.normalizedSourceLanguageCode(sourceLanguageCode)
+        self.characters = Self.normalizedList(characters)
+        self.translationNotes = Self.normalizedList(translationNotes)
+        self.sourceAssessment = sourceAssessment
+        self.recommendedSourceAction = recommendedSourceAction
+        self.timingProfile = timingProfile
+        self.asrHints = asrHints
+        self.qualityRisks = Self.normalizedList(qualityRisks)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary, context, terms, preset, sourceLanguageCode, characters, translationNotes
+        case sourceAssessment, recommendedSourceAction, timingProfile, asrHints, qualityRisks
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let summary = try c.decode(String.self, forKey: .summary)
+        let context = try c.decodeIfPresent(String.self, forKey: .context) ?? ""
+        let terms = try c.decodeIfPresent([String].self, forKey: .terms) ?? []
+        let rawPreset = try c.decodeIfPresent(String.self, forKey: .preset) ?? TranslationPromptPreset.general.rawValue
+        let sourceLanguageCode = try c.decodeIfPresent(String.self, forKey: .sourceLanguageCode) ?? ""
+        let characters = try c.decodeIfPresent([String].self, forKey: .characters) ?? []
+        let translationNotes = try c.decodeIfPresent([String].self, forKey: .translationNotes) ?? []
+        let rawAssessment = try c.decodeIfPresent(String.self, forKey: .sourceAssessment) ?? SubtitleSourceAssessment.unknown.rawValue
+        let rawAction = try c.decodeIfPresent(String.self, forKey: .recommendedSourceAction) ?? RecommendedSubtitleSourceAction.keepPlatform.rawValue
+        let rawTimingProfile = try c.decodeIfPresent(String.self, forKey: .timingProfile) ?? SubtitleTimingProfile.speech.rawValue
+        let asrHints = try c.decodeIfPresent(SubtitlePipelineASRHints.self, forKey: .asrHints) ?? SubtitlePipelineASRHints()
+        let qualityRisks = try c.decodeIfPresent([String].self, forKey: .qualityRisks) ?? []
+        self.init(
+            summary: summary,
+            context: context,
+            terms: terms,
+            preset: TranslationPromptPreset(rawValue: rawPreset) ?? .general,
+            sourceLanguageCode: sourceLanguageCode,
+            characters: characters,
+            translationNotes: translationNotes,
+            sourceAssessment: SubtitleSourceAssessment(rawValue: rawAssessment) ?? .unknown,
+            recommendedSourceAction: RecommendedSubtitleSourceAction(rawValue: rawAction) ?? .keepPlatform,
+            timingProfile: SubtitleTimingProfile(rawValue: rawTimingProfile) ?? .speech,
+            asrHints: asrHints,
+            qualityRisks: qualityRisks
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(summary, forKey: .summary)
+        try c.encode(context, forKey: .context)
+        try c.encode(terms, forKey: .terms)
+        try c.encode(preset.rawValue, forKey: .preset)
+        try c.encode(sourceLanguageCode, forKey: .sourceLanguageCode)
+        try c.encode(characters, forKey: .characters)
+        try c.encode(translationNotes, forKey: .translationNotes)
+        try c.encode(sourceAssessment.rawValue, forKey: .sourceAssessment)
+        try c.encode(recommendedSourceAction.rawValue, forKey: .recommendedSourceAction)
+        try c.encode(timingProfile.rawValue, forKey: .timingProfile)
+        try c.encode(asrHints, forKey: .asrHints)
+        try c.encode(qualityRisks, forKey: .qualityRisks)
+    }
+
+    private static func normalizedList(_ items: [String]) -> [String] {
+        Array(items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(8))
+    }
+
+    private static let allowedSourceLanguageCodes: Set<String> = ["ja", "en", "zh", "yue", "ko", "es", "fr", "it"]
+
+    private static func normalizedSourceLanguageCode(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return allowedSourceLanguageCodes.contains(trimmed) ? trimmed : "unknown"
+    }
+}
+
 /// 通过设置里选择的协议翻译字幕。服务地址、模型、凭证全部来自 AppSettings。
 public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     private let settings: AppSettings
@@ -2843,23 +3010,48 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     }
 
     internal static func parseTranslationPromptAdvice(_ text: String) -> TranslationPromptAdvice? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let json: String
-        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
-            json = trimmed
-        } else if let start = trimmed.firstIndex(of: "{"),
-                  let end = trimmed.lastIndex(of: "}"),
-                  start <= end {
-            json = String(trimmed[start...end])
-        } else {
-            return nil
-        }
+        guard let json = extractedJSONObject(from: text) else { return nil }
         guard let data = json.data(using: .utf8),
               let advice = try? JSONDecoder().decode(TranslationPromptAdvice.self, from: data),
               !advice.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return advice
+    }
+
+    internal static func parseSubtitlePipelineAdvice(_ text: String) -> SubtitlePipelineAdvice? {
+        guard let json = extractedJSONObject(from: text) else { return nil }
+        guard let data = json.data(using: .utf8),
+              let advice = try? JSONDecoder().decode(SubtitlePipelineAdvice.self, from: data),
+              !advice.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return advice
+    }
+
+    private static func extractedJSONObject(from text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+            return trimmed
+        }
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"),
+              start <= end else {
+            return nil
+        }
+        return String(trimmed[start...end])
+    }
+
+    internal static var subtitlePipelinePlanningSystemPrompt: String {
+        """
+        你是字幕流水线规划器。先通读样本，判断源语言、内容类型、字幕源质量、是否需要本地 ASR、ASR 分段策略和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：
+        {"summary":"不超过80字的中文摘要","context":"不超过160字，写清人物、组织、场景、发生的事和主题","sourceLanguageCode":"ja|en|zh|yue|ko|es|fr|it|unknown","preset":"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment","terms":["原文专名或术语：目标语言说明，最多8个"],"characters":["人物/角色/身份：简要说明，最多8个"],"translationNotes":["影响翻译的注意事项，最多8条"],"sourceAssessment":"trusted|usable|suspicious|bad|missing|unknown","recommendedSourceAction":"keepPlatform|useLocalASR|keepManual|retryWithLocalASR|failWithNote","timingProfile":"speech|lyrics|japaneseLyrics|anime","asrHints":{"disablePromptContext":false,"preferVAD":false,"suppressIntroHallucination":false},"qualityRisks":["romajiLoop|lyricsContext|longSilence|translationContinuity|languageMismatch|lowCoverage|unknown"]}。
+        判断规则：人工/官方字幕通常 trusted + keepManual；高质量同语言平台字幕 usable + keepPlatform；自动字幕若出现乱码、罗马音循环、语言不匹配、低覆盖或重复滚动，标为 suspicious/bad 并选择 useLocalASR；字幕缺失时标为 missing 并选择 useLocalASR；本地 ASR 失败且没有可用源时才 failWithNote。
+        timingProfile 必须服务后续确定性分段：普通讲话用 speech，歌曲/歌词用 lyrics，日语歌曲/歌词用 japaneseLyrics，动漫/动画对白用 anime。J-pop/MV/现场演唱若是日语歌词，asrHints.disablePromptContext、preferVAD、suppressIntroHallucination 优先为 true。
+        preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：
+        \(translationPresetPlanningHints)
+        安全边界：你只做判断和规划，不能直接写时间轴，不能覆盖 local-ASR 源字幕，不能修改、增删或伪造源字幕文字；不要把自动翻译字幕当作源语言真相。terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段写 unknown 或空数组。
+        """
     }
 
     public init(settings: AppSettings) {
@@ -2908,10 +3100,11 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         var cues = cleanCues(parsed)
         // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
         // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
-        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句，分段全靠 LLM 重断句——
-        // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
+        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句；翻译时可使用 LLM 重分段的
+        // 内存视图，但不能写回源 .srt，避免模型改词/重复污染可复查的 ASR 源字幕；
         // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
         let isLocalASRSource = srtFile.lastPathComponent.lowercased().contains(".local-asr.")
+        cues = Self.sanitizedSourceCuesForTranslation(cues, sourceLanguageCode: context.sourceLanguage)
         var advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
         if advice == nil, isLocalASRSource {
             advice = Self.localASRLyricsFallbackAdvice(fileName: srtFile.lastPathComponent, cues: cues)
@@ -2923,9 +3116,6 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
                 context: context,
                 preset: advice?.preset ?? .general
             )
-            if isLocalASRSource, reseg.count != cues.count {
-                try? serializeSRT(reseg).write(to: srtFile, atomically: true, encoding: .utf8)
-            }
             cues = reseg
         }
 
@@ -3001,6 +3191,89 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             throw MoongateError.translateFailed("\(CoreL10n.text(en: "Could not write translated subtitle file", zhHans: "无法写入译文文件", zhHant: "無法寫入譯文檔"))：\(error.localizedDescription)")
         }
         return outputURL
+    }
+
+    static func sanitizedSourceCuesForTranslation(
+        _ cues: [SubtitleCue],
+        sourceLanguageCode: String?
+    ) -> [SubtitleCue] {
+        let normalizedSource = TranslationLanguage.normalizedScript(sourceLanguageCode ?? "")
+        guard normalizedSource == "ja"
+            || normalizedSource == "ko"
+            || normalizedSource == "yue"
+            || normalizedSource.hasPrefix("zh") else {
+            return cues
+        }
+        let filtered = cues.filter { !isObviousCJKRomanizedGarbageCue($0.text) }
+        guard !filtered.isEmpty else { return cues }
+        return filtered.enumerated().map { offset, cue in
+            SubtitleCue(
+                index: offset + 1,
+                start: cue.start,
+                end: cue.end,
+                text: strippingParentheticalLatinGlossesForCJK(cue.text),
+                sourceFragments: cue.sourceFragments
+            )
+        }
+    }
+
+    private static func strippingParentheticalLatinGlossesForCJK(_ text: String) -> String {
+        guard text.contains(where: isCJKScalar) else { return text }
+        var result = ""
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            let character = text[index]
+            let close: Character?
+            if character == "(" {
+                close = ")"
+            } else if character == "（" {
+                close = "）"
+            } else {
+                close = nil
+            }
+
+            if let close,
+               let closeIndex = text[index...].firstIndex(of: close) {
+                let innerStart = text.index(after: index)
+                let inner = String(text[innerStart..<closeIndex])
+                if inner.contains(where: isLatinLetterCharacter),
+                   !inner.contains(where: isCJKScalar) {
+                    index = text.index(after: closeIndex)
+                    continue
+                }
+            }
+
+            result.append(character)
+            index = text.index(after: index)
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isLatinLetterCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.count == 1
+            && character.unicodeScalars.allSatisfy { scalar in
+                (0x41...0x5A).contains(scalar.value) || (0x61...0x7A).contains(scalar.value)
+            }
+    }
+
+    private static func isObviousCJKRomanizedGarbageCue(_ text: String) -> Bool {
+        let tokens = PlatformSubtitleQualityGate.qualityReport(
+            cues: [SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: text)],
+            requestedLanguageCode: "ja",
+            subtitleLanguageCode: "ja"
+        )
+        guard tokens.cjkScalarRatio == 0, tokens.latinScalarRatio > 0 else { return false }
+        let latinTokens = text
+            .split(whereSeparator: { !$0.isLetter })
+            .map { String($0).lowercased() }
+            .filter { !$0.isEmpty }
+        guard (1...4).contains(latinTokens.count) else { return false }
+        let knownGarbage: Set<String> = [
+            "ni", "nani", "dare", "ana", "anas", "carano", "car", "me", "ani", "box"
+        ]
+        return latinTokens.allSatisfy { knownGarbage.contains($0) }
     }
 
     /// 翻译一块字幕，返回 [全局编号: 译文]。
@@ -3150,15 +3423,6 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
         let sample = Self.subtitleAnalysisSample(cues)
         let summarySettings = settings.applyingTranslationConfig(config)
-        let presetHints = Self.translationPresetPlanningHints
-        let system = """
-        你是字幕内容规划器。先通读样本，理解这段视频的源语言、内容类型、人物和翻译风险，然后只输出 JSON（不要翻译正文、不要输出 Markdown）：\
-        {"summary":"不超过80字的中文摘要","context":"不超过160字，写清人物、组织、场景、发生的事和主题","sourceLanguageCode":"ja|en|zh|yue|ko|es|fr|it|unknown","preset":"general|songLyrics|anime|interviewConversation|tutorialHowTo|lectureCourse|newsExplainer|reviewProduct|vlogLifestyle|shortSocial|documentaryNarrative|gamingEntertainment","terms":["原文专名或术语：目标语言说明，最多8个"],"characters":["人物/角色/身份：简要说明，最多8个"],"translationNotes":["影响翻译的注意事项，最多8条"]}。\
-        summary 写整体内容；context 写会影响翻译的背景；sourceLanguageCode 从给定集合里选最贴近的，拿不准就写 unknown；characters 写登场人物或角色及其身份、与他人的关系或称呼习惯；translationNotes 写具体的翻译策略，如敬语、角色口癖、专名保留、歌词意象、数字单位、上下文承接等。\
-        所有字段都不得编造：terms / characters / translationNotes 只放字幕里出现或能高置信识别的信息，不确定官方译名时保留原文写法并说明不确定；判断不了的字段就写 unknown 或留空数组，绝不要凭空生成人物、剧情或译名。\
-        preset 必须从下列类型中选择最贴近的一个；无法高置信判断时选 general：
-        \(presetHints)
-        """
         let userContent = """
         目标译文语言：\(context.targetLanguageDisplayName)
         字幕内容分析样本：
@@ -3166,12 +3430,13 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         """
         let reply = try await sendModelMessage(
             settings: summarySettings,
-            system: system,
+            system: Self.subtitlePipelinePlanningSystemPrompt,
             userContent: userContent,
             maxTokens: 1500,
             context: context
         )
-        guard let advice = Self.parseTranslationPromptAdvice(reply.text) else {
+        guard let advice = Self.parseSubtitlePipelineAdvice(reply.text)?.translationAdvice
+            ?? Self.parseTranslationPromptAdvice(reply.text) else {
             throw MoongateError.translateFailed(TranslatorL10n.smartAnalysisInvalid)
         }
         return advice
@@ -3331,6 +3596,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     private static let resegmentMinSplitTokens = 6      // 只有 token 数达到此值的段才按时长再切
     private static let resegmentMinSegmentSeconds = 3.0 // 合并判据：时长 < 此秒数
     private static let resegmentMinMergeTokens = 3      // 且 token < 此值，才算碎句并入前段
+    private static let japaneseLyricDuplicateMinCharacters = 6
+    private static let japaneseLyricDuplicateMinOverlap = 0.72
 
     /// 归一化单个 token 用于对齐比较：小写 + 去掉首尾标点（保留内部，如 well-known）。
     private static func normalizeAlignToken(_ raw: String) -> String {
@@ -3382,6 +3649,66 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         return text.compactMap { ch in
             ch.isWhitespace ? nil : (normalizeAlignToken(String(ch)).isEmpty ? nil : String(ch))
         }
+    }
+
+    private static func containsSuspiciousJapaneseLyricInternalDuplicateNoise(_ text: String) -> Bool {
+        let normalizedSeparators = text
+            .replacingOccurrences(of: "，", with: "、")
+            .replacingOccurrences(of: ",", with: "、")
+        let parts = normalizedSeparators
+            .split(separator: "、", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard parts.count >= 2 else { return false }
+        var previous: [String] = []
+        for part in parts {
+            let normalized = normalizedJapaneseLyricDuplicateText(part)
+            if isApproximateJapaneseLyricDuplicateSegment(normalized, previous: previous) {
+                return true
+            }
+            if !normalized.isEmpty { previous.append(normalized) }
+        }
+        return false
+    }
+
+    private static func normalizedJapaneseLyricDuplicateText(_ text: String) -> String {
+        String(text.filter { isCJKScalar($0) })
+    }
+
+    private static func isApproximateJapaneseLyricDuplicateSegment(
+        _ candidate: String,
+        previous: [String]
+    ) -> Bool {
+        guard candidate.count >= japaneseLyricDuplicateMinCharacters else { return false }
+        for original in previous.suffix(3) {
+            guard original.count >= japaneseLyricDuplicateMinCharacters,
+                  original != candidate else { continue }
+            let smaller = min(original.count, candidate.count)
+            let larger = max(original.count, candidate.count)
+            guard Double(smaller) / Double(larger) >= 0.55 else { continue }
+            if japaneseCharacterOverlapRatio(original, candidate) >= japaneseLyricDuplicateMinOverlap {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func japaneseCharacterOverlapRatio(_ lhs: String, _ rhs: String) -> Double {
+        let lhsChars = Array(lhs)
+        let rhsChars = Array(rhs)
+        let denominator = min(lhsChars.count, rhsChars.count)
+        guard denominator > 0 else { return 0 }
+        var counts: [Character: Int] = [:]
+        for ch in lhsChars {
+            counts[ch, default: 0] += 1
+        }
+        var overlap = 0
+        for ch in rhsChars {
+            let count = counts[ch, default: 0]
+            guard count > 0 else { continue }
+            overlap += 1
+            counts[ch] = count - 1
+        }
+        return Double(overlap) / Double(denominator)
     }
 
     /// ASR 判定：像逐字无标点的自动字幕才重分段，尽量避免误伤正常字幕/歌词。
@@ -3569,6 +3896,11 @@ extension ConfiguredTranslator {
         var sentences: [String] = []
         for index in 0..<chunkRanges.count {
             sentences += chunkSentences[index] ?? []
+        }
+        if preset == .songLyrics,
+           Self.containsSuspiciousJapaneseLyricInternalDuplicateNoise(sentences.joined(separator: "、")) {
+            Self.resegmentLog("歌词断句疑似包含 cue 内乱码重复，保留原 \(cues.count) 条字幕")
+            return cues
         }
 
         // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。

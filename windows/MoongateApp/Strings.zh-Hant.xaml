@@ -56,6 +56,10 @@
     <sys:String x:Key="L.Ready.FormatSection">格式</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">字幕</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSourceSection">字幕來源</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleLanguageSection">字幕語言</sys:String>
+    <sys:String x:Key="L.Ready.RecommendedBadge">推薦</sys:String>
+    <sys:String x:Key="L.Ready.AutoSourceExplanation">下載後自動選用品質最高的字幕來源</sys:String>
+    <sys:String x:Key="L.Ready.MoreLanguages">更多語言</sys:String>
     <sys:String x:Key="L.Ready.SubtitleOutputSection">字幕輸出</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">這個影片沒有字幕</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitleSource">不需要字幕</sys:String>
@@ -185,7 +189,7 @@
     <sys:String x:Key="L.Settings.LangHint">切換語言會立即生效；進行中任務的狀態文案會在下次重新整理時切換。</sys:String>
     <sys:String x:Key="L.Settings.LocalASRSection">本機語音識別</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">允許呼叫本機 whisper.cpp 識別</sys:String>
-    <sys:String x:Key="L.Settings.LocalASRHelp">重新識別音訊，速度更慢，但部分語言/專名可能更好。Moongate 不會自動下載模型。</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRHelp">當平台字幕品質較差時自動補充識別，速度更慢，但部分語言/專名可能更好。Moongate 不會自動下載模型。</sys:String>
     <sys:String x:Key="L.Settings.AdvancedDetails">進階說明</sys:String>
     <sys:String x:Key="L.Settings.LocalASRImportModel">匯入模型…</sys:String>
     <sys:String x:Key="L.Settings.LocalASRModelImportComplete">{0} 已匯入並啟用</sys:String>
@@ -208,7 +212,7 @@
     <sys:String x:Key="L.Settings.AIService">AI 服務</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">預設 AI 服務會被翻譯和摘要共用；需要不同模型時可在下方單獨覆寫。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻譯服務</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPrompts">增強模式</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">AI 翻譯規劃</sys:String>
     <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">開啟後，翻譯前先理解整段字幕：分析內容、依類型選擇合適的翻譯風格，並把自動字幕的碎句整理成完整句子。</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻譯跟隨預設 AI 服務</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">預設共用上方服務。關閉後可給翻譯單獨指定模型或閘道。</sys:String>

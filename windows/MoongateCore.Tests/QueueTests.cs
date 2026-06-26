@@ -96,8 +96,10 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
 {
     public int CallCount;
     public List<(string Video, string Language)> Calls { get; } = [];
+    /// <summary>When true the generated transcript is reported as pervasively low-confidence.</summary>
+    public bool LowConfidence { get; set; }
 
-    public Task<string> GenerateSourceSubtitleAsync(
+    public Task<GeneratedLocalAsrSource> GenerateSourceSubtitleAsync(
         string videoFile,
         string languageCode,
         TaskControlToken? control,
@@ -114,7 +116,10 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
             Path.GetFileNameWithoutExtension(videoFile) + ".local-asr." + languageCode + ".srt");
         Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
         File.WriteAllText(output, "1\n00:00:00,000 --> 00:00:01,500\n梅雨 が 明ける。\n");
-        return Task.FromResult(output);
+        var confidence = LowConfidence
+            ? new LocalAsrConfidenceSummary(30, 0.6, 0.3, true)
+            : new LocalAsrConfidenceSummary(30, 0.95, 0.02, false);
+        return Task.FromResult(new GeneratedLocalAsrSource(output, confidence));
     }
 }
 
@@ -467,11 +472,12 @@ public class QueueManagerTests
         }
     }
 
-    private static VideoInfo Info(string videoId = "vid1", string title = "Test") => new()
+    private static VideoInfo Info(string videoId = "vid1", string title = "Test", string? durationText = null) => new()
     {
         SourceUrl = $"https://example.com/{videoId}",
         VideoId = videoId,
         Title = title,
+        DurationText = durationText,
         Formats = [new FormatChoice { Id = "bv*+ba/b", Label = "1080p · mp4" }],
         Subtitles = [],
     };
@@ -481,6 +487,8 @@ public class QueueManagerTests
         IReadOnlyList<string>? subtitleLangs = null,
         IReadOnlyList<SubtitleChoice>? subtitleTracks = null,
         string? primarySubtitleTrackId = null,
+        string? preferredSubtitleLanguageCode = null,
+        string destinationDirectory = "/tmp/downloads",
         OutputFormat outputFormat = OutputFormat.Original) => new()
     {
         Url = $"https://example.com/{videoId}",
@@ -489,7 +497,8 @@ public class QueueManagerTests
         SubtitleLangs = subtitleLangs ?? [],
         SubtitleTracks = subtitleTracks ?? [],
         PrimarySubtitleTrackId = primarySubtitleTrackId,
-        DestinationDirectory = "/tmp/downloads",
+        PreferredSubtitleLanguageCode = preferredSubtitleLanguageCode,
+        DestinationDirectory = destinationDirectory,
         OutputFormat = outputFormat,
     };
 
@@ -1230,5 +1239,155 @@ public class QueueManagerTests
 
         callB.Complete("/tmp/downloads/b [b].mp4");
         await WaitUntilAsync(() => queue.Item(idRunning)?.Stage.Kind == ItemStageKind.Done, "B 完成");
+    }
+
+    // MARK: - M3 下载后源质量解析（自动字幕低质 → 回退本地识别）
+
+    /// 选了某语言、下载到的平台自动字幕乱码/重复（质量门判不可用）、且本地识别可用 → 自动改用 whisper。
+    [Fact]
+    public async Task AutoCaptionLowQualityFallsBackToLocalAsr()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-fallback-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+            // 20 条完全相同的 cue → 相邻重复比例 1.0 ≥ 0.5 → garbledOrRepetitive。
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 20; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n［音楽］\n\n");
+            }
+            File.WriteAllText(autoVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [auto], primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(1, asr.CallCount);                       // 触发了 whisper
+            Assert.True(item.ResolvedSubtitleSource?.UsedLocalAsrFallback);
+            Assert.Equal(SubtitleSourceKind.LocalAsr, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.NotNull(item.SubtitleSourceNote);
+            // 翻译输入是 whisper 产物，不是低质 .vtt。
+            Assert.Contains(".local-asr.", translator.LastInput);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// 本地识别本身低置信（zh/yue/ko 乱码场景）→ 在回退提示后追加“识别质量较低，仅供参考”的诚实提示。
+    [Fact]
+    public async Task LowConfidenceLocalAsrAppendsQualityCaveatToNote()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-lowconf-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 20; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n［音楽］\n\n");
+            }
+            File.WriteAllText(autoVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator { LowConfidence = true };
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [auto], primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.True(item.ResolvedSubtitleSource?.UsedLocalAsrFallback);
+            // 回退提示 + 低置信 caveat 用 " · " 连接：分隔符的存在即证明 caveat 被追加。
+            Assert.NotNull(item.SubtitleSourceNote);
+            Assert.Contains("·", item.SubtitleSourceNote!);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// 自动字幕低质但本地识别不可用（generator=null）→ 不崩、沿用原字幕、记录可启用本地识别的提示。
+    [Fact]
+    public async Task LowQualityButLocalAsrUnavailableDoesNotCrash()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-nogen-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 20; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n［音楽］\n\n");
+            }
+            File.WriteAllText(autoVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            // 无 localAsrGenerator。
+            var queue = new QueueManager(engine, _ => translator, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [auto], primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.False(item.ResolvedSubtitleSource?.UsedLocalAsrFallback ?? false);
+            Assert.NotNull(item.SubtitleSourceNote);              // 提示可启用本地识别
+            Assert.Equal(autoVtt, translator.LastInput);          // 沿用原平台字幕
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 }

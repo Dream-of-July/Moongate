@@ -77,6 +77,8 @@ final class ViewModel: ObservableObject {
     @Published var chineseMode: ChineseSubtitleMode = .off {
         didSet { persistCurrentDownloadOptions() }
     }
+    /// Ready 页语言区是否展开（默认折叠：只显示推荐语言，展开后才显示其他语言与来源细节）。
+    @Published var languageSectionExpanded: Bool = false
     /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
     /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
     static var persistedAppLanguage: String { AppSettings.load(readCredentials: false).appLanguage }
@@ -413,18 +415,24 @@ final class ViewModel: ObservableObject {
                         duplicated += 1
                         continue
                     }
-                    // 字幕处理开启时自动选一条字幕作翻译源（真实字幕优先）
+                    // 字幕处理开启时自动选一条推荐语言；同语言内仍由 track 排序决定人工/自动/本地源。
                     var subtitleLangs: [String] = []
                     var autoSubtitleLangs: [String] = []
                     var subtitleTracks: [SubtitleChoice] = []
                     var primarySubtitleTrackID: String?
+                    let recommendation = SubtitleLanguageRecommender.recommend(
+                        title: info.title,
+                        languages: SubtitleLanguageRecommender.aggregate(availableSubtitleChoices(for: info))
+                    )
                     if mode != .off,
-                       let sub = info.subtitles.first(where: { !$0.isAuto }) ?? info.subtitles.first {
+                       let recommended = recommendation.recommended,
+                       let sub = recommended.preferredTrack,
+                       sub.sourceKind != .localASR || localASRReadyForDownload {
                         subtitleTracks = [sub]
                         primarySubtitleTrackID = sub.id
-                        if sub.isAuto {
+                        if sub.sourceKind == .platformAuto {
                             autoSubtitleLangs = [sub.languageCode]
-                        } else {
+                        } else if sub.sourceKind == .manual {
                             subtitleLangs = [sub.languageCode]
                         }
                     }
@@ -456,6 +464,7 @@ final class ViewModel: ObservableObject {
                         autoSubtitleLangs: autoSubtitleLangs,
                         subtitleTracks: subtitleTracks,
                         primarySubtitleTrackID: primarySubtitleTrackID,
+                        preferredSubtitleLanguageCode: primarySubtitleTrackID.map(normalizedLang),
                         destinationDirectory: Self.destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
@@ -601,6 +610,7 @@ final class ViewModel: ObservableObject {
             autoSubtitleLangs: chosen.filter { $0.isAuto }.map(\.languageCode),
             subtitleTracks: chosen,
             primarySubtitleTrackID: primarySubtitleTrackIDSnapshot,
+            preferredSubtitleLanguageCode: primarySubtitleTrackIDSnapshot.map(normalizedLang),
             destinationDirectory: Self.destinationDirectory(forTitle: info.title, multiFile: multiFile),
             preferredTitle: {
                 guard let kind = selectedCandidate?.kind, kind == .pageMain || kind == .directFile else { return nil }
@@ -660,11 +670,7 @@ final class ViewModel: ObservableObject {
     /// 字幕 id 归一成语言代码：小写、取首个 `-` 前的部分。
     /// 这样上次选「ja」能匹配下个视频的「ja」/「ja-JP」/「ja-orig」/自动生成的日语字幕。
     private func normalizedLang(_ id: String) -> String {
-        let lower = SubtitleTrackID(rawValue: id).languageCode.lowercased()
-        if let dash = lower.firstIndex(of: "-") {
-            return String(lower[..<dash])
-        }
-        return lower
+        SubtitleLanguageChoice.normalizedLanguageCode(SubtitleTrackID(rawValue: id).languageCode)
     }
 
     func availableSubtitleChoices(for info: VideoInfo) -> [SubtitleChoice] {
@@ -708,6 +714,43 @@ final class ViewModel: ObservableObject {
         queue.hasLocalASRGenerator
     }
 
+    // MARK: - Language-first ready page
+
+    /// Language groups for the ready page (manual / auto / localASR collapsed per language).
+    func availableLanguageChoices(for info: VideoInfo) -> [SubtitleLanguageChoice] {
+        SubtitleLanguageRecommender.aggregate(availableSubtitleChoices(for: info))
+    }
+
+    /// Deterministic recommendation (recommended language + the rest), driven by title + tracks.
+    func languageRecommendation(for info: VideoInfo) -> SubtitleLanguageRecommender.Result {
+        SubtitleLanguageRecommender.recommend(
+            title: info.title, languages: availableLanguageChoices(for: info))
+    }
+
+    /// The single language shown by default in the ready page main area.
+    func recommendedLanguage(for info: VideoInfo) -> SubtitleLanguageChoice? {
+        languageRecommendation(for: info).recommended
+    }
+
+    /// Other languages for the disclosure area (everything except the recommended one).
+    func otherLanguages(for info: VideoInfo) -> [SubtitleLanguageChoice] {
+        languageRecommendation(for: info).others
+    }
+
+    /// True when this language group is the currently selected source (by its preferred track).
+    func isLanguageSelected(_ language: SubtitleLanguageChoice) -> Bool {
+        guard let primarySubtitleTrackID else { return false }
+        return language.tracks.contains { $0.id == primarySubtitleTrackID }
+    }
+
+    /// Selects a language: picks its preferred track (manual > auto > localASR) as the primary source.
+    /// localASR-only groups still select when the generator isn't ready — the row shows a configure
+    /// entry point, but the user's language intent is recorded.
+    func selectLanguage(_ language: SubtitleLanguageChoice) {
+        guard let track = language.preferredTrack else { return }
+        primarySubtitleTrackID = track.id
+    }
+
     func openSettings(paneID: String? = nil) {
         pendingSettingsPaneID = paneID
         showSettings = true
@@ -744,6 +787,14 @@ final class ViewModel: ObservableObject {
                 }
             }
         }
+        // 没有命中上次手选/语言 → 用语言优先推荐器选一个推荐语言（确定性，随视频内容变化）。
+        if matchedPrimaryID == nil {
+            if let recommended = recommendedLanguage(for: info)?.preferredTrack,
+               recommended.sourceKind != .localASR || localASRReadyForDownload {
+                matchedPrimaryID = recommended.id
+            }
+        }
+        languageSectionExpanded = false
         primarySubtitleTrackID = matchedPrimaryID
 
         // 仅当字幕成功恢复、且记录的处理方式不是「不需要」时才恢复 mode（否则保持 didSet 设好的 .off）。

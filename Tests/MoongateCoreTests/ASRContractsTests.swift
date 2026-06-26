@@ -530,7 +530,316 @@ final class ASRContractsTests: XCTestCase {
         let guardedStart = try XCTUnwrap(srtTimeToSeconds(guarded[0].start))
         let unguardedStart = try XCTUnwrap(srtTimeToSeconds(unguarded[0].start))
         XCTAssertGreaterThanOrEqual(guardedStart, 2.51, "lyrics must not appear inside a leading silent prelude")
+        XCTAssertFalse(guarded[0].text.hasPrefix("あ"), "low-confidence leading lyric noise inside the silent prelude should be dropped")
+        XCTAssertTrue(guarded[0].text.hasPrefix("いつもの"), "the last plausible leading word should be carried to the first audible lyric")
         XCTAssertEqual(unguardedStart, 0.0, accuracy: 0.0015, "missing audio activity must preserve current timing")
+    }
+
+    func testJapaneseLyricsKeepsSingleKanjiWordSuffixAttached() {
+        let transcript = ASRTranscript(
+            id: "ado-word-boundary",
+            languageCode: "ja",
+            durationSeconds: 24.0,
+            words: [
+                ASRWord(text: "ちっちゃな", startSeconds: 8.17, endSeconds: 12.61, probability: 0.95),
+                ASRWord(text: "頃", startSeconds: 12.89, endSeconds: 13.50, probability: 0.95),
+                ASRWord(text: "から", startSeconds: 13.50, endSeconds: 14.20, probability: 0.95),
+                ASRWord(text: "優等", startSeconds: 14.20, endSeconds: 17.87, probability: 0.95),
+                ASRWord(text: "生", startSeconds: 18.15, endSeconds: 18.50, probability: 0.95),
+                ASRWord(text: "気付いたら", startSeconds: 18.50, endSeconds: 21.00, probability: 0.95)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let texts = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics).map(\.text)
+        XCTAssertTrue(texts.contains { $0.contains("優等生") }, "lyrics should avoid splitting a single-kanji suffix from its compound")
+        XCTAssertFalse(texts.contains { $0.hasPrefix("生") }, "single-kanji suffix must not become the next cue head")
+    }
+
+    func testJapaneseLyricsDoesNotBorrowKanaWordHeadIntoPreviousLine() {
+        let transcript = ASRTranscript(
+            id: "ado-kana-head-boundary",
+            languageCode: "ja",
+            durationSeconds: 24.0,
+            words: [
+                ASRWord(text: "それ", startSeconds: 3.93, endSeconds: 4.05, probability: 0.99),
+                ASRWord(text: "が", startSeconds: 4.05, endSeconds: 4.38, probability: 0.99),
+                ASRWord(text: "何", startSeconds: 4.38, endSeconds: 4.68, probability: 0.99),
+                ASRWord(text: "か", startSeconds: 4.71, endSeconds: 5.01, probability: 0.99),
+                ASRWord(text: "見", startSeconds: 5.06, endSeconds: 5.37, probability: 0.68),
+                ASRWord(text: "せ", startSeconds: 5.37, endSeconds: 5.70, probability: 0.99),
+                ASRWord(text: "つ", startSeconds: 5.70, endSeconds: 6.03, probability: 0.98),
+                ASRWord(text: "けて", startSeconds: 6.03, endSeconds: 6.70, probability: 0.99),
+                ASRWord(text: "や", startSeconds: 6.70, endSeconds: 7.03, probability: 0.99),
+                ASRWord(text: "る", startSeconds: 7.03, endSeconds: 7.42, probability: 0.99),
+                ASRWord(text: "ち", startSeconds: 7.97, endSeconds: 8.47, probability: 0.74),
+                ASRWord(text: "っちゃ", startSeconds: 8.47, endSeconds: 11.64, probability: 0.99),
+                ASRWord(text: "な", startSeconds: 11.64, endSeconds: 12.69, probability: 0.99),
+                ASRWord(text: "頃", startSeconds: 12.69, endSeconds: 13.74, probability: 0.99),
+                ASRWord(text: "から", startSeconds: 13.74, endSeconds: 15.85, probability: 0.99),
+                ASRWord(text: "優", startSeconds: 15.85, endSeconds: 16.90, probability: 0.74),
+                ASRWord(text: "等", startSeconds: 16.90, endSeconds: 17.95, probability: 0.99),
+                ASRWord(text: "生", startSeconds: 17.95, endSeconds: 19.06, probability: 0.99),
+                ASRWord(text: "気", startSeconds: 19.06, endSeconds: 19.27, probability: 0.97),
+                ASRWord(text: "付", startSeconds: 19.48, endSeconds: 19.48, probability: 0.56),
+                ASRWord(text: "いた", startSeconds: 19.61, endSeconds: 19.90, probability: 0.99),
+                ASRWord(text: "ら", startSeconds: 19.90, endSeconds: 20.11, probability: 0.99)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let texts = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics).map(\.text)
+        XCTAssertFalse(texts.contains { $0.hasSuffix("やるち") }, "lyrics must not borrow the kana head of ちっちゃな into the previous line")
+        XCTAssertTrue(texts.contains { $0.contains("ちっちゃ") }, "the kana head should stay with the following word")
+        XCTAssertTrue(texts.contains { $0.contains("優等生") }, "single-kanji suffixes should still attach to compounds")
+        XCTAssertFalse(texts.contains { $0.hasPrefix("生") }, "the suffix 生 must not become the next cue head")
+    }
+
+    func testJapaneseLyricsRejoinsSemanticTailsAcrossSungGaps() {
+        let transcript = ASRTranscript(
+            id: "gunjou-semantic-tails",
+            languageCode: "ja",
+            durationSeconds: 78.0,
+            words: [
+                ASRWord(text: "そんな", startSeconds: 25.46, endSeconds: 25.66, probability: 0.97),
+                ASRWord(text: "も", startSeconds: 25.66, endSeconds: 25.83, probability: 1.00),
+                ASRWord(text: "ん", startSeconds: 26.04, endSeconds: 26.20, probability: 1.00),
+                ASRWord(text: "さ", startSeconds: 26.20, endSeconds: 26.48, probability: 1.00),
+                ASRWord(text: "これで", startSeconds: 26.48, endSeconds: 27.28, probability: 0.97),
+                ASRWord(text: "いい", startSeconds: 27.28, endSeconds: 27.82, probability: 1.00),
+                ASRWord(text: "知", startSeconds: 27.82, endSeconds: 28.08, probability: 0.97),
+                ASRWord(text: "ら", startSeconds: 28.08, endSeconds: 28.34, probability: 1.00),
+                ASRWord(text: "ず", startSeconds: 28.34, endSeconds: 28.60, probability: 0.99),
+                ASRWord(text: "知", startSeconds: 28.60, endSeconds: 28.86, probability: 0.97),
+                ASRWord(text: "ら", startSeconds: 28.86, endSeconds: 29.12, probability: 1.00),
+                ASRWord(text: "ず", startSeconds: 29.12, endSeconds: 29.38, probability: 1.00),
+                ASRWord(text: "隠", startSeconds: 29.38, endSeconds: 29.63, probability: 0.99),
+                ASRWord(text: "して", startSeconds: 30.15, endSeconds: 30.15, probability: 1.00),
+                ASRWord(text: "た", startSeconds: 30.33, endSeconds: 30.42, probability: 0.99),
+                ASRWord(text: "本当", startSeconds: 30.90, endSeconds: 31.23, probability: 0.41),
+                ASRWord(text: "の", startSeconds: 31.23, endSeconds: 31.63, probability: 1.00),
+                ASRWord(text: "声", startSeconds: 31.63, endSeconds: 32.03, probability: 1.00),
+                ASRWord(text: "を", startSeconds: 32.03, endSeconds: 32.46, probability: 1.00),
+                ASRWord(text: "響", startSeconds: 32.46, endSeconds: 32.80, probability: 0.73),
+                ASRWord(text: "か", startSeconds: 32.80, endSeconds: 33.14, probability: 1.00),
+                ASRWord(text: "せて", startSeconds: 33.14, endSeconds: 33.83, probability: 1.00),
+                ASRWord(text: "よ", startSeconds: 33.83, endSeconds: 34.20, probability: 1.00),
+                ASRWord(text: "青", startSeconds: 53.26, endSeconds: 53.70, probability: 1.00),
+                ASRWord(text: "い", startSeconds: 53.70, endSeconds: 54.14, probability: 1.00),
+                ASRWord(text: "世界", startSeconds: 54.14, endSeconds: 55.14, probability: 1.00),
+                ASRWord(text: "好", startSeconds: 55.14, endSeconds: 55.47, probability: 1.00),
+                ASRWord(text: "き", startSeconds: 55.47, endSeconds: 55.80, probability: 1.00),
+                ASRWord(text: "な", startSeconds: 55.80, endSeconds: 56.13, probability: 1.00),
+                ASRWord(text: "もの", startSeconds: 56.13, endSeconds: 56.79, probability: 0.97),
+                ASRWord(text: "を", startSeconds: 56.79, endSeconds: 57.12, probability: 1.00),
+                ASRWord(text: "好", startSeconds: 57.12, endSeconds: 57.45, probability: 0.98),
+                ASRWord(text: "き", startSeconds: 57.65, endSeconds: 57.78, probability: 1.00),
+                ASRWord(text: "だ", startSeconds: 57.78, endSeconds: 58.01, probability: 1.00),
+                ASRWord(text: "と", startSeconds: 58.22, endSeconds: 58.44, probability: 0.25),
+                ASRWord(text: "言", startSeconds: 58.44, endSeconds: 58.77, probability: 1.00),
+                ASRWord(text: "う", startSeconds: 58.77, endSeconds: 59.14, probability: 1.00),
+                ASRWord(text: "怖", startSeconds: 59.14, endSeconds: 59.47, probability: 0.99),
+                ASRWord(text: "く", startSeconds: 59.47, endSeconds: 59.80, probability: 1.00),
+                ASRWord(text: "て", startSeconds: 59.80, endSeconds: 60.13, probability: 0.86),
+                ASRWord(text: "仕", startSeconds: 60.13, endSeconds: 60.46, probability: 1.00),
+                ASRWord(text: "方", startSeconds: 60.46, endSeconds: 60.79, probability: 1.00),
+                ASRWord(text: "ない", startSeconds: 60.79, endSeconds: 61.45, probability: 1.00),
+                ASRWord(text: "した", startSeconds: 65.89, endSeconds: 66.41, probability: 1.00),
+                ASRWord(text: "んだ", startSeconds: 66.41, endSeconds: 67.00, probability: 1.00),
+                ASRWord(text: "手", startSeconds: 67.00, endSeconds: 68.22, probability: 0.53),
+                ASRWord(text: "を", startSeconds: 69.44, endSeconds: 69.44, probability: 1.00),
+                ASRWord(text: "伸", startSeconds: 70.08, endSeconds: 70.64, probability: 1.00),
+                ASRWord(text: "ば", startSeconds: 70.65, endSeconds: 71.87, probability: 1.00),
+                ASRWord(text: "せ", startSeconds: 71.87, endSeconds: 73.09, probability: 1.00),
+                ASRWord(text: "ば", startSeconds: 73.09, endSeconds: 74.25, probability: 1.00),
+                ASRWord(text: "伸", startSeconds: 74.31, endSeconds: 75.52, probability: 0.99),
+                ASRWord(text: "ば", startSeconds: 75.52, endSeconds: 76.72, probability: 1.00),
+                ASRWord(text: "す", startSeconds: 76.76, endSeconds: 77.96, probability: 1.00),
+                ASRWord(text: "ほど", startSeconds: 77.96, endSeconds: 80.41, probability: 0.99),
+                ASRWord(text: "に", startSeconds: 80.41, endSeconds: 81.68, probability: 1.00),
+                ASRWord(text: "遠", startSeconds: 81.70, endSeconds: 82.06, probability: 1.00),
+                ASRWord(text: "く", startSeconds: 82.06, endSeconds: 82.42, probability: 1.00),
+                ASRWord(text: "へ", startSeconds: 82.42, endSeconds: 82.78, probability: 1.00),
+                ASRWord(text: "行", startSeconds: 82.78, endSeconds: 83.14, probability: 0.89),
+                ASRWord(text: "く", startSeconds: 83.14, endSeconds: 83.52, probability: 1.00),
+                ASRWord(text: "思", startSeconds: 83.52, endSeconds: 83.83, probability: 0.99),
+                ASRWord(text: "う", startSeconds: 83.83, endSeconds: 84.14, probability: 1.00),
+                ASRWord(text: "ように", startSeconds: 84.14, endSeconds: 85.08, probability: 0.98),
+                ASRWord(text: "い", startSeconds: 85.08, endSeconds: 85.45, probability: 0.40),
+                ASRWord(text: "か", startSeconds: 85.45, endSeconds: 85.82, probability: 1.00),
+                ASRWord(text: "ない", startSeconds: 85.82, endSeconds: 86.56, probability: 1.00),
+                ASRWord(text: "今日", startSeconds: 86.56, endSeconds: 87.56, probability: 1.00),
+                ASRWord(text: "も", startSeconds: 87.56, endSeconds: 87.56, probability: 1.00),
+                ASRWord(text: "また", startSeconds: 87.56, endSeconds: 88.14, probability: 0.81),
+                ASRWord(text: "慌", startSeconds: 88.14, endSeconds: 88.42, probability: 0.86),
+                ASRWord(text: "ただ", startSeconds: 88.42, endSeconds: 89.00, probability: 0.99),
+                ASRWord(text: "しく", startSeconds: 89.00, endSeconds: 89.60, probability: 0.99),
+                ASRWord(text: "も", startSeconds: 89.89, endSeconds: 89.89, probability: 0.91),
+                ASRWord(text: "が", startSeconds: 90.07, endSeconds: 90.18, probability: 0.99),
+                ASRWord(text: "いて", startSeconds: 90.64, endSeconds: 90.77, probability: 0.68),
+                ASRWord(text: "る", startSeconds: 90.77, endSeconds: 91.08, probability: 0.99),
+                ASRWord(text: "悔", startSeconds: 91.08, endSeconds: 91.48, probability: 1.00),
+                ASRWord(text: "しい", startSeconds: 91.48, endSeconds: 92.32, probability: 1.00)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+        XCTAssertTrue(cues.contains { $0.text.contains("隠してた") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("隠") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("して") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("好きだと言う") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("好き") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("だ") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("手を伸ばせば") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("手") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("を") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("もがいてる") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("もが") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("いて") }, joined)
+    }
+
+    func testJapaneseLyricsMergesFlashInterjectionWhenNeighborsAreReadable() throws {
+        let transcript = ASRTranscript(
+            id: "gunjou-flash-hora",
+            languageCode: "ja",
+            durationSeconds: 42.0,
+            words: [
+                ASRWord(text: "隠", startSeconds: 29.38, endSeconds: 29.63, probability: 0.99),
+                ASRWord(text: "して", startSeconds: 30.15, endSeconds: 30.15, probability: 1.00),
+                ASRWord(text: "た", startSeconds: 30.33, endSeconds: 30.42, probability: 0.99),
+                ASRWord(text: "本当", startSeconds: 30.90, endSeconds: 31.23, probability: 0.41),
+                ASRWord(text: "の", startSeconds: 31.23, endSeconds: 31.63, probability: 1.00),
+                ASRWord(text: "声", startSeconds: 31.63, endSeconds: 32.03, probability: 1.00),
+                ASRWord(text: "を", startSeconds: 32.03, endSeconds: 32.46, probability: 1.00),
+                ASRWord(text: "響", startSeconds: 32.46, endSeconds: 32.80, probability: 0.73),
+                ASRWord(text: "か", startSeconds: 32.80, endSeconds: 33.14, probability: 1.00),
+                ASRWord(text: "せて", startSeconds: 33.14, endSeconds: 33.83, probability: 1.00),
+                ASRWord(text: "よ", startSeconds: 33.83, endSeconds: 34.20, probability: 1.00),
+                ASRWord(text: "ほ", startSeconds: 34.20, endSeconds: 34.48, probability: 1.00),
+                ASRWord(text: "ら", startSeconds: 34.48, endSeconds: 34.76, probability: 1.00),
+                ASRWord(text: "見", startSeconds: 34.76, endSeconds: 35.04, probability: 0.97),
+                ASRWord(text: "ない", startSeconds: 35.04, endSeconds: 35.60, probability: 1.00),
+                ASRWord(text: "ふ", startSeconds: 35.60, endSeconds: 35.88, probability: 0.80),
+                ASRWord(text: "り", startSeconds: 35.88, endSeconds: 36.16, probability: 1.00),
+                ASRWord(text: "して", startSeconds: 36.68, endSeconds: 36.72, probability: 1.00),
+                ASRWord(text: "いて", startSeconds: 36.80, endSeconds: 36.98, probability: 1.00),
+                ASRWord(text: "も", startSeconds: 37.28, endSeconds: 37.56, probability: 1.00),
+                ASRWord(text: "確", startSeconds: 37.56, endSeconds: 37.89, probability: 0.95),
+                ASRWord(text: "か", startSeconds: 37.90, endSeconds: 38.24, probability: 1.00),
+                ASRWord(text: "に", startSeconds: 38.24, endSeconds: 38.58, probability: 1.00),
+                ASRWord(text: "そこ", startSeconds: 38.58, endSeconds: 39.10, probability: 1.00),
+                ASRWord(text: "に", startSeconds: 39.10, endSeconds: 39.40, probability: 1.00),
+                ASRWord(text: "ある", startSeconds: 39.40, endSeconds: 40.20, probability: 1.00)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+        XCTAssertFalse(cues.contains { $0.text == "ほら" }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("ほら") }, joined)
+        for cue in cues where cue.text.contains("ほら") {
+            let end = try XCTUnwrap(srtTimeToSeconds(cue.end))
+            let start = try XCTUnwrap(srtTimeToSeconds(cue.start))
+            let duration = end - start
+            XCTAssertGreaterThanOrEqual(duration, 0.8, joined)
+        }
+    }
+
+    func testJapaneseLyricsRejoinsAdjectivePredicateContinuation() {
+        let transcript = ASRTranscript(
+            id: "gunjou-adjective-naru",
+            languageCode: "ja",
+            durationSeconds: 108.0,
+            words: [
+                ASRWord(text: "ち", startSeconds: 92.90, endSeconds: 93.19, probability: 0.99),
+                ASRWord(text: "も", startSeconds: 93.50, endSeconds: 93.50, probability: 0.95),
+                ASRWord(text: "ただ", startSeconds: 93.57, endSeconds: 93.96, probability: 0.53),
+                ASRWord(text: "情", startSeconds: 93.98, endSeconds: 94.36, probability: 1.00),
+                ASRWord(text: "け", startSeconds: 94.36, endSeconds: 94.74, probability: 0.99),
+                ASRWord(text: "なく", startSeconds: 94.74, endSeconds: 95.50, probability: 1.00),
+                ASRWord(text: "て", startSeconds: 95.50, endSeconds: 95.88, probability: 1.00),
+                ASRWord(text: "涙", startSeconds: 95.88, endSeconds: 96.33, probability: 1.00),
+                ASRWord(text: "が", startSeconds: 96.33, endSeconds: 96.78, probability: 1.00),
+                ASRWord(text: "出", startSeconds: 96.78, endSeconds: 97.23, probability: 0.99),
+                ASRWord(text: "る", startSeconds: 97.23, endSeconds: 97.68, probability: 1.00),
+                ASRWord(text: "踏", startSeconds: 97.68, endSeconds: 97.93, probability: 1.00),
+                ASRWord(text: "み", startSeconds: 97.93, endSeconds: 98.19, probability: 1.00),
+                ASRWord(text: "込", startSeconds: 98.19, endSeconds: 98.44, probability: 1.00),
+                ASRWord(text: "む", startSeconds: 98.44, endSeconds: 98.70, probability: 1.00),
+                ASRWord(text: "ほど", startSeconds: 98.70, endSeconds: 99.24, probability: 0.97),
+                ASRWord(text: "苦", startSeconds: 99.24, endSeconds: 99.62, probability: 1.00),
+                ASRWord(text: "しく", startSeconds: 99.62, endSeconds: 100.38, probability: 1.00),
+                ASRWord(text: "なる", startSeconds: 100.38, endSeconds: 101.14, probability: 0.98),
+                ASRWord(text: "痛", startSeconds: 101.14, endSeconds: 101.56, probability: 1.00),
+                ASRWord(text: "く", startSeconds: 101.56, endSeconds: 101.98, probability: 1.00),
+                ASRWord(text: "も", startSeconds: 101.98, endSeconds: 102.40, probability: 1.00),
+                ASRWord(text: "なる", startSeconds: 102.40, endSeconds: 103.24, probability: 1.00),
+                ASRWord(text: "感じ", startSeconds: 103.24, endSeconds: 104.82, probability: 0.78)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+        XCTAssertTrue(cues.contains { $0.text.contains("苦しくなる") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("苦しく") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("なる痛") }, joined)
+    }
+
+    func testJapaneseLyricsRejoinsFixedPhrasesAcrossSungGaps() {
+        let transcript = ASRTranscript(
+            id: "gunjou-fixed-phrases",
+            languageCode: "ja",
+            durationSeconds: 132.0,
+            words: [
+                ASRWord(text: "この", startSeconds: 111.40, endSeconds: 111.71, probability: 0.94),
+                ASRWord(text: "道", startSeconds: 111.98, endSeconds: 112.08, probability: 1.00),
+                ASRWord(text: "を", startSeconds: 112.08, endSeconds: 112.46, probability: 1.00),
+                ASRWord(text: "重", startSeconds: 112.46, endSeconds: 112.88, probability: 0.67),
+                ASRWord(text: "い", startSeconds: 112.88, endSeconds: 113.30, probability: 1.00),
+                ASRWord(text: "瞼", startSeconds: 113.30, endSeconds: 113.72, probability: 0.81),
+                ASRWord(text: "こ", startSeconds: 113.72, endSeconds: 114.14, probability: 0.76),
+                ASRWord(text: "する", startSeconds: 114.94, endSeconds: 114.98, probability: 0.99),
+                ASRWord(text: "夜", startSeconds: 115.07, endSeconds: 115.55, probability: 0.92),
+                ASRWord(text: "に", startSeconds: 115.55, endSeconds: 116.12, probability: 1.00),
+                ASRWord(text: "し", startSeconds: 116.12, endSeconds: 116.42, probability: 0.99),
+                ASRWord(text: "が", startSeconds: 116.42, endSeconds: 116.72, probability: 1.00),
+                ASRWord(text: "み", startSeconds: 116.72, endSeconds: 117.02, probability: 1.00),
+                ASRWord(text: "つ", startSeconds: 117.02, endSeconds: 117.32, probability: 1.00),
+                ASRWord(text: "いた", startSeconds: 117.32, endSeconds: 117.93, probability: 1.00),
+                ASRWord(text: "好き", startSeconds: 119.18, endSeconds: 119.86, probability: 1.00),
+                ASRWord(text: "な", startSeconds: 119.86, endSeconds: 120.20, probability: 1.00),
+                ASRWord(text: "こと", startSeconds: 120.20, endSeconds: 120.89, probability: 0.98),
+                ASRWord(text: "を", startSeconds: 120.89, endSeconds: 121.23, probability: 1.00),
+                ASRWord(text: "続", startSeconds: 121.57, endSeconds: 121.57, probability: 1.00),
+                ASRWord(text: "ける", startSeconds: 121.78, endSeconds: 121.97, probability: 1.00),
+                ASRWord(text: "こと", startSeconds: 122.26, endSeconds: 122.98, probability: 1.00),
+                ASRWord(text: "それは", startSeconds: 122.98, endSeconds: 123.74, probability: 1.00),
+                ASRWord(text: "楽", startSeconds: 123.74, endSeconds: 123.99, probability: 1.00),
+                ASRWord(text: "しい", startSeconds: 123.99, endSeconds: 124.50, probability: 1.00),
+                ASRWord(text: "だけ", startSeconds: 124.50, endSeconds: 125.01, probability: 1.00),
+                ASRWord(text: "じゃない", startSeconds: 125.54, endSeconds: 125.83, probability: 1.00),
+                ASRWord(text: "本当", startSeconds: 126.04, endSeconds: 126.83, probability: 1.00),
+                ASRWord(text: "に", startSeconds: 126.83, endSeconds: 127.22, probability: 1.00),
+                ASRWord(text: "できる", startSeconds: 127.22, endSeconds: 128.42, probability: 0.98)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " / ")
+        XCTAssertTrue(cues.contains { $0.text.contains("重い瞼こする夜") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("瞼こ") || $0.text.hasSuffix("こ") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("する") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("続けること") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("続") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("ける") }, joined)
+        XCTAssertTrue(cues.contains { $0.text.contains("だけじゃない") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasSuffix("だけ") }, joined)
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("じゃ") }, joined)
     }
 
     func testAudioActivityParsesFfmpegSilencedetectOutput() {
@@ -1058,6 +1367,7 @@ final class ASRContractsTests: XCTestCase {
             languageCode: " ja ",
             modelID: "whisper.cpp:small",
             prompt: "title channel glossary",
+            maxTextContextTokens: 0,
             wordTimestamps: true
         )
 
@@ -1079,7 +1389,8 @@ final class ASRContractsTests: XCTestCase {
             "-pp",
             "-dtw", "small", "-nfa",
             "-l", "ja",
-            "--prompt", "title channel glossary"
+            "--prompt", "title channel glossary",
+            "-mc", "0"
         ])
 
         // No token JSON requested -> DTW is pointless and must be omitted.
@@ -1102,6 +1413,7 @@ final class ASRContractsTests: XCTestCase {
             outputBaseURL: URL(fileURLWithPath: "/tmp/moongate/unknown")
         )
         XCTAssertFalse(unknownModelPlan.arguments.contains("-dtw"))
+        XCTAssertFalse(unknownModelPlan.arguments.contains("-mc"))
     }
 
     func testWhisperCppCommandPlanOmitsLanguageFlagForAutoDetect() {
@@ -1150,6 +1462,21 @@ final class ASRContractsTests: XCTestCase {
             "title=Moon Gate Clip; language=en"
         )
         XCTAssertNil(ASRPromptBuilder.defaultPrompt(videoURL: URL(fileURLWithPath: "/tmp/   .mp4"), languageCode: "auto"))
+    }
+
+    func testLyricsRecognitionProfileAvoidsPromptContextAndDialogueExemplar() {
+        let video = URL(fileURLWithPath: "/tmp/YOASOBI - 群青 Official Music Video.mp4")
+        let profile = ASRPromptBuilder.recognitionProfile(videoURL: video, languageCode: "ja")
+
+        XCTAssertEqual(profile, .lyricsHighQuality)
+        XCTAssertEqual(
+            ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: "ja", recognitionProfile: profile),
+            "title=YOASOBI - 群青 Official Music Video; language=ja"
+        )
+        XCTAssertEqual(
+            ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "ja", recognitionProfile: profile),
+            0
+        )
     }
 
     func testTranscriptCacheStoreWritesReadsAndInvalidatesByInputIdentity() throws {
@@ -1267,6 +1594,37 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(fragments.map(\.text), ["梅雨", "明ける"])
         XCTAssertEqual(fragments[0].startSeconds, 0.0, accuracy: 0.001)
         XCTAssertEqual(fragments[1].endSeconds, 1.2, accuracy: 0.001)
+    }
+
+    func testTranscriptMapperMergesLatinWhisperTokenPieces() {
+        let transcript = ASRTranscript(
+            id: "latin-pieces",
+            languageCode: "it",
+            words: [
+                ASRWord(text: " Marco", startSeconds: 1.39, endSeconds: 2.00),
+                ASRWord(text: " se", startSeconds: 2.00, endSeconds: 4.55),
+                ASRWord(text: " n", startSeconds: 4.56, endSeconds: 5.84),
+                ASRWord(text: "'", startSeconds: 5.84, endSeconds: 7.11),
+                ASRWord(text: "è", startSeconds: 7.11, endSeconds: 9.66),
+                ASRWord(text: " and", startSeconds: 9.66, endSeconds: 13.49),
+                ASRWord(text: "ato", startSeconds: 13.49, endSeconds: 17.34),
+                ASRWord(text: " e", startSeconds: 17.34, endSeconds: 17.43),
+                ASRWord(text: " non", startSeconds: 17.43, endSeconds: 17.70),
+                ASRWord(text: " r", startSeconds: 17.70, endSeconds: 17.79),
+                ASRWord(text: "itor", startSeconds: 17.79, endSeconds: 18.15),
+                ASRWord(text: "na", startSeconds: 18.15, endSeconds: 18.33),
+                ASRWord(text: " più", startSeconds: 18.33, endSeconds: 18.72)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let fragments = ASRTranscriptMapper.sourceFragments(from: transcript)
+
+        XCTAssertEqual(fragments.map(\.text), ["Marco", "se", "n'è", "andato", "e", "non", "ritorna", "più"])
+        XCTAssertEqual(fragments[2].startSeconds, 4.56, accuracy: 0.001)
+        XCTAssertEqual(fragments[2].endSeconds, 9.66, accuracy: 0.001)
+        XCTAssertEqual(fragments[6].startSeconds, 17.70, accuracy: 0.001)
+        XCTAssertEqual(fragments[6].endSeconds, 18.33, accuracy: 0.001)
     }
 
     func testTranscriptMapperBuildsLocalASRSourceSRTWithLanguageAsLastDotSegment() throws {
@@ -1417,6 +1775,492 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertTrue(joined.contains("おはよう"))
         XCTAssertTrue(joined.contains("またね"))
         XCTAssertLessThanOrEqual(loopCount, 1, "mixed kanji/kana/katakana hallucination loop should be fused")
+    }
+
+    func testJapaneseLyricsSuppressesApproximateLoopHallucinationIsland() {
+        let transcript = ASRTranscript(
+            id: "yasashii-suisei-loop-hallucination",
+            languageCode: "ja",
+            durationSeconds: 222.0,
+            words: [
+                ASRWord(text: "幸せだった確かにほら救わ", startSeconds: 117.28, endSeconds: 121.08),
+                ASRWord(text: "れたんだよ、あなたに", startSeconds: 121.16, endSeconds: 126.71),
+                ASRWord(text: "あも恵み合わせ、なたにばどうしよう、あなたにも", startSeconds: 131.22, endSeconds: 132.42),
+                ASRWord(text: "恵み合わせあなたに、恵もわみ合なたせあにも", startSeconds: 132.50, endSeconds: 133.40),
+                ASRWord(text: "恵み合わせあなたにも、恵み合わせあなたにも", startSeconds: 133.48, endSeconds: 135.10),
+                ASRWord(text: "恵み合せわ、あなたに", startSeconds: 135.18, endSeconds: 137.22),
+                ASRWord(text: "も恵み合わせあなた", startSeconds: 137.30, endSeconds: 138.048),
+                ASRWord(text: "にも、恵み合わせあ", startSeconds: 138.048, endSeconds: 138.795),
+                ASRWord(text: "なた恵にもわみ合せあ", startSeconds: 138.795, endSeconds: 151.48),
+                ASRWord(text: "なたにも恵み合わせ、あなた", startSeconds: 156.82, endSeconds: 157.72),
+                ASRWord(text: "にも恵み合わせ、あなた", startSeconds: 158.34, endSeconds: 159.24),
+                ASRWord(text: "ありがとうございました。", startSeconds: 220.76, endSeconds: 221.95),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues.map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("れたんだよ、あなたに"))
+        XCTAssertTrue(joined.contains("ありがとうございました"))
+        XCTAssertFalse(joined.contains("恵み合わせ"), "approximate lyric loop hallucination should be removed before translation")
+        XCTAssertFalse(joined.contains("なたにも恵み"), "shifted partial repeats should not survive as standalone lyric cues")
+    }
+
+    func testJapaneseLyricsKeepsReadableRepeatedChorusLines() {
+        var words: [ASRWord] = []
+        for repeatIndex in 0..<5 {
+            let start = Double(repeatIndex) * 4.0
+            words.append(ASRWord(text: "好きだよ", startSeconds: start, endSeconds: start + 1.2))
+        }
+        let transcript = ASRTranscript(
+            id: "readable-repeated-chorus",
+            languageCode: "ja",
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+            .map(\.text)
+            .joined(separator: " ")
+        let repeatCount = joined.components(separatedBy: "好きだよ").count - 1
+
+        XCTAssertEqual(repeatCount, 5, "readable repeated lyric lines should not be treated as hallucination")
+    }
+
+    func testJapaneseLyricsSuppressesApproximateDuplicateInsideCue() {
+        let transcript = ASRTranscript(
+            id: "gunjou-internal-duplicate-noise",
+            languageCode: "ja",
+            durationSeconds: 140.0,
+            words: [
+                ASRWord(
+                    text: "好きなことを続けること、好こときをな続ことける、そ",
+                    startSeconds: 119.88,
+                    endSeconds: 124.62
+                ),
+                ASRWord(
+                    text: "れは楽しいだけじゃない、本当にできる不安になけどる。",
+                    startSeconds: 124.62,
+                    endSeconds: 130.46
+                ),
+                ASRWord(
+                    text: "ああ、何枚でもほら、何枚でもでもら枚",
+                    startSeconds: 130.88,
+                    endSeconds: 133.85
+                )
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("好きなことを続けること"), joined)
+        XCTAssertTrue(joined.contains("何枚でもほら"), joined)
+        XCTAssertFalse(joined.contains("好こときをな続ことける"), joined)
+        XCTAssertFalse(joined.contains("何枚でもでもら枚"), joined)
+    }
+
+    func testJapaneseLyricsKeepsLegitimateRepeatedChorusWithParticles() {
+        let transcript = ASRTranscript(
+            id: "gunjou-legitimate-repeated-chorus",
+            languageCode: "ja",
+            durationSeconds: 130.0,
+            words: [
+                ASRWord(text: "本当", startSeconds: 61.48, endSeconds: 62.60),
+                ASRWord(text: "の", startSeconds: 62.60, endSeconds: 63.16),
+                ASRWord(text: "自", startSeconds: 63.16, endSeconds: 63.72),
+                ASRWord(text: "分", startSeconds: 63.97, endSeconds: 64.28),
+                ASRWord(text: "で", startSeconds: 64.53, endSeconds: 64.53),
+                ASRWord(text: "会", startSeconds: 64.54, endSeconds: 64.78),
+                ASRWord(text: "え", startSeconds: 64.78, endSeconds: 65.03),
+                ASRWord(text: "た", startSeconds: 65.03, endSeconds: 65.28),
+                ASRWord(text: "気", startSeconds: 65.28, endSeconds: 65.53),
+                ASRWord(text: "が", startSeconds: 65.53, endSeconds: 65.78),
+                ASRWord(text: "した", startSeconds: 65.78, endSeconds: 66.29),
+                ASRWord(text: "んだ", startSeconds: 66.29, endSeconds: 66.86),
+                ASRWord(text: "ああ", startSeconds: 66.86, endSeconds: 67.74),
+                ASRWord(text: "手", startSeconds: 67.74, endSeconds: 68.18),
+                ASRWord(text: "を", startSeconds: 68.18, endSeconds: 68.62),
+                ASRWord(text: "伸", startSeconds: 68.62, endSeconds: 69.05),
+                ASRWord(text: "ば", startSeconds: 69.35, endSeconds: 69.49),
+                ASRWord(text: "せ", startSeconds: 69.51, endSeconds: 69.93),
+                ASRWord(text: "ば", startSeconds: 69.93, endSeconds: 70.37),
+                ASRWord(text: "伸", startSeconds: 70.37, endSeconds: 70.80),
+                ASRWord(text: "ば", startSeconds: 70.80, endSeconds: 71.24),
+                ASRWord(text: "す", startSeconds: 71.24, endSeconds: 71.68),
+                ASRWord(text: "ほど", startSeconds: 71.68, endSeconds: 72.56),
+                ASRWord(text: "に", startSeconds: 72.56, endSeconds: 72.94),
+                ASRWord(text: "遠", startSeconds: 73.05, endSeconds: 73.44),
+                ASRWord(text: "く", startSeconds: 73.44, endSeconds: 73.88),
+                ASRWord(text: "へ", startSeconds: 73.88, endSeconds: 74.32),
+                ASRWord(text: "行", startSeconds: 74.32, endSeconds: 74.76),
+                ASRWord(text: "く", startSeconds: 74.76, endSeconds: 75.24),
+                ASRWord(text: "ああ", startSeconds: 75.24, endSeconds: 76.15),
+                ASRWord(text: "手", startSeconds: 76.15, endSeconds: 76.60),
+                ASRWord(text: "を", startSeconds: 76.60, endSeconds: 77.05),
+                ASRWord(text: "伸", startSeconds: 77.05, endSeconds: 77.50),
+                ASRWord(text: "ば", startSeconds: 77.73, endSeconds: 77.95),
+                ASRWord(text: "せ", startSeconds: 78.30, endSeconds: 78.40),
+                ASRWord(text: "ば", startSeconds: 78.40, endSeconds: 78.85),
+                ASRWord(text: "伸", startSeconds: 78.85, endSeconds: 79.30),
+                ASRWord(text: "ば", startSeconds: 79.30, endSeconds: 79.75),
+                ASRWord(text: "す", startSeconds: 79.75, endSeconds: 80.20),
+                ASRWord(text: "ほど", startSeconds: 80.20, endSeconds: 81.11),
+                ASRWord(text: "に", startSeconds: 81.11, endSeconds: 81.62),
+                ASRWord(text: "遠", startSeconds: 81.62, endSeconds: 82.89),
+                ASRWord(text: "く", startSeconds: 84.08, endSeconds: 84.16),
+                ASRWord(text: "へ", startSeconds: 84.68, endSeconds: 85.43),
+                ASRWord(text: "行", startSeconds: 85.43, endSeconds: 86.70),
+                ASRWord(text: "く", startSeconds: 86.70, endSeconds: 88.00),
+                ASRWord(text: "あ", startSeconds: 88.00, endSeconds: 88.19),
+                ASRWord(text: "なた", startSeconds: 88.19, endSeconds: 88.58),
+                ASRWord(text: "は", startSeconds: 88.58, endSeconds: 88.77),
+                ASRWord(text: "正", startSeconds: 88.77, endSeconds: 88.96),
+                ASRWord(text: "しく", startSeconds: 88.96, endSeconds: 89.35),
+                ASRWord(text: "も", startSeconds: 89.35, endSeconds: 89.54),
+                ASRWord(text: "が", startSeconds: 89.54, endSeconds: 89.73),
+                ASRWord(text: "いて", startSeconds: 89.73, endSeconds: 90.12),
+                ASRWord(text: "る", startSeconds: 90.38, endSeconds: 90.38),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues
+            .map(\.text)
+            .joined(separator: " ")
+        XCTAssertGreaterThanOrEqual(joined.components(separatedBy: "手を伸ばせ").count - 1, 2)
+        XCTAssertTrue(joined.contains("遠くへ"), joined)
+        XCTAssertTrue(joined.contains("行く"))
+        XCTAssertTrue(joined.contains("正しく"))
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("ば") }, "lyric suffix ば should attach to 伸ばせ")
+        XCTAssertFalse(cues.contains { $0.text.hasPrefix("く") }, "lyric suffix く should attach to 遠")
+    }
+
+    func testLocalASRDetectorRoutesDenseJapaneseMusicLoopToLyricsProfile() {
+        var words: [ASRWord] = [
+            ASRWord(text: "うせうせうせは", startSeconds: 51.78, endSeconds: 54.24),
+            ASRWord(text: "あなたが思うより健康です", startSeconds: 54.24, endSeconds: 59.26),
+        ]
+        let loopTokens = ["あなた", "が", "悪", "い", "頭", "の", "出来", "が", "違う", "ので"]
+        for repeatIndex in 0..<24 {
+            let base = 70.0 + Double(repeatIndex)
+            for (tokenIndex, token) in loopTokens.enumerated() {
+                let start = base + Double(tokenIndex) * 0.04
+                words.append(ASRWord(
+                    text: token,
+                    startSeconds: start,
+                    endSeconds: start + 0.03
+                ))
+            }
+        }
+        words.append(ASRWord(text: "また次の歌詞に戻る", startSeconds: 96.0, endSeconds: 99.0))
+
+        let transcript = ASRTranscript(
+            id: "usseewa-dense-loop",
+            languageCode: "ja",
+            durationSeconds: 105.0,
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, fileName: "Ado - うっせぇわ")
+            .map(\.text)
+            .joined(separator: " ")
+        let loopCount = joined.components(separatedBy: "あなたが悪い頭の出来が違うので").count - 1
+
+        XCTAssertTrue(joined.contains("うせうせうせ"))
+        XCTAssertTrue(joined.contains("健康"))
+        XCTAssertLessThanOrEqual(loopCount, 1, "dense whole-phrase whisper loops should be fused after at most one readable occurrence")
+    }
+
+    func testJapaneseLyricsDropsCreditAndOutroHallucinationFragments() {
+        let transcript = ASRTranscript(
+            id: "japanese-lyrics-credit-hallucination",
+            languageCode: "ja",
+            durationSeconds: 90.0,
+            words: [
+                ASRWord(text: "作", startSeconds: 0.20, endSeconds: 2.49),
+                ASRWord(text: "詞", startSeconds: 2.49, endSeconds: 4.98),
+                ASRWord(text: "作", startSeconds: 7.47, endSeconds: 9.96),
+                ASRWord(text: "曲", startSeconds: 9.96, endSeconds: 12.45),
+                ASRWord(text: "編", startSeconds: 14.94, endSeconds: 17.43),
+                ASRWord(text: "曲", startSeconds: 17.43, endSeconds: 19.92),
+                ASRWord(text: "初", startSeconds: 19.92, endSeconds: 22.41),
+                ASRWord(text: "音", startSeconds: 22.41, endSeconds: 24.90),
+                ASRWord(text: "ミ", startSeconds: 24.90, endSeconds: 27.38),
+                ASRWord(text: "ク", startSeconds: 27.39, endSeconds: 29.98),
+                ASRWord(text: "鏡", startSeconds: 37.62, endSeconds: 38.30),
+                ASRWord(text: "よ", startSeconds: 38.30, endSeconds: 38.80),
+                ASRWord(text: "この世で一番", startSeconds: 39.00, endSeconds: 42.50),
+                ASRWord(text: "ご視聴ありがとうございました", startSeconds: 70.0, endSeconds: 73.0),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("作詞"))
+        XCTAssertFalse(joined.contains("作曲"))
+        XCTAssertFalse(joined.contains("編曲"))
+        XCTAssertFalse(joined.contains("初音ミク"))
+        XCTAssertFalse(joined.contains("ご視聴ありがとうございました"))
+        XCTAssertTrue(joined.contains("鏡よ"), joined)
+        XCTAssertTrue(joined.contains("この世で一番"), joined)
+    }
+
+    func testLyricsDropsChineseCreditHallucinationLoop() {
+        let transcript = ASRTranscript(
+            id: "chinese-lyrics-credit-loop",
+            languageCode: "zh",
+            durationSeconds: 60.0,
+            words: [
+                ASRWord(text: "作", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: "词", startSeconds: 0.2, endSeconds: 0.4),
+                ASRWord(text: ":", startSeconds: 0.4, endSeconds: 0.5),
+                ASRWord(text: "李", startSeconds: 0.5, endSeconds: 0.7),
+                ASRWord(text: "宗", startSeconds: 0.7, endSeconds: 0.9),
+                ASRWord(text: "盛", startSeconds: 0.9, endSeconds: 1.0),
+                ASRWord(text: "作", startSeconds: 1.0, endSeconds: 1.2),
+                ASRWord(text: "曲", startSeconds: 1.2, endSeconds: 1.4),
+                ASRWord(text: ":", startSeconds: 1.4, endSeconds: 1.5),
+                ASRWord(text: "李", startSeconds: 1.5, endSeconds: 1.7),
+                ASRWord(text: "宗", startSeconds: 1.7, endSeconds: 1.9),
+                ASRWord(text: "盛", startSeconds: 1.9, endSeconds: 2.0),
+                ASRWord(text: "作", startSeconds: 2.0, endSeconds: 2.2),
+                ASRWord(text: "曲", startSeconds: 2.2, endSeconds: 2.4),
+                ASRWord(text: ":", startSeconds: 2.4, endSeconds: 2.5),
+                ASRWord(text: "李", startSeconds: 2.5, endSeconds: 2.7),
+                ASRWord(text: "宗", startSeconds: 2.7, endSeconds: 2.9),
+                ASRWord(text: "盛", startSeconds: 2.9, endSeconds: 3.0),
+                ASRWord(text: "天青色等烟雨", startSeconds: 23.0, endSeconds: 26.0),
+                ASRWord(text: "而我在等你", startSeconds: 26.2, endSeconds: 29.0),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .lyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("作词"), joined)
+        XCTAssertFalse(joined.contains("作曲"), joined)
+        XCTAssertFalse(joined.contains("李宗盛"), joined)
+        XCTAssertTrue(joined.contains("天青色等烟雨"), joined)
+        XCTAssertTrue(joined.contains("而我在等你"), joined)
+    }
+
+    func testLyricsDropsEarlyCreditNameCueBeforeLongIntroGap() {
+        let transcript = ASRTranscript(
+            id: "chinese-lyrics-intro-credit-name",
+            languageCode: "zh",
+            durationSeconds: 60.0,
+            words: [
+                ASRWord(text: "李", startSeconds: 1.02, endSeconds: 1.38),
+                ASRWord(text: "宗", startSeconds: 1.38, endSeconds: 1.76),
+                ASRWord(text: "盛", startSeconds: 1.76, endSeconds: 2.35),
+                ASRWord(text: "天青色等烟雨", startSeconds: 23.43, endSeconds: 26.00),
+                ASRWord(text: "而我在等你", startSeconds: 26.20, endSeconds: 29.00),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .lyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("李宗盛"), joined)
+        XCTAssertTrue(joined.contains("天青色等烟雨"), joined)
+        XCTAssertTrue(joined.contains("而我在等你"), joined)
+    }
+
+    func testLyricsDropsRepeatedLatinIntroFillerLoop() {
+        var words: [ASRWord] = []
+        for offset in 0..<10 {
+            let start = 0.32 + Double(offset) * 2.0
+            words.append(ASRWord(
+                text: "Best ime",
+                startSeconds: start,
+                endSeconds: start + 1.65
+            ))
+        }
+        words.append(contentsOf: [
+            ASRWord(text: "Best ime Cause", startSeconds: 23.80, endSeconds: 24.10),
+            ASRWord(text: "I'm", startSeconds: 24.15, endSeconds: 24.35),
+            ASRWord(text: "in", startSeconds: 24.40, endSeconds: 24.55),
+            ASRWord(text: "the", startSeconds: 24.60, endSeconds: 24.75),
+            ASRWord(text: "stars", startSeconds: 24.80, endSeconds: 25.20),
+            ASRWord(text: "tonight", startSeconds: 25.25, endSeconds: 25.80),
+        ])
+
+        let transcript = ASRTranscript(
+            id: "latin-lyrics-intro-filler-loop",
+            languageCode: "en",
+            durationSeconds: 120.0,
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .lyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("Best ime"), joined)
+        XCTAssertTrue(joined.localizedCaseInsensitiveContains("stars tonight"), joined)
+    }
+
+    func testLyricsDropsLongLatinFillerOutroLoop() {
+        var words: [ASRWord] = [
+            ASRWord(text: "Baby", startSeconds: 7.9, endSeconds: 8.4),
+            ASRWord(text: "no", startSeconds: 8.5, endSeconds: 8.8),
+            ASRWord(text: "me", startSeconds: 8.9, endSeconds: 9.1),
+            ASRWord(text: "llames", startSeconds: 9.2, endSeconds: 9.8),
+            ASRWord(text: "que", startSeconds: 9.9, endSeconds: 10.2),
+            ASRWord(text: "ya", startSeconds: 10.3, endSeconds: 10.6),
+            ASRWord(text: "estoy", startSeconds: 10.7, endSeconds: 11.1),
+            ASRWord(text: "ocupada", startSeconds: 11.2, endSeconds: 12.1),
+        ]
+        for offset in 0..<36 {
+            let start = 125.0 + Double(offset) * 0.72
+            words.append(ASRWord(
+                text: offset % 5 == 0 ? "mmm" : "yeah",
+                startSeconds: start,
+                endSeconds: start + 0.45
+            ))
+        }
+        words.append(contentsOf: [
+            ASRWord(text: "Gracias", startSeconds: 154.0, endSeconds: 154.4),
+            ASRWord(text: "por", startSeconds: 154.5, endSeconds: 154.7),
+            ASRWord(text: "ver", startSeconds: 154.8, endSeconds: 155.0),
+            ASRWord(text: "el", startSeconds: 155.1, endSeconds: 155.2),
+            ASRWord(text: "video", startSeconds: 155.3, endSeconds: 155.8),
+        ])
+
+        let transcript = ASRTranscript(
+            id: "latin-filler-outro-loop",
+            languageCode: "es",
+            durationSeconds: 158.9,
+            words: words,
+            sourceModelID: "whisper.cpp:test"
+        )
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, profile: .lyrics)
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("Baby"), joined)
+        XCTAssertTrue(joined.contains("ocupada"), joined)
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("yeah yeah yeah"), joined)
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("mmm mmm"), joined)
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("Gracias"), joined)
+    }
+
+    func testLocalASRDetectorRoutesRepeatedJapaneseOutroBoilerplateToLyricsProfile() {
+        let transcript = ASRTranscript(
+            id: "radwimps-outro-boilerplate",
+            languageCode: "ja",
+            durationSeconds: 130.0,
+            words: [
+                ASRWord(text: "やっと目を覚ましたかい", startSeconds: 21.14, endSeconds: 25.74),
+                ASRWord(text: "ご視聴ありがとうございました", startSeconds: 93.94, endSeconds: 96.03),
+                ASRWord(text: "ご視聴ありがとうございました", startSeconds: 96.31, endSeconds: 100.43),
+                ASRWord(text: "何億何光年分の物語を", startSeconds: 116.73, endSeconds: 121.28),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(from: transcript, fileName: "RADWIMPS - 前前前世")
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("やっと目を覚ました"))
+        XCTAssertTrue(joined.contains("何億何光年分"))
+        XCTAssertFalse(joined.contains("ご視聴ありがとうございました"))
+    }
+
+    func testJapaneseLyricsDropsIntroHallucinationAndMergesLeadingOrphans() {
+        let transcript = ASRTranscript(
+            id: "radwimps-intro-leading-orphans",
+            languageCode: "ja",
+            durationSeconds: 130.0,
+            words: [
+                ASRWord(text: "彼女の", startSeconds: 0.00, endSeconds: 3.46),
+                ASRWord(text: "やっと目を覚ましたかい", startSeconds: 20.94, endSeconds: 25.32),
+                ASRWord(text: "ど", startSeconds: 104.84, endSeconds: 105.22),
+                ASRWord(text: "っ", startSeconds: 105.22, endSeconds: 105.60),
+                ASRWord(text: "から話すかな君が眠っていた", startSeconds: 106.36, endSeconds: 110.47),
+                ASRWord(text: "何", startSeconds: 114.96, endSeconds: 115.86),
+                ASRWord(text: "億何光年分の物語を", startSeconds: 116.53, endSeconds: 121.28),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let cues = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
+        let joined = cues
+            .map(\.text)
+            .joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("彼女の"), joined)
+        XCTAssertFalse(cues.contains { $0.text == "ど" }, joined)
+        XCTAssertFalse(cues.contains { $0.text == "何" }, joined)
+        XCTAssertTrue(joined.contains("どから話すかな"), joined)
+        XCTAssertTrue(joined.contains("何億何光年分"), joined)
+    }
+
+    func testLocalASRDetectorRoutesJapaneseLiveTitleAndDropsTerminalThanks() {
+        let transcript = ASRTranscript(
+            id: "japanese-live-terminal-thanks",
+            languageCode: "ja",
+            durationSeconds: 130.0,
+            words: [
+                ASRWord(text: "暗闇の中に切り締めた", startSeconds: 108.20, endSeconds: 113.49),
+                ASRWord(text: "ご", startSeconds: 113.50, endSeconds: 113.91),
+                ASRWord(text: "視", startSeconds: 113.91, endSeconds: 114.32),
+                ASRWord(text: "聴", startSeconds: 114.32, endSeconds: 114.72),
+                ASRWord(text: "ありがとうございました", startSeconds: 114.72, endSeconds: 119.30),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(
+            from: transcript,
+            fileName: "YOASOBI - 優しい彗星 live"
+        )
+        .map(\.text)
+        .joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("暗闇の中"), joined)
+        XCTAssertFalse(joined.contains("ご視聴"), joined)
+        XCTAssertFalse(joined.contains("ありがとうございました"), joined)
+    }
+
+    func testLocalASRDetectorRoutesIntroBGMHallucinationToLyricsProfile() {
+        let transcript = ASRTranscript(
+            id: "kanden-intro-bgm",
+            languageCode: "ja",
+            durationSeconds: 130.0,
+            words: [
+                ASRWord(text: "B", startSeconds: 0.22, endSeconds: 6.66),
+                ASRWord(text: "GM", startSeconds: 6.66, endSeconds: 20.00),
+                ASRWord(text: "逃げ出したい夜のオンライン", startSeconds: 20.14, endSeconds: 23.86),
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let joined = ASRTranscriptMapper.sourceCues(
+            from: transcript,
+            fileName: "Kenshi Yonezu - Kanden"
+        )
+        .map(\.text)
+        .joined(separator: " ")
+
+        XCTAssertFalse(joined.contains("B"), joined)
+        XCTAssertFalse(joined.contains("GM"), joined)
+        XCTAssertTrue(joined.contains("逃げ出したい"), joined)
     }
 
     func testLocalASRTimingPlannerAvoidsWeakLatinBoundaries() {
@@ -1994,6 +2838,52 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(transcript.createdAt, createdAt)
     }
 
+    func testWhisperCppJSONParserMergesLatinTokenPieces() throws {
+        let json = Data("""
+        {
+          "result": { "language": "it" },
+          "transcription": [
+            {
+              "text": " Marco se n'è andato e non ritorna più",
+              "offsets": { "from": 0, "to": 18720 },
+              "tokens": [
+                { "text": " Marco", "offsets": { "from": 1390, "to": 2000 }, "p": 0.92 },
+                { "text": " se", "offsets": { "from": 2000, "to": 4550 }, "p": 0.37 },
+                { "text": " n", "offsets": { "from": 4560, "to": 5840 }, "p": 0.40 },
+                { "text": "'", "offsets": { "from": 5840, "to": 7110 }, "p": 0.99 },
+                { "text": "è", "offsets": { "from": 7110, "to": 9660 }, "p": 0.99 },
+                { "text": " and", "offsets": { "from": 9660, "to": 13490 }, "p": 0.98 },
+                { "text": "ato", "offsets": { "from": 13490, "to": 17340 }, "p": 0.99 },
+                { "text": " e", "offsets": { "from": 17340, "to": 17430 }, "p": 0.91 },
+                { "text": " non", "offsets": { "from": 17430, "to": 17700 }, "p": 0.99 },
+                { "text": " r", "offsets": { "from": 17700, "to": 17790 }, "p": 0.97 },
+                { "text": "itor", "offsets": { "from": 17790, "to": 18150 }, "p": 0.99 },
+                { "text": "na", "offsets": { "from": 18150, "to": 18330 }, "p": 0.99 },
+                { "text": " più", "offsets": { "from": 18330, "to": 18720 }, "p": 0.98 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+        let request = ASRRequest(
+            audioURL: URL(fileURLWithPath: "/tmp/audio.wav"),
+            languageCode: "it",
+            modelID: "whisper.cpp:large-v3-turbo-q5_0"
+        )
+
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: json,
+            request: request,
+            transcriptID: "clip-it"
+        )
+
+        XCTAssertEqual(transcript.words.map(\.text), ["Marco", "se", "n'è", "andato", "e", "non", "ritorna", "più"])
+        XCTAssertEqual(transcript.words[2].startSeconds, 4.56, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[2].endSeconds, 9.66, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[6].startSeconds, 17.70, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[6].endSeconds, 18.33, accuracy: 0.001)
+    }
+
     func testWhisperCppJSONParserFallsBackToSegmentTextWhenNoTokenWords() throws {
         let json = Data("""
         {
@@ -2170,7 +3060,7 @@ final class ASRContractsTests: XCTestCase {
             videoFile: video,
             languageCode: "ja",
             control: nil
-        ) { progressRecorder.append($0) }
+        ) { progressRecorder.append($0) }.url
 
         XCTAssertEqual(outputURL.lastPathComponent, "clip.local-asr.ja.srt")
         let parsed = parseSRT(try String(contentsOf: outputURL, encoding: .utf8))
@@ -2263,14 +3153,14 @@ final class ASRContractsTests: XCTestCase {
             videoFile: video,
             languageCode: "auto",
             control: nil
-        ) { _ in }
+        ) { _ in }.url
         let secondProgress = ProgressRecorder()
         let secondOutput = try await generator.generateSourceSubtitle(
             videoFile: video,
             languageCode: "auto",
             control: nil,
             progress: { secondProgress.append($0) }
-        )
+        ).url
 
         XCTAssertEqual(firstOutput, secondOutput)
         XCTAssertEqual(secondOutput.lastPathComponent, "clip.local-asr.ja.srt")

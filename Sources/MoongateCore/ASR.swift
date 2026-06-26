@@ -40,11 +40,20 @@ public enum ASRJSON {
     }
 }
 
+public enum ASRRecognitionProfile: String, Codable, Sendable {
+    case speech
+    case lyricsHighQuality
+}
+
 public struct ASRRequest: Codable, Equatable, Sendable {
     public let audioURL: URL
     public let languageCode: String?
     public let modelID: String
     public let prompt: String?
+    public let recognitionProfile: ASRRecognitionProfile
+    /// Optional whisper.cpp text-context cap (`-mc`). Japanese/J-pop lyric ASR can fall into
+    /// previous-text repetition loops; music-like local-ASR requests use 0 to disable carryover.
+    public let maxTextContextTokens: Int?
     /// Reserved / not yet wired: whisper.cpp `--vad` needs a separate Silero VAD model that Moongate
     /// does not ship yet, so `WhisperCppCommandPlan` intentionally does NOT emit `--vad` (see the
     /// forced-alignment ExecPlan for the deferral). The field is kept in the request contract so the
@@ -62,6 +71,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         languageCode: String? = nil,
         modelID: String,
         prompt: String? = nil,
+        recognitionProfile: ASRRecognitionProfile = .speech,
+        maxTextContextTokens: Int? = nil,
         vadEnabled: Bool = true,
         wordTimestamps: Bool = true,
         dtwTokenTimestamps: Bool = true,
@@ -71,6 +82,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.languageCode = languageCode
         self.modelID = modelID
         self.prompt = prompt
+        self.recognitionProfile = recognitionProfile
+        self.maxTextContextTokens = maxTextContextTokens
         self.vadEnabled = vadEnabled
         self.wordTimestamps = wordTimestamps
         self.dtwTokenTimestamps = dtwTokenTimestamps
@@ -83,6 +96,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         case languageCode
         case modelID = "modelId"
         case prompt
+        case recognitionProfile
+        case maxTextContextTokens
         case vadEnabled
         case wordTimestamps
         case dtwTokenTimestamps
@@ -97,6 +112,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.languageCode = try container.decodeIfPresent(String.self, forKey: .languageCode)
         self.modelID = try container.decode(String.self, forKey: .modelID)
         self.prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+        self.recognitionProfile = try container.decodeIfPresent(ASRRecognitionProfile.self, forKey: .recognitionProfile) ?? .speech
+        self.maxTextContextTokens = try container.decodeIfPresent(Int.self, forKey: .maxTextContextTokens)
         self.vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
         self.wordTimestamps = try container.decodeIfPresent(Bool.self, forKey: .wordTimestamps) ?? true
         self.dtwTokenTimestamps = try container.decodeIfPresent(Bool.self, forKey: .dtwTokenTimestamps) ?? true
@@ -109,6 +126,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(languageCode, forKey: .languageCode)
         try container.encode(modelID, forKey: .modelID)
         try container.encodeIfPresent(prompt, forKey: .prompt)
+        try container.encode(recognitionProfile, forKey: .recognitionProfile)
+        try container.encodeIfPresent(maxTextContextTokens, forKey: .maxTextContextTokens)
         try container.encode(vadEnabled, forKey: .vadEnabled)
         try container.encode(wordTimestamps, forKey: .wordTimestamps)
         try container.encode(dtwTokenTimestamps, forKey: .dtwTokenTimestamps)
@@ -122,6 +141,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
             languageCode: languageCode,
             modelID: modelID,
             prompt: prompt,
+            recognitionProfile: recognitionProfile,
+            maxTextContextTokens: maxTextContextTokens,
             vadEnabled: vadEnabled,
             wordTimestamps: wordTimestamps,
             dtwTokenTimestamps: false,
@@ -749,22 +770,194 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
 }
 
 public enum ASRTranscriptMapper {
+    private static let leadingSilenceToleranceSeconds = 0.12
+    private static let leadingSilenceMinimumSeconds = 0.8
+    private static let leadingSilenceCarryMaxGapSeconds = 1.0
+    private static let leadingSilenceNoiseProbability = 0.35
+    private static let leadingSilenceCarryProbability = 0.50
+    private static let leadingSilenceCarryMinimumSeconds = 0.08
+
     public static func sourceFragments(from transcript: ASRTranscript) -> [SubtitleCueSourceFragment] {
-        transcript.words.compactMap { word in
+        wordsToFragments(transcript.words)
+    }
+
+    private struct FragmentAccumulator {
+        var fragment: SubtitleCueSourceFragment
+        var latinMergeEligible: Bool
+    }
+
+    private static func wordsToFragments(_ words: [ASRWord]) -> [SubtitleCueSourceFragment] {
+        var accumulated: [FragmentAccumulator] = []
+        for word in words {
             let text = LocalASRSubtitleTimingPlanner.cleanedSpeechText(word.text)
             guard !text.isEmpty,
                   word.startSeconds.isFinite,
                   word.endSeconds.isFinite,
                   word.startSeconds >= 0,
                   word.endSeconds >= word.startSeconds else {
-                return nil
+                continue
             }
-            return SubtitleCueSourceFragment(
+            let fragment = SubtitleCueSourceFragment(
                 startSeconds: word.startSeconds,
                 endSeconds: word.endSeconds,
                 text: text
             )
+            let startsNewWhisperTokenWord = word.text.first?.isWhitespace == true
+                && !containsCJKOrHangul(text)
+
+            if let previous = accumulated.last,
+               shouldMergeLatinASRToken(
+                previousText: previous.fragment.text,
+                previousMergeEligible: previous.latinMergeEligible,
+                currentText: text,
+                rawCurrentText: word.text
+               ) {
+                accumulated[accumulated.count - 1] = FragmentAccumulator(
+                    fragment: SubtitleCueSourceFragment(
+                        startSeconds: previous.fragment.startSeconds,
+                        endSeconds: max(previous.fragment.endSeconds, fragment.endSeconds),
+                        text: previous.fragment.text + text
+                    ),
+                    latinMergeEligible: true
+                )
+            } else {
+                accumulated.append(FragmentAccumulator(
+                    fragment: fragment,
+                    latinMergeEligible: startsNewWhisperTokenWord
+                ))
+            }
         }
+        return accumulated.map(\.fragment)
+    }
+
+    private static func shouldMergeLatinASRToken(
+        previousText: String,
+        previousMergeEligible: Bool,
+        currentText: String,
+        rawCurrentText: String
+    ) -> Bool {
+        guard previousMergeEligible else { return false }
+        guard rawCurrentText.first?.isWhitespace != true else { return false }
+        let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !previous.isEmpty, !current.isEmpty else { return false }
+        if containsCJKOrHangul(previous) || containsCJKOrHangul(current) { return false }
+        if isLatinJoinPunctuation(current) { return true }
+        if isLatinApostrophePrefix(previous) && containsLetterOutsideCJK(current) { return true }
+        return containsLetterOutsideCJK(previous) && containsLetterOutsideCJK(current)
+    }
+
+    private static func isLatinJoinPunctuation(_ text: String) -> Bool {
+        text.allSatisfy { character in
+            character == "'" || character == "’" || character == "." || character == "," || character == "!" || character == "?" || character == ":" || character == ";"
+        } || (text.first == "'" || text.first == "’")
+    }
+
+    private static func isLatinApostrophePrefix(_ text: String) -> Bool {
+        text.allSatisfy { $0 == "'" || $0 == "’" }
+    }
+
+    private static func containsLetterOutsideCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            CharacterSet.letters.contains(scalar) && !isCJKOrHangulScalar(scalar)
+        }
+    }
+
+    private static func containsCJKOrHangul(_ text: String) -> Bool {
+        text.unicodeScalars.contains { isCJKOrHangulScalar($0) }
+    }
+
+    private static func isCJKOrHangulScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3040...0x30FF).contains(Int(scalar.value))
+            || (0x3400...0x4DBF).contains(Int(scalar.value))
+            || (0x4E00...0x9FFF).contains(Int(scalar.value))
+            || (0xAC00...0xD7A3).contains(Int(scalar.value))
+    }
+
+    private static func sourceFragments(
+        from transcript: ASRTranscript,
+        profile: SubtitleTimingProfile,
+        audioActivity: ASRAudioActivity?
+    ) -> [SubtitleCueSourceFragment] {
+        guard let audioActivity,
+              profile == .lyrics || profile == .japaneseLyrics else {
+            return sourceFragments(from: transcript)
+        }
+        let words = adjustedLeadingSilenceWords(transcript.words, audioActivity: audioActivity)
+        let adjustedTranscript = ASRTranscript(
+            id: transcript.id,
+            languageCode: transcript.languageCode,
+            languageConfidence: transcript.languageConfidence,
+            durationSeconds: transcript.durationSeconds,
+            words: words,
+            sourceModelID: transcript.sourceModelID,
+            createdAt: transcript.createdAt
+        )
+        return sourceFragments(from: adjustedTranscript)
+    }
+
+    private static func adjustedLeadingSilenceWords(
+        _ words: [ASRWord],
+        audioActivity: ASRAudioActivity
+    ) -> [ASRWord] {
+        guard let leadingSilence = audioActivity.silenceRanges.first(where: { range in
+            range.startSeconds <= leadingSilenceToleranceSeconds
+                && range.endSeconds - range.startSeconds >= leadingSilenceMinimumSeconds
+        }) else {
+            return words
+        }
+        let silenceEnd = leadingSilence.endSeconds
+        guard let firstAudibleIndex = words.firstIndex(where: { word in
+            word.endSeconds > silenceEnd + leadingSilenceToleranceSeconds
+                || word.startSeconds >= silenceEnd
+        }) else {
+            return words.filter { !isLowConfidenceLeadingLyricNoise($0) }
+        }
+        guard firstAudibleIndex > words.startIndex else {
+            return words.map { word in
+                word.startSeconds < silenceEnd && word.endSeconds > silenceEnd
+                    ? ASRWord(text: word.text, startSeconds: silenceEnd, endSeconds: word.endSeconds, probability: word.probability)
+                    : word
+            }
+        }
+
+        let leadingWords = Array(words[..<firstAudibleIndex])
+        var adjusted: [ASRWord] = []
+        if let carryWord = leadingWords.last(where: { word in
+            !isLowConfidenceLeadingLyricNoise(word)
+                && (word.probability ?? 1.0) >= leadingSilenceCarryProbability
+        }) {
+            let nextStart = words[firstAudibleIndex].startSeconds
+            if nextStart >= silenceEnd,
+               nextStart - silenceEnd <= leadingSilenceCarryMaxGapSeconds {
+                adjusted.append(ASRWord(
+                    text: carryWord.text,
+                    startSeconds: silenceEnd,
+                    endSeconds: max(silenceEnd + leadingSilenceCarryMinimumSeconds, nextStart),
+                    probability: carryWord.probability
+                ))
+            }
+        }
+
+        for word in words[firstAudibleIndex...] {
+            if word.startSeconds < silenceEnd, word.endSeconds > silenceEnd {
+                adjusted.append(ASRWord(
+                    text: word.text,
+                    startSeconds: silenceEnd,
+                    endSeconds: word.endSeconds,
+                    probability: word.probability
+                ))
+            } else {
+                adjusted.append(word)
+            }
+        }
+        return adjusted
+    }
+
+    private static func isLowConfidenceLeadingLyricNoise(_ word: ASRWord) -> Bool {
+        let text = LocalASRSubtitleTimingPlanner.cleanedSpeechText(word.text)
+        let visibleCount = text.filter { !$0.isWhitespace }.count
+        return visibleCount <= 2 && (word.probability ?? 1.0) < leadingSilenceNoiseProbability
     }
 
     public static func sourceCues(
@@ -772,8 +965,9 @@ public enum ASRTranscriptMapper {
         profile: SubtitleTimingProfile = .speech,
         audioActivity: ASRAudioActivity? = nil
     ) -> [SubtitleCue] {
+        let fragments = sourceFragments(from: transcript, profile: profile, audioActivity: audioActivity)
         let planned = LocalASRSubtitleTimingPlanner.planCues(
-            from: sourceFragments(from: transcript),
+            from: fragments,
             transcriptDurationSeconds: transcript.durationSeconds,
             profile: profile
         )
@@ -852,6 +1046,9 @@ public enum SubtitleTimingProfileDetector {
         "official music video", "music video", "official mv", " mv ",
         "lyrics", "lyric", "song", "cover", "歌ってみた", "歌詞", "字幕版", "mv)"
     ]
+    private static let japaneseMusicFilenameKeywords = [
+        " live", "ライブ", "official audio", "official visualizer", "performance video"
+    ]
     private static let animeFilenameKeywords = [
         "anime", "アニメ", "动画", "動畫", "ova"
     ]
@@ -916,6 +1113,13 @@ public enum SubtitleTimingProfileDetector {
         if lyricsFilenameKeywords.contains(where: { lower.contains($0) }) {
             return looksJapanese(fileName: lower, languageCode: languageCode, cues: cues) ? .japaneseLyrics : .lyrics
         }
+        let earlyJapaneseContent = looksJapanese(fileName: lower, languageCode: languageCode, cues: cues)
+        if earlyJapaneseContent,
+           japaneseMusicFilenameKeywords.contains(where: { lower.contains($0) })
+            || hasJapaneseLyricBoilerplateHallucination(cues)
+            || hasJapaneseLyricIntroMusicHallucination(cues) {
+            return .japaneseLyrics
+        }
         guard cues.count >= 20 else {
             return animeFilenameKeywords.contains(where: { lower.contains($0) }) || containsEpisodeMarker(lower)
                 ? .anime : .speech
@@ -951,11 +1155,20 @@ public enum SubtitleTimingProfileDetector {
         guard !durations.isEmpty else { return .speech }
         let punctuatedRatio = Double(punctuated) / Double(cues.count)
         let average = durations.reduce(0, +) / Double(durations.count)
+        let japaneseContent = earlyJapaneseContent
+
+        // Some official J-pop uploads have titles like "Ado - うっせぇわ" without "MV" or
+        // "lyrics". If whisper has already fallen into a dense Japanese loop, route through the
+        // lyric profile so the dedicated hallucination suppressor can clean it up.
+        if japaneseContent, punctuatedRatio < 0.2,
+           (hasDenseJapaneseASRLoop(cues) || hasJapaneseLyricBoilerplateHallucination(cues)) {
+            return .japaneseLyrics
+        }
 
         // Lyrics: few sentence-final punctuation marks, medium-length lines, frequent silent gaps
         // between phrases (the shape of a sung verse) — matches Translator.looksLikeLocalASRLyrics.
         if punctuatedRatio < 0.2, average >= 3.0, average <= 5.8, largeGaps >= 2 {
-            return looksJapanese(fileName: lower, languageCode: languageCode, cues: cues) ? .japaneseLyrics : .lyrics
+            return japaneseContent ? .japaneseLyrics : .lyrics
         }
 
         // Anime: CJK-heavy, lots of short reaction cues, sparse end punctuation.
@@ -966,6 +1179,87 @@ public enum SubtitleTimingProfileDetector {
             return .anime
         }
         return .speech
+    }
+
+    private static func hasDenseJapaneseASRLoop(_ cues: [SubtitleCue]) -> Bool {
+        let normalized = normalizeJapaneseCueText(cues.map(\.text).joined())
+        guard normalized.count >= 80 else { return false }
+        let uniqueRatio = Double(Set(normalized).count) / Double(normalized.count)
+        guard uniqueRatio <= 0.24 else { return false }
+        guard repeatedBigramExcess(in: normalized) >= 24 else { return false }
+        return hasDominantRepeatedSubstring(normalized)
+    }
+
+    private static func hasJapaneseLyricBoilerplateHallucination(_ cues: [SubtitleCue]) -> Bool {
+        let normalized = normalizeJapaneseCueText(cues.map(\.text).joined())
+        let hasCreditCluster = normalized.contains("作詞")
+            && (normalized.contains("作曲") || normalized.contains("編曲") || normalized.contains("初音ミク"))
+        let thankYouCount = normalized.components(separatedBy: "ご視聴ありがとうございました").count - 1
+        let hasTerminalThankYou = normalized.range(of: "ご視聴ありがとうございました").map { range in
+            normalized.distance(from: range.upperBound, to: normalized.endIndex) <= 12
+        } ?? false
+        return hasCreditCluster || thankYouCount >= 2 || hasTerminalThankYou
+    }
+
+    private static func hasJapaneseLyricIntroMusicHallucination(_ cues: [SubtitleCue]) -> Bool {
+        guard let first = cues.first,
+              let start = srtTimeToSeconds(first.start),
+              start <= 2.0 else { return false }
+        let head = cues.prefix(3)
+            .map { normalizedLatinCueText($0.text) }
+            .joined()
+        return head.hasPrefix("BGM")
+    }
+
+    private static func normalizeJapaneseCueText(_ text: String) -> String {
+        String(text.unicodeScalars.filter { scalar in
+            let value = scalar.value
+            return (0x3040...0x309F).contains(Int(value))
+                || (0x30A0...0x30FF).contains(Int(value))
+                || (0x4E00...0x9FFF).contains(Int(value))
+        })
+    }
+
+    private static func normalizedLatinCueText(_ text: String) -> String {
+        String(text.unicodeScalars.compactMap { scalar in
+            let value = scalar.value
+            guard (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) else {
+                return nil
+            }
+            return Character(UnicodeScalar(String(scalar).uppercased())!)
+        })
+    }
+
+    private static func repeatedBigramExcess(in text: String) -> Int {
+        let characters = Array(text)
+        guard characters.count >= 2 else { return 0 }
+        var counts: [String: Int] = [:]
+        for index in 0..<(characters.count - 1) {
+            counts[String(characters[index...index + 1]), default: 0] += 1
+        }
+        return counts.values.reduce(0) { total, count in
+            total + max(0, count - 1)
+        }
+    }
+
+    private static func hasDominantRepeatedSubstring(_ text: String) -> Bool {
+        let characters = Array(text)
+        let maxLength = min(28, characters.count / 2)
+        guard maxLength >= 8 else { return false }
+        for length in stride(from: maxLength, through: 8, by: -1) {
+            var counts: [String: Int] = [:]
+            for index in 0...(characters.count - length) {
+                let substring = String(characters[index..<(index + length)])
+                guard Set(substring).count >= 3 else { continue }
+                counts[substring, default: 0] += 1
+            }
+            if counts.values.contains(where: { count in
+                count >= 3 && Double(length * count) / Double(characters.count) >= 0.35
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func looksJapanese(fileName lower: String, languageCode: String?, cues: [SubtitleCue]) -> Bool {
@@ -1119,6 +1413,15 @@ enum LocalASRSubtitleTimingPlanner {
     private static let japaneseLyricAdnominalHeads: Set<String> = [
         "よう", "そう", "みたい"
     ]
+    private static let japaneseLyricObjectParticleStarts: Set<Character> = [
+        "を", "が", "は", "に", "へ", "と", "で", "も", "の"
+    ]
+    private static let japaneseLyricSingleKanjiSuffixes: Set<Character> = [
+        "生", "者", "性", "感", "心", "声", "音", "色", "先", "中", "目", "手"
+    ]
+    private static let japaneseLyricKanaVerbStemTails: Set<String> = [
+        "もが", "こ", "続"
+    ]
 
     private static let japaneseLoopMinPhraseFragments = 4
     private static let japaneseLoopMaxPhraseFragments = 12
@@ -1127,6 +1430,56 @@ enum LocalASRSubtitleTimingPlanner {
     private static let japaneseLoopMaxPhraseSpanSeconds = 3.0
     private static let japaneseLoopMaxOccurrenceGapSeconds = 0.8
     private static let japaneseLoopFuseSeconds = 90.0
+    private static let japaneseLyricLoopCueMinCount = 5
+    private static let japaneseLyricLoopCueMinNormalizedCharacters = 28
+    private static let japaneseLyricLoopCueMaxSpanSeconds = 35.0
+    private static let japaneseLyricLoopCueMaxGapSeconds = 4.0
+    private static let japaneseLyricLoopCueMaxUniqueCharacterRatio = 0.38
+    private static let japaneseLyricLoopCueMinRepeatedBigramExcess = 8
+    private static let japaneseLyricLoopCueLongSparseSeconds = 8.0
+    private static let japaneseLyricDenseLoopMinCharacters = 36
+    private static let japaneseLyricDenseLoopMinSubstringCharacters = 8
+    private static let japaneseLyricDenseLoopMaxSubstringCharacters = 28
+    private static let japaneseLyricDenseLoopMinOccurrences = 3
+    private static let japaneseLyricDenseLoopMinCoverage = 0.55
+    private static let japaneseLyricCreditHallucinationTokens: Set<String> = [
+        "作", "詞", "词", "作詞", "作词", "曲", "作曲", "編", "编", "編曲", "编曲", "初", "音", "初音", "ミ", "ク", "ミク", "初音ミク"
+    ]
+    private static let japaneseLyricCreditHallucinationMarkers = [
+        "作詞", "作词", "作曲", "編曲", "编曲", "初音ミク"
+    ]
+    private static let japaneseLyricCreditHallucinationMaxGapSeconds = 4.0
+    private static let japaneseLyricOutroHallucinationMarkers = [
+        "ご視聴ありがとうございました"
+    ]
+    private static let lyricFillerLoopTokens: Set<String> = [
+        "yeah", "yea", "ya", "yah", "ey", "hey", "heyy",
+        "oh", "ooh", "uh", "uhh", "ah", "mmm", "mm", "hmm", "hm"
+    ]
+    private static let lyricFillerLoopMinDurationSeconds = 8.0
+    private static let lyricFillerLoopMinTokenCount = 12
+    private static let lyricFillerLoopHighTokenCount = 24
+    private static let lyricFillerCueMinTokenCount = 3
+    private static let lyricFillerCueMinRatio = 0.75
+    private static let lyricFillerLoopMaxGapSeconds = 1.5
+    private static let lyricIntroCreditNameMaxStartSeconds = 3.0
+    private static let lyricIntroCreditNameMaxEndSeconds = 5.0
+    private static let lyricIntroCreditNameMinNextStartSeconds = 8.0
+    private static let lyricIntroCreditNameMinGapSeconds = 6.0
+    private static let lyricIntroCreditNameMinVisibleChars = 2
+    private static let lyricIntroCreditNameMaxVisibleChars = 4
+    private static let lyricRepeatedIntroFillerMaxStartSeconds = 35.0
+    private static let lyricRepeatedIntroFillerMinCueCount = 5
+    private static let lyricRepeatedIntroFillerMinDurationSeconds = 8.0
+    private static let lyricRepeatedIntroFillerMaxGapSeconds = 2.5
+    private static let lyricRepeatedIntroFillerMinKeyCharacters = 3
+    private static let lyricRepeatedIntroFillerMaxKeyCharacters = 14
+    private static let lyricRepeatedIntroFillerMaxRawKeyCharacters = 42
+    private static let lyricRepeatedIntroFillerMaxVisibleChars = 16
+    private static let lyricOutroBoilerplateKeys = [
+        "thanksforwatching", "thankyouforwatching", "graciasporver", "graciasporverelvideo",
+        "ご視聴ありがとうございました"
+    ]
 
     /// A cue with at most this many visible characters is too short to stand alone (e.g. 「顔」,
     /// 「ね」, a lone 「えらい」) and is merged into the temporally-closest neighbour.
@@ -1134,6 +1487,10 @@ enum LocalASRSubtitleTimingPlanner {
     /// Only merge a lone short cue into a neighbour within this gap (same utterance), so merging
     /// never drags a word across a long pause (which would make it appear early).
     private static let loneMergeMaxGapSeconds = 1.0
+    private static let japaneseLyricParticleRejoinMaxGapSeconds = 1.35
+    private static let japaneseLyricSemanticRejoinMaxGapSeconds = 0.75
+    private static let japaneseLyricKanaVerbRejoinMaxGapSeconds = 0.9
+    private static let japaneseLyricModifierRejoinMaxGapSeconds = 0.35
     private static let latinContinuationSuffixes: Set<String> = [
         "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
         "ist", "ists", "tion", "tions", "ment", "ness", "less", "able", "ible",
@@ -1277,9 +1634,9 @@ enum LocalASRSubtitleTimingPlanner {
                 ?? Double.greatestFiniteMagnitude
 
             let canPrev = prev != nil && gapPrev <= flashMergeMaxGapSeconds
-                && fitsMergedCue((prev ?? []) + group, thresholds: thresholds)
+                && fitsMergedCue((prev ?? []) + group, absorbingShortGroup: group, thresholds: thresholds)
             let canNext = next != nil && gapNext <= flashMergeMaxGapSeconds
-                && fitsMergedCue(group + (next ?? []), thresholds: thresholds)
+                && fitsMergedCue(group + (next ?? []), absorbingShortGroup: group, thresholds: thresholds)
 
             if canPrev, (!canNext || gapPrev <= gapNext) {
                 result[result.count - 1] = (prev ?? []) + group
@@ -1304,8 +1661,12 @@ enum LocalASRSubtitleTimingPlanner {
         result.reserveCapacity(groups.count)
 
         for group in groups {
-            guard !result.isEmpty,
-                  let prefixCount = japaneseLyricContinuationPrefixCount(group),
+            guard !result.isEmpty else {
+                result.append(group)
+                continue
+            }
+            let previousCandidate = result.last ?? []
+            guard let prefixCount = japaneseLyricContinuationPrefixCount(group, after: previousCandidate),
                   group.count > prefixCount else {
                 result.append(group)
                 continue
@@ -1339,9 +1700,15 @@ enum LocalASRSubtitleTimingPlanner {
         return result
     }
 
-    private static func japaneseLyricContinuationPrefixCount(_ group: [SubtitleCueSourceFragment]) -> Int? {
+    private static func japaneseLyricContinuationPrefixCount(
+        _ group: [SubtitleCueSourceFragment],
+        after previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
         let texts = group.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
         guard texts.count >= 2 else { return nil }
+        if let detachedSuffixCount = japaneseLyricDetachedSuffixPrefixCount(texts, after: previous) {
+            return detachedSuffixCount
+        }
         if japaneseLyricBareTailFragments.contains(texts[0]),
            startsJapaneseLyricPhrase(texts[1]) {
             return 1
@@ -1351,6 +1718,26 @@ enum LocalASRSubtitleTimingPlanner {
            texts[1] == "な",
            startsJapaneseLyricPhrase(texts[2]) {
             return 2
+        }
+        return nil
+    }
+
+    private static func japaneseLyricDetachedSuffixPrefixCount(
+        _ texts: [String],
+        after previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        let previousText = joinedText(previous)
+        guard let previousLast = previousText.trimmingCharacters(in: .whitespacesAndNewlines).last else {
+            return nil
+        }
+        if texts[0] == "ば", ["せ", "れ", "け"].contains(String(previousLast)) {
+            return 1
+        }
+        if texts[0] == "く", containsKanji(String(previousLast)) {
+            if texts.count >= 2, texts[1] == "へ" {
+                return 2
+            }
+            return 1
         }
         return nil
     }
@@ -1398,6 +1785,356 @@ enum LocalASRSubtitleTimingPlanner {
             }
         }
         return fallback
+    }
+
+    private static func rebalanceJapaneseLyricSingleFragmentBoundaries(
+        _ groups: [[SubtitleCueSourceFragment]],
+        thresholds: SubtitleTimingThresholds
+    ) -> [[SubtitleCueSourceFragment]] {
+        var result = groups.filter { !$0.isEmpty }
+        guard result.count >= 2 else { return result }
+
+        for index in 1..<result.count {
+            guard !result[index - 1].isEmpty, !result[index].isEmpty else { continue }
+            let current = result[index]
+            guard let first = current.first,
+                  isJapaneseLyricSingleKanjiSuffixFragment(first),
+                  !startsWithLeadingProhibited(first.text),
+                  let previousEnd = result[index - 1].last?.endSeconds,
+                  first.startSeconds - previousEnd <= loneMergeMaxGapSeconds else {
+                continue
+            }
+            let candidatePrevious = result[index - 1] + [first]
+            guard fitsJapaneseLyricSingleFragmentRebalancedCue(candidatePrevious, thresholds: thresholds) else {
+                continue
+            }
+            result[index - 1] = candidatePrevious
+            result[index] = Array(current.dropFirst())
+        }
+
+        result = result.filter { !$0.isEmpty }
+        guard result.count >= 2 else { return result }
+
+        for _ in 0..<3 {
+            var changed = false
+            for index in 1..<result.count {
+                guard !result[index - 1].isEmpty,
+                      !result[index].isEmpty,
+                      let moveCount = japaneseLyricSemanticTailMoveCount(
+                        previous: result[index - 1],
+                        current: result[index]
+                      ) else {
+                    continue
+                }
+                let previousWithoutMoved = Array(result[index - 1].dropLast(moveCount))
+                let moved = Array(result[index - 1].suffix(moveCount))
+                let candidateCurrent = moved + result[index]
+                guard fitsJapaneseLyricSemanticTailRebalancedCue(candidateCurrent, thresholds: thresholds) else {
+                    continue
+                }
+                result[index - 1] = previousWithoutMoved
+                result[index] = candidateCurrent
+                changed = true
+            }
+            if changed {
+                result = result.filter { !$0.isEmpty }
+            }
+            if !changed { break }
+        }
+
+        return result.filter { !$0.isEmpty }
+    }
+
+    private static func japaneseLyricSemanticTailMoveCount(
+        previous: [SubtitleCueSourceFragment],
+        current: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        guard !previous.isEmpty,
+              let previousLast = previous.last,
+              let currentFirst = current.first else {
+            return nil
+        }
+        let gap = currentFirst.startSeconds - previousLast.endSeconds
+        let currentText = currentFirst.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentText.isEmpty else { return nil }
+
+        if startsWithKanji(currentText),
+           gap <= japaneseLyricModifierRejoinMaxGapSeconds,
+           let modifierTailCount = japaneseLyricAdjectiveModifierTailMoveCount(previous) {
+            return modifierTailCount
+        }
+
+        if startsWithJapaneseLyricObjectParticle(currentText),
+           gap <= japaneseLyricParticleRejoinMaxGapSeconds,
+           isMovableSingleCJKFragment(previousLast) {
+            return 1
+        }
+
+        let previousLastText = previousLast.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if previousLastText == "あ",
+           currentText.hasPrefix("なた"),
+           gap <= japaneseLyricSemanticRejoinMaxGapSeconds {
+            return 1
+        }
+
+        if isJapaneseLyricQuotedSpeechStart(currentText),
+           gap <= japaneseLyricSemanticRejoinMaxGapSeconds,
+           let quotedTailCount = japaneseLyricQuotedTailMoveCount(previous) {
+            return quotedTailCount
+        }
+
+        if isJapaneseLyricFixedPhraseContinuationStart(currentText),
+           gap <= japaneseLyricSemanticRejoinMaxGapSeconds,
+           let fixedTailCount = japaneseLyricFixedPhraseTailMoveCount(previous) {
+            return fixedTailCount
+        }
+
+        if currentText.hasPrefix("する"),
+           gap <= japaneseLyricKanaVerbRejoinMaxGapSeconds,
+           let suruTailCount = japaneseLyricSuruCompoundTailMoveCount(previous) {
+            return suruTailCount
+        }
+
+        if isJapaneseLyricKanaVerbContinuationStart(currentText),
+           gap <= japaneseLyricKanaVerbRejoinMaxGapSeconds,
+           let kanaVerbTailCount = japaneseLyricKanaVerbTailMoveCount(previous) {
+            return kanaVerbTailCount
+        }
+
+        if isJapaneseLyricAdjectivePredicateContinuationStart(currentText),
+           gap <= japaneseLyricSemanticRejoinMaxGapSeconds,
+           let adjectiveTailCount = japaneseLyricAdjectivePredicateTailMoveCount(previous) {
+            return adjectiveTailCount
+        }
+
+        guard isJapaneseLyricPredicateContinuationStart(currentText),
+              gap <= japaneseLyricSemanticRejoinMaxGapSeconds else {
+            return nil
+        }
+
+        let maxSuffixCount = min(previous.count - 1, 4)
+        guard maxSuffixCount >= 1 else { return nil }
+        for suffixCount in 1...maxSuffixCount {
+            let suffix = Array(previous.suffix(suffixCount))
+            let text = joinedText(suffix)
+            guard containsKanji(text),
+                  !startsWithLeadingProhibited(text),
+                  !endsSentence(text) else {
+                continue
+            }
+            return suffixCount
+        }
+        return nil
+    }
+
+    private static func japaneseLyricAdjectiveModifierTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        let maxSuffixCount = min(previous.count, 3)
+        guard maxSuffixCount >= 1 else { return nil }
+        for suffixCount in 1...maxSuffixCount {
+            let text = joinedText(Array(previous.suffix(suffixCount)))
+            guard containsKanji(text),
+                  text.hasSuffix("い"),
+                  SubtitleTimingPlanner.visibleCharacters(text) <= 4,
+                  !startsWithLeadingProhibited(text) else {
+                continue
+            }
+            return suffixCount
+        }
+        return nil
+    }
+
+    private static func japaneseLyricAdjectivePredicateTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        let maxSuffixCount = min(previous.count, 4)
+        guard maxSuffixCount >= 2 else { return nil }
+        for suffixCount in 2...maxSuffixCount {
+            let text = joinedText(Array(previous.suffix(suffixCount)))
+            guard containsKanji(text),
+                  ["く", "しく", "なく"].contains(where: { text.hasSuffix($0) }),
+                  !startsWithLeadingProhibited(text),
+                  !endsSentence(text) else {
+                continue
+            }
+            return suffixCount
+        }
+        return nil
+    }
+
+    private static func startsWithKanji(_ text: String) -> Bool {
+        guard let first = text.trimmingCharacters(in: .whitespacesAndNewlines).first else { return false }
+        return containsKanji(String(first))
+    }
+
+    private static func japaneseLyricFixedPhraseTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        guard previous.last?.text.trimmingCharacters(in: .whitespacesAndNewlines) == "だけ" else {
+            return nil
+        }
+        return 1
+    }
+
+    private static func japaneseLyricSuruCompoundTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        guard previous.count >= 2 else { return nil }
+        let suffix = Array(previous.suffix(2))
+        let text = joinedText(suffix)
+        return text.hasSuffix("こ") && containsKanji(text) ? 2 : nil
+    }
+
+    private static func isJapaneseLyricFixedPhraseContinuationStart(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("じゃ") || trimmed.hasPrefix("では")
+    }
+
+    private static func japaneseLyricKanaVerbTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        let maxSuffixCount = min(previous.count, 4)
+        guard maxSuffixCount >= 1 else { return nil }
+        for suffixCount in 1...maxSuffixCount {
+            let text = joinedText(Array(previous.suffix(suffixCount)))
+            if japaneseLyricKanaVerbStemTails.contains(text) {
+                return suffixCount
+            }
+        }
+        return nil
+    }
+
+    private static func isJapaneseLyricKanaVerbContinuationStart(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["いて", "いた", "いる", "する", "ける"].contains { trimmed.hasPrefix($0) }
+    }
+
+    private static func isJapaneseLyricAdjectivePredicateContinuationStart(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["なる", "なった", "ない"].contains { trimmed.hasPrefix($0) }
+    }
+
+    private static func japaneseLyricQuotedTailMoveCount(
+        _ previous: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        let maxSuffixCount = min(previous.count, 6)
+        guard maxSuffixCount >= 2 else { return nil }
+        for suffixCount in 2...maxSuffixCount {
+            let suffix = Array(previous.suffix(suffixCount))
+            let text = joinedText(suffix)
+            guard containsKanji(text),
+                  text.hasSuffix("と"),
+                  !startsWithLeadingProhibited(text),
+                  !endsSentence(text) else {
+                continue
+            }
+            return suffixCount
+        }
+        return nil
+    }
+
+    private static func isJapaneseLyricQuotedSpeechStart(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("言") || trimmed.hasPrefix("いう") || trimmed.hasPrefix("言う")
+    }
+
+    private static func isJapaneseLyricPredicateContinuationStart(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "だ", "で", "と", "って", "ても", "て", "して", "した", "し"
+        ].contains { trimmed.hasPrefix($0) }
+    }
+
+    private static func isMovableSingleCJKFragment(_ fragment: SubtitleCueSourceFragment) -> Bool {
+        let text = fragment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = text.first else { return false }
+        return SubtitleTimingPlanner.visibleCharacters(text) == 1
+            && containsCJK(text)
+            && !cjkLeadingProhibited.contains(first)
+    }
+
+    private static func isJapaneseLyricSingleKanjiSuffixFragment(_ fragment: SubtitleCueSourceFragment) -> Bool {
+        let text = fragment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = text.first else { return false }
+        return SubtitleTimingPlanner.visibleCharacters(text) == 1
+            && containsKanji(text)
+            && japaneseLyricSingleKanjiSuffixes.contains(first)
+    }
+
+    private static func rebalanceJapaneseLyricCueTextBoundaries(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= 2 else { return cues }
+        var result = cues
+        for index in 1..<result.count {
+            let previous = result[index - 1]
+            let current = result[index]
+            guard let previousEnd = srtTimeToSeconds(previous.end),
+                  let currentStart = srtTimeToSeconds(current.start),
+                  currentStart - previousEnd <= loneMergeMaxGapSeconds,
+                  let previousLast = previous.text.trimmingCharacters(in: .whitespacesAndNewlines).last,
+                  containsKanji(String(previousLast)),
+                  let currentFirst = current.text.trimmingCharacters(in: .whitespacesAndNewlines).first,
+                  isJapaneseLyricSingleKanjiSuffixCharacter(currentFirst),
+                  let moved = popFirstCharacter(from: current.text),
+                  !moved.remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            result[index - 1] = SubtitleCue(
+                index: previous.index,
+                start: previous.start,
+                end: previous.end,
+                text: previous.text + moved.character,
+                sourceFragments: previous.sourceFragments
+            )
+            result[index] = SubtitleCue(
+                index: current.index,
+                start: current.start,
+                end: current.end,
+                text: moved.remainder,
+                sourceFragments: current.sourceFragments
+            )
+        }
+        return result
+    }
+
+    private static func isMovableSingleCJKCharacter(_ character: Character) -> Bool {
+        containsCJK(String(character)) && !cjkLeadingProhibited.contains(character)
+    }
+
+    private static func isJapaneseLyricSingleKanjiSuffixCharacter(_ character: Character) -> Bool {
+        japaneseLyricSingleKanjiSuffixes.contains(character)
+    }
+
+    private static func popFirstCharacter(from text: String) -> (character: String, remainder: String)? {
+        guard let first = text.first else { return nil }
+        return (String(first), String(text.dropFirst()))
+    }
+
+    private static func startsWithJapaneseLyricObjectParticle(_ text: String) -> Bool {
+        guard let first = text.trimmingCharacters(in: .whitespacesAndNewlines).first else { return false }
+        return japaneseLyricObjectParticleStarts.contains(first)
+    }
+
+    private static func fitsJapaneseLyricSingleFragmentRebalancedCue(
+        _ fragments: [SubtitleCueSourceFragment],
+        thresholds: SubtitleTimingThresholds
+    ) -> Bool {
+        guard let first = fragments.first, let last = fragments.last else { return false }
+        let duration = last.endSeconds - first.startSeconds
+        let units = SubtitleTimingPlanner.timingTokens(joinedText(fragments)).count
+        return duration <= min(thresholds.relaxedCJKCueSeconds + 1.0, 6.8)
+            && units <= relaxedShortMergeMaxCJKUnits
+    }
+
+    private static func fitsJapaneseLyricSemanticTailRebalancedCue(
+        _ fragments: [SubtitleCueSourceFragment],
+        thresholds: SubtitleTimingThresholds
+    ) -> Bool {
+        guard let first = fragments.first, let last = fragments.last else { return false }
+        let duration = last.endSeconds - first.startSeconds
+        let units = SubtitleTimingPlanner.timingTokens(joinedText(fragments)).count
+        return duration <= min(thresholds.relaxedCJKCueSeconds + 2.0, 7.8)
+            && units <= relaxedShortMergeMaxCJKUnits
     }
 
     private static func fitsMergedCue(
@@ -1527,9 +2264,15 @@ enum LocalASRSubtitleTimingPlanner {
         profile: SubtitleTimingProfile = .speech
     ) -> [SubtitleCue] {
         let thresholds = thresholds(for: profile)
-        let loopSuppressed = splitLeadingJapaneseTailFragments(
-            suppressRepeatedJapaneseLoopFragments(fragments.filter { shouldKeep($0) })
-        )
+        let kept = fragments.filter { shouldKeep($0) }
+        let profileFiltered = (profile == .lyrics || profile == .japaneseLyrics)
+            ? suppressJapaneseLyricBoilerplateHallucinationFragments(kept)
+            : kept
+        let exactLoopSuppressed = suppressRepeatedJapaneseLoopFragments(profileFiltered)
+        let approximateLoopSuppressed = profile == .japaneseLyrics
+            ? suppressJapaneseLyricLoopFragments(exactLoopSuppressed)
+            : exactLoopSuppressed
+        let loopSuppressed = splitLeadingJapaneseTailFragments(approximateLoopSuppressed)
         let ordered = loopSuppressed
             .sorted {
                 $0.startSeconds == $1.startSeconds
@@ -1564,6 +2307,7 @@ enum LocalASRSubtitleTimingPlanner {
         groups = mergeShortGroups(groups, thresholds: thresholds)
         if profile == .japaneseLyrics {
             groups = rebalanceJapaneseLyricPhraseStarts(groups, thresholds: thresholds)
+            groups = rebalanceJapaneseLyricSingleFragmentBoundaries(groups, thresholds: thresholds)
         }
         groups = mergeFlashDurationGroups(groups, thresholds: thresholds)
 
@@ -1576,6 +2320,18 @@ enum LocalASRSubtitleTimingPlanner {
                 thresholds: thresholds
             ) else { continue }
             cues.append(cue)
+        }
+        if profile == .japaneseLyrics {
+            cues = suppressJapaneseLyricIntroHallucinationCues(cues)
+            cues = mergeJapaneseLyricLeadingOrphanCues(cues, thresholds: thresholds)
+            cues = suppressJapaneseLyricLoopCues(cues)
+            cues = suppressJapaneseLyricInternalDuplicateCueNoise(cues)
+            cues = rebalanceJapaneseLyricCueTextBoundaries(cues)
+        }
+        if profile == .lyrics || profile == .japaneseLyrics {
+            cues = suppressLyricIntroCreditNameCues(cues)
+            cues = suppressLyricRepeatedIntroFillerLoopCues(cues)
+            cues = suppressLyricFillerLoopCues(cues)
         }
         return cues.enumerated().map { offset, cue in
             SubtitleCue(
@@ -1598,6 +2354,104 @@ enum LocalASRSubtitleTimingPlanner {
         let phraseLength: Int
         let characters: Set<Character>
         var suppressUntilSeconds: Double
+    }
+
+    private struct JapaneseLyricLoopCueFuse {
+        let characters: Set<Character>
+        var suppressUntilSeconds: Double
+    }
+
+    private static let japaneseLyricIntroHallucinationMaxEndSeconds = 5.0
+    private static let japaneseLyricIntroHallucinationMinNextStartSeconds = 8.0
+    private static let japaneseLyricIntroHallucinationMinGapSeconds = 6.0
+    private static let japaneseLyricIntroHallucinationMaxVisibleChars = 5
+    private static let japaneseLyricLeadingOrphanMaxDurationSeconds = 1.2
+    private static let japaneseLyricLeadingOrphanMaxGapSeconds = 1.25
+    private static let japaneseLyricLeadingOrphanMaxMergedSeconds = 6.8
+    private static let japaneseLyricDuplicateMinCharacters = 6
+    private static let japaneseLyricDuplicateMinOverlap = 0.72
+
+    private static func suppressJapaneseLyricIntroHallucinationCues(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= 2,
+              let first = cues.first,
+              let second = cues.dropFirst().first,
+              let firstStart = first.sourceFragments.first?.startSeconds,
+              let firstEnd = first.sourceFragments.last?.endSeconds,
+              let secondStart = second.sourceFragments.first?.startSeconds else {
+            return cues
+        }
+        let gap = secondStart - firstEnd
+        let visible = SubtitleTimingPlanner.visibleCharacters(first.text)
+        guard firstStart <= 1.0,
+              firstEnd <= japaneseLyricIntroHallucinationMaxEndSeconds,
+              secondStart >= japaneseLyricIntroHallucinationMinNextStartSeconds,
+              gap >= japaneseLyricIntroHallucinationMinGapSeconds,
+              visible <= japaneseLyricIntroHallucinationMaxVisibleChars,
+              !endsSentence(first.text) else {
+            return cues
+        }
+        return Array(cues.dropFirst())
+    }
+
+    private static func mergeJapaneseLyricLeadingOrphanCues(
+        _ cues: [SubtitleCue],
+        thresholds: SubtitleTimingThresholds
+    ) -> [SubtitleCue] {
+        guard cues.count >= 2 else { return cues }
+        var result: [SubtitleCue] = []
+        result.reserveCapacity(cues.count)
+        var index = 0
+
+        while index < cues.count {
+            let cue = cues[index]
+            guard index + 1 < cues.count,
+                  isJapaneseLyricLeadingOrphanCue(cue),
+                  let cueStart = cue.sourceFragments.first?.startSeconds,
+                  let cueEnd = cue.sourceFragments.last?.endSeconds,
+                  let nextStart = cues[index + 1].sourceFragments.first?.startSeconds else {
+                result.append(cue)
+                index += 1
+                continue
+            }
+
+            let gap = nextStart - cueEnd
+            let duration = cueEnd - cueStart
+            let mergedFragments = cue.sourceFragments + cues[index + 1].sourceFragments
+            if duration <= japaneseLyricLeadingOrphanMaxDurationSeconds,
+               gap <= japaneseLyricLeadingOrphanMaxGapSeconds,
+               fitsJapaneseLyricLeadingOrphanMerge(mergedFragments),
+               let merged = makeCue(
+                index: result.count + 1,
+                fragments: mergedFragments,
+                transcriptDurationSeconds: nil,
+                thresholds: thresholds
+               ) {
+                result.append(merged)
+                index += 2
+                continue
+            }
+
+            result.append(cue)
+            index += 1
+        }
+        return result
+    }
+
+    private static func fitsJapaneseLyricLeadingOrphanMerge(_ fragments: [SubtitleCueSourceFragment]) -> Bool {
+        guard let first = fragments.first, let last = fragments.last else { return false }
+        let text = joinedText(fragments)
+        let duration = last.endSeconds - first.startSeconds
+        let units = SubtitleTimingPlanner.timingTokens(text).count
+        return duration <= japaneseLyricLeadingOrphanMaxMergedSeconds
+            && units <= relaxedShortMergeMaxCJKUnits
+    }
+
+    private static func isJapaneseLyricLeadingOrphanCue(_ cue: SubtitleCue) -> Bool {
+        let text = cue.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SubtitleTimingPlanner.visibleCharacters(text) == 1
+            && containsCJK(text)
+            && !startsWithLeadingProhibited(text)
+            && !endsSentence(text)
     }
 
     private static func suppressRepeatedJapaneseLoopFragments(
@@ -1649,6 +2503,763 @@ enum LocalASRSubtitleTimingPlanner {
             index += 1
         }
         return output
+    }
+
+    private static func suppressJapaneseLyricLoopCues(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= japaneseLyricLoopCueMinCount else { return cues }
+        var output: [SubtitleCue] = []
+        output.reserveCapacity(cues.count)
+        var index = 0
+        var removedAny = false
+
+        while index < cues.count {
+            if let end = japaneseLyricLoopCueRunEnd(startingAt: index, in: cues) {
+                let run = Array(cues[index..<end])
+                let preserveCount = japaneseLyricDenseLoopPreservePrefixCount(run)
+                if preserveCount > 0 {
+                    output.append(contentsOf: run.prefix(preserveCount))
+                }
+                index = end
+                removedAny = true
+                continue
+            }
+            output.append(cues[index])
+            index += 1
+        }
+
+        return removedAny && !output.isEmpty ? output : cues
+    }
+
+    private struct LyricFillerCueStats {
+        let tokenCount: Int
+        let fillerTokenCount: Int
+        let hasOutroBoilerplate: Bool
+
+        var fillerRatio: Double {
+            tokenCount == 0 ? 0 : Double(fillerTokenCount) / Double(tokenCount)
+        }
+    }
+
+    private static func suppressLyricIntroCreditNameCues(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= 2,
+              let first = cues.first,
+              let second = cues.dropFirst().first,
+              isLyricIntroCreditNameCue(first, before: second) else {
+            return cues
+        }
+        return Array(cues.dropFirst())
+    }
+
+    private static func isLyricIntroCreditNameCue(_ cue: SubtitleCue, before next: SubtitleCue) -> Bool {
+        let start = cueStartSeconds(cue)
+        let end = cueEndSeconds(cue)
+        let nextStart = cueStartSeconds(next)
+        let visible = SubtitleTimingPlanner.visibleCharacters(cue.text)
+        return start <= lyricIntroCreditNameMaxStartSeconds
+            && end <= lyricIntroCreditNameMaxEndSeconds
+            && nextStart >= lyricIntroCreditNameMinNextStartSeconds
+            && nextStart - end >= lyricIntroCreditNameMinGapSeconds
+            && visible >= lyricIntroCreditNameMinVisibleChars
+            && visible <= lyricIntroCreditNameMaxVisibleChars
+            && isHanOnlyLyricCueText(cue.text)
+            && !endsSentence(cue.text)
+    }
+
+    private static func suppressLyricRepeatedIntroFillerLoopCues(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= lyricRepeatedIntroFillerMinCueCount else { return cues }
+        var output: [SubtitleCue] = []
+        output.reserveCapacity(cues.count)
+        var index = 0
+        var removedAny = false
+        var suppressedKeys: Set<String> = []
+
+        while index < cues.count {
+            if let trimmed = trimLyricRepeatedIntroFillerPrefix(cues[index], keys: suppressedKeys) {
+                output.append(trimmed)
+                index += 1
+                removedAny = true
+                continue
+            }
+            guard cueStartSeconds(cues[index]) <= lyricRepeatedIntroFillerMaxStartSeconds,
+                  let key = lyricRepeatedIntroFillerKey(cues[index].text) else {
+                output.append(cues[index])
+                index += 1
+                continue
+            }
+
+            var end = index + 1
+            while end < cues.count {
+                let gap = cueStartSeconds(cues[end]) - cueEndSeconds(cues[end - 1])
+                guard cueStartSeconds(cues[end]) <= lyricRepeatedIntroFillerMaxStartSeconds,
+                      gap <= lyricRepeatedIntroFillerMaxGapSeconds,
+                      lyricRepeatedIntroFillerKey(cues[end].text) == key else {
+                    break
+                }
+                end += 1
+            }
+
+            let count = end - index
+            let duration = cueEndSeconds(cues[end - 1]) - cueStartSeconds(cues[index])
+            if count >= lyricRepeatedIntroFillerMinCueCount,
+               duration >= lyricRepeatedIntroFillerMinDurationSeconds {
+                suppressedKeys.insert(key)
+                index = end
+                removedAny = true
+            } else {
+                output.append(contentsOf: cues[index..<end])
+                index = end
+            }
+        }
+
+        return removedAny ? output : cues
+    }
+
+    private static func trimLyricRepeatedIntroFillerPrefix(
+        _ cue: SubtitleCue,
+        keys: Set<String>
+    ) -> SubtitleCue? {
+        guard !keys.isEmpty else { return nil }
+        for key in keys {
+            guard let trimmedText = trimLyricRepeatedIntroFillerPrefix(key, from: cue.text) else {
+                continue
+            }
+            return SubtitleCue(
+                index: cue.index,
+                start: cue.start,
+                end: cue.end,
+                text: trimmedText,
+                sourceFragments: cue.sourceFragments
+            )
+        }
+        return nil
+    }
+
+    private static func trimLyricRepeatedIntroFillerPrefix(_ key: String, from text: String) -> String? {
+        var cursor = text.startIndex
+        var matched = 0
+        var consumeEnd = text.startIndex
+
+        while cursor < text.endIndex, matched < key.count {
+            let character = text[cursor]
+            if let letter = lowercaseASCIILetter(character) {
+                let expected = key[key.index(key.startIndex, offsetBy: matched)]
+                guard letter == expected else { return nil }
+                matched += 1
+                consumeEnd = text.index(after: cursor)
+            } else if isLyricPrefixSeparator(character) {
+                consumeEnd = text.index(after: cursor)
+            } else {
+                return nil
+            }
+            cursor = text.index(after: cursor)
+        }
+
+        guard matched == key.count else { return nil }
+        while consumeEnd < text.endIndex, isLyricPrefixSeparator(text[consumeEnd]) {
+            consumeEnd = text.index(after: consumeEnd)
+        }
+        let remainder = String(text[consumeEnd...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard SubtitleTimingPlanner.visibleCharacters(remainder) >= lyricRepeatedIntroFillerMinKeyCharacters else {
+            return nil
+        }
+        return remainder
+    }
+
+    private static func lowercaseASCIILetter(_ character: Character) -> Character? {
+        guard character.unicodeScalars.count == 1,
+              let scalar = character.unicodeScalars.first else {
+            return nil
+        }
+        let value = scalar.value
+        if (0x41...0x5A).contains(value) {
+            return Character(String(UnicodeScalar(value + 32)!))
+        }
+        if (0x61...0x7A).contains(value) {
+            return character
+        }
+        return nil
+    }
+
+    private static func isLyricPrefixSeparator(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.whitespacesAndNewlines.contains(scalar)
+                || CharacterSet.punctuationCharacters.contains(scalar)
+                || CharacterSet.symbols.contains(scalar)
+        }
+    }
+
+    private static func lyricRepeatedIntroFillerKey(_ text: String) -> String? {
+        guard SubtitleTimingPlanner.visibleCharacters(text) <= lyricRepeatedIntroFillerMaxVisibleChars,
+              !containsCJK(text) else {
+            return nil
+        }
+        var key = ""
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            if (0x41...0x5A).contains(value) {
+                key.unicodeScalars.append(UnicodeScalar(value + 32)!)
+            } else if (0x61...0x7A).contains(value) {
+                key.unicodeScalars.append(scalar)
+            }
+        }
+        guard key.count >= lyricRepeatedIntroFillerMinKeyCharacters,
+              key.count <= lyricRepeatedIntroFillerMaxRawKeyCharacters else {
+            return nil
+        }
+        if let motif = repeatedLatinMotif(in: key),
+           motif.count <= lyricRepeatedIntroFillerMaxKeyCharacters {
+            return motif
+        }
+        guard key.count <= lyricRepeatedIntroFillerMaxKeyCharacters else { return nil }
+        return key
+    }
+
+    private static func repeatedLatinMotif(in key: String) -> String? {
+        let characters = Array(key)
+        guard characters.count >= lyricRepeatedIntroFillerMinKeyCharacters * 2 else { return nil }
+        for length in lyricRepeatedIntroFillerMinKeyCharacters...(characters.count / 2) {
+            guard characters.count.isMultiple(of: length) else { continue }
+            let motif = String(characters[..<length])
+            let repeated = String(repeating: motif, count: characters.count / length)
+            if repeated == key { return motif }
+        }
+        return nil
+    }
+
+    private static func isHanOnlyLyricCueText(_ text: String) -> Bool {
+        var count = 0
+        for scalar in text.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                continue
+            }
+            guard isHanScalar(scalar) else { return false }
+            count += 1
+        }
+        return count >= lyricIntroCreditNameMinVisibleChars
+            && count <= lyricIntroCreditNameMaxVisibleChars
+    }
+
+    private static func isHanScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3400...0x4DBF).contains(scalar.value)
+            || (0x4E00...0x9FFF).contains(scalar.value)
+            || (0xF900...0xFAFF).contains(scalar.value)
+    }
+
+    private static func suppressLyricFillerLoopCues(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        guard cues.count >= 2 else { return cues }
+        var output: [SubtitleCue] = []
+        output.reserveCapacity(cues.count)
+        var index = 0
+        var removedAny = false
+
+        while index < cues.count {
+            if lyricFillerCueStats(cues[index].text).hasOutroBoilerplate {
+                index += 1
+                removedAny = true
+                continue
+            }
+            guard isLyricFillerLoopCue(cues[index]) else {
+                output.append(cues[index])
+                index += 1
+                continue
+            }
+
+            var end = index + 1
+            var fillerTokenCount = lyricFillerCueStats(cues[index].text).fillerTokenCount
+            while end < cues.count {
+                let gap = cueStartSeconds(cues[end]) - cueEndSeconds(cues[end - 1])
+                guard gap <= lyricFillerLoopMaxGapSeconds, isLyricFillerLoopCue(cues[end]) else {
+                    break
+                }
+                fillerTokenCount += lyricFillerCueStats(cues[end].text).fillerTokenCount
+                end += 1
+            }
+
+            let duration = cueEndSeconds(cues[end - 1]) - cueStartSeconds(cues[index])
+            let shouldDrop = (
+                duration >= lyricFillerLoopMinDurationSeconds
+                    && fillerTokenCount >= lyricFillerLoopMinTokenCount
+            ) || fillerTokenCount >= lyricFillerLoopHighTokenCount
+
+            if shouldDrop {
+                index = end
+                removedAny = true
+            } else {
+                output.append(contentsOf: cues[index..<end])
+                index = end
+            }
+        }
+
+        return removedAny ? output : cues
+    }
+
+    private static func isLyricFillerLoopCue(_ cue: SubtitleCue) -> Bool {
+        let stats = lyricFillerCueStats(cue.text)
+        if stats.hasOutroBoilerplate {
+            return true
+        }
+        if stats.tokenCount > 0, stats.fillerRatio >= 1.0 {
+            return true
+        }
+        return stats.tokenCount >= lyricFillerCueMinTokenCount
+            && stats.fillerRatio >= lyricFillerCueMinRatio
+    }
+
+    private static func lyricFillerCueStats(_ text: String) -> LyricFillerCueStats {
+        let tokens = lyricLatinTokens(text)
+        let fillerCount = tokens.filter { lyricFillerLoopTokens.contains($0) }.count
+        return LyricFillerCueStats(
+            tokenCount: tokens.count,
+            fillerTokenCount: fillerCount,
+            hasOutroBoilerplate: containsLyricOutroBoilerplate(text)
+        )
+    }
+
+    private static func lyricLatinTokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            if (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) {
+                current.unicodeScalars.append(UnicodeScalar(value >= 0x41 && value <= 0x5A ? value + 32 : value)!)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+        return tokens
+    }
+
+    private static func containsLyricOutroBoilerplate(_ text: String) -> Bool {
+        let latinKey = String(text.unicodeScalars.compactMap { scalar -> Character? in
+            let value = scalar.value
+            if (0x41...0x5A).contains(value) {
+                return Character(String(UnicodeScalar(value + 32)!))
+            }
+            if (0x61...0x7A).contains(value) {
+                return Character(String(scalar))
+            }
+            return nil
+        })
+        let cjkKey = normalizedJapaneseLoopText(text)
+        return lyricOutroBoilerplateKeys.contains { key in
+            latinKey.contains(key) || cjkKey.contains(key)
+        }
+    }
+
+    private static func suppressJapaneseLyricInternalDuplicateCueNoise(_ cues: [SubtitleCue]) -> [SubtitleCue] {
+        cues.map { cue in
+            let cleaned = suppressJapaneseLyricInternalDuplicateNoise(in: cue.text)
+            guard cleaned != cue.text else { return cue }
+            return SubtitleCue(
+                index: cue.index,
+                start: cue.start,
+                end: cue.end,
+                text: cleaned,
+                sourceFragments: cue.sourceFragments
+            )
+        }
+    }
+
+    private static func suppressJapaneseLyricInternalDuplicateNoise(in text: String) -> String {
+        let normalizedSeparators = text
+            .replacingOccurrences(of: "，", with: "、")
+            .replacingOccurrences(of: ",", with: "、")
+        let parts = normalizedSeparators
+            .split(separator: "、", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard parts.count >= 2 else { return text }
+
+        var kept: [String] = []
+        var keptNormalized: [String] = []
+        var removedAny = false
+        for part in parts {
+            let normalized = normalizedJapaneseLoopText(part)
+            if isApproximateJapaneseLyricDuplicateSegment(normalized, previous: keptNormalized) {
+                removedAny = true
+                continue
+            }
+            kept.append(part)
+            if !normalized.isEmpty { keptNormalized.append(normalized) }
+        }
+        let cleaned = kept.joined(separator: "、").trimmingCharacters(in: .whitespacesAndNewlines)
+        return removedAny && !cleaned.isEmpty ? cleaned : text
+    }
+
+    private static func isApproximateJapaneseLyricDuplicateSegment(
+        _ candidate: String,
+        previous: [String]
+    ) -> Bool {
+        guard candidate.count >= japaneseLyricDuplicateMinCharacters else { return false }
+        for original in previous.suffix(3) {
+            guard original.count >= japaneseLyricDuplicateMinCharacters,
+                  original != candidate else { continue }
+            let smaller = min(original.count, candidate.count)
+            let larger = max(original.count, candidate.count)
+            guard Double(smaller) / Double(larger) >= 0.55 else { continue }
+            if japaneseCharacterOverlapRatio(original, candidate) >= japaneseLyricDuplicateMinOverlap {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func japaneseCharacterOverlapRatio(_ lhs: String, _ rhs: String) -> Double {
+        let lhsChars = Array(lhs)
+        let rhsChars = Array(rhs)
+        let denominator = min(lhsChars.count, rhsChars.count)
+        guard denominator > 0 else { return 0 }
+        var counts: [Character: Int] = [:]
+        for ch in lhsChars {
+            counts[ch, default: 0] += 1
+        }
+        var overlap = 0
+        for ch in rhsChars {
+            let count = counts[ch, default: 0]
+            guard count > 0 else { continue }
+            overlap += 1
+            counts[ch] = count - 1
+        }
+        return Double(overlap) / Double(denominator)
+    }
+
+    private static func suppressJapaneseLyricLoopFragments(
+        _ fragments: [SubtitleCueSourceFragment]
+    ) -> [SubtitleCueSourceFragment] {
+        guard fragments.count >= japaneseLyricLoopCueMinCount else { return fragments }
+        var output: [SubtitleCueSourceFragment] = []
+        output.reserveCapacity(fragments.count)
+        var fuses: [JapaneseLyricLoopCueFuse] = []
+        var index = 0
+        var removedAny = false
+
+        while index < fragments.count {
+            let normalized = normalizedJapaneseLoopText(fragments[index].text)
+            if let fuseIndex = fuses.firstIndex(where: { fuse in
+                fragments[index].startSeconds <= fuse.suppressUntilSeconds
+                    && isJapaneseLyricLoopFuseCompatible(normalized, characters: fuse.characters)
+            }) {
+                fuses[fuseIndex].suppressUntilSeconds = max(
+                    fuses[fuseIndex].suppressUntilSeconds,
+                    fragments[index].endSeconds + japaneseLoopFuseSeconds
+                )
+                index += 1
+                removedAny = true
+                continue
+            }
+            if let end = japaneseLyricLoopFragmentRunEnd(startingAt: index, in: fragments) {
+                let normalizedRun = fragments[index..<end]
+                    .map { normalizedJapaneseLoopText($0.text) }
+                    .joined()
+                fuses.append(JapaneseLyricLoopCueFuse(
+                    characters: Set(normalizedRun),
+                    suppressUntilSeconds: fragments[end - 1].endSeconds + japaneseLoopFuseSeconds
+                ))
+                index = end
+                removedAny = true
+                continue
+            }
+            output.append(fragments[index])
+            index += 1
+        }
+
+        return removedAny && !output.isEmpty ? output : fragments
+    }
+
+    private static func suppressJapaneseLyricBoilerplateHallucinationFragments(
+        _ fragments: [SubtitleCueSourceFragment]
+    ) -> [SubtitleCueSourceFragment] {
+        guard !fragments.isEmpty else { return fragments }
+        var output: [SubtitleCueSourceFragment] = []
+        output.reserveCapacity(fragments.count)
+        var index = 0
+        var removedAny = false
+
+        while index < fragments.count {
+            if let musicEnd = japaneseLyricIntroMusicHallucinationClusterEnd(startingAt: index, in: fragments) {
+                index = musicEnd
+                removedAny = true
+                continue
+            }
+            if let outroEnd = japaneseLyricOutroHallucinationClusterEnd(startingAt: index, in: fragments) {
+                index = outroEnd
+                removedAny = true
+                continue
+            }
+            if let creditEnd = japaneseLyricCreditHallucinationClusterEnd(startingAt: index, in: fragments) {
+                index = creditEnd
+                removedAny = true
+                continue
+            }
+            output.append(fragments[index])
+            index += 1
+        }
+
+        return removedAny ? output : fragments
+    }
+
+    private static func japaneseLyricIntroMusicHallucinationClusterEnd(
+        startingAt start: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        guard start == 0 else { return nil }
+        var normalized = ""
+        var end = start
+        while end < fragments.count {
+            let fragment = fragments[end]
+            guard fragment.startSeconds <= 20.5 else { break }
+            let token = normalizedLatinCueText(fragment.text)
+            guard ["B", "G", "M", "BG", "GM", "BGM"].contains(token) else { break }
+            normalized += token
+            end += 1
+            if normalized == "BGM" { return end }
+        }
+        return nil
+    }
+
+    private static func normalizedLatinCueText(_ text: String) -> String {
+        String(text.unicodeScalars.compactMap { scalar in
+            let value = scalar.value
+            guard (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) else {
+                return nil
+            }
+            return Character(String(scalar).uppercased())
+        })
+    }
+
+    private static func japaneseLyricOutroHallucinationClusterEnd(
+        startingAt start: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        var normalized = ""
+        let maxEnd = min(fragments.count, start + 4)
+        var end = start
+        while end < maxEnd {
+            normalized += normalizedJapaneseLoopText(fragments[end].text)
+            guard japaneseLyricOutroHallucinationMarkers.contains(where: { marker in
+                marker.hasPrefix(normalized) || normalized.hasPrefix(marker)
+            }) else {
+                return nil
+            }
+            if japaneseLyricOutroHallucinationMarkers.contains(where: { normalized.contains($0) }) {
+                return end + 1
+            }
+            end += 1
+        }
+        return nil
+    }
+
+    private static func japaneseLyricCreditHallucinationClusterEnd(
+        startingAt start: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        var normalized = ""
+        var end = start
+        var sawCreditMarker = false
+        var trailingNameCharacterCount = 0
+        while end < fragments.count {
+            let token = normalizedJapaneseLoopText(fragments[end].text)
+            if sawCreditMarker,
+               end > start,
+               fragments[end].startSeconds - fragments[end - 1].endSeconds > japaneseLyricCreditHallucinationMaxGapSeconds {
+                break
+            }
+            if token.isEmpty, sawCreditMarker {
+                end += 1
+                continue
+            }
+            if isJapaneseLyricCreditHallucinationToken(token) {
+                normalized += token
+                sawCreditMarker = true
+                trailingNameCharacterCount = 0
+                end += 1
+                continue
+            }
+            if sawCreditMarker,
+               token.count <= 2,
+               trailingNameCharacterCount + token.count <= 4 {
+                normalized += token
+                trailingNameCharacterCount += token.count
+                end += 1
+                continue
+            } else {
+                break
+            }
+        }
+        guard end > start else { return nil }
+        let markerCount = japaneseLyricCreditHallucinationMarkers.filter { normalized.contains($0) }.count
+        guard markerCount > 0, normalized.count >= 2 else { return nil }
+        return end
+    }
+
+    private static func isJapaneseLyricCreditHallucinationToken(_ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        if japaneseLyricCreditHallucinationTokens.contains(token) { return true }
+        return token.count <= 8
+            && japaneseLyricCreditHallucinationMarkers.contains(where: { token.contains($0) })
+    }
+
+    private static func isJapaneseLyricLoopFuseCompatible(
+        _ normalized: String,
+        characters: Set<Character>
+    ) -> Bool {
+        !normalized.isEmpty && normalized.allSatisfy { characters.contains($0) }
+    }
+
+    private static func japaneseLyricLoopFragmentRunEnd(
+        startingAt start: Int,
+        in fragments: [SubtitleCueSourceFragment]
+    ) -> Int? {
+        var latestSuspiciousEnd: Int?
+        var end = start
+        while end < fragments.count {
+            if end > start {
+                let gap = fragments[end].startSeconds - fragments[end - 1].endSeconds
+                if gap > japaneseLyricLoopCueMaxGapSeconds { break }
+            }
+            let span = fragments[end].endSeconds - fragments[start].startSeconds
+            if span > japaneseLyricLoopCueMaxSpanSeconds { break }
+
+            let count = end - start + 1
+            if count >= japaneseLyricLoopCueMinCount,
+               isSuspiciousJapaneseLyricLoopFragmentRun(Array(fragments[start...end])) {
+                latestSuspiciousEnd = end + 1
+            }
+            end += 1
+        }
+        return latestSuspiciousEnd
+    }
+
+    private static func isSuspiciousJapaneseLyricLoopFragmentRun(
+        _ fragments: [SubtitleCueSourceFragment]
+    ) -> Bool {
+        let normalizedParts = fragments.map { normalizedJapaneseLoopText($0.text) }
+        let normalized = normalizedParts.joined()
+        guard normalized.count >= japaneseLyricLoopCueMinNormalizedCharacters else { return false }
+
+        let uniqueRatio = Double(Set(normalized).count) / Double(normalized.count)
+        guard uniqueRatio <= japaneseLyricLoopCueMaxUniqueCharacterRatio else { return false }
+        guard repeatedBigramExcess(in: normalized) >= japaneseLyricLoopCueMinRepeatedBigramExcess else {
+            return false
+        }
+
+        let longSparseFragmentCount = fragments.filter { fragment in
+            let duration = fragment.endSeconds - fragment.startSeconds
+            return duration >= japaneseLyricLoopCueLongSparseSeconds
+                && SubtitleTimingPlanner.visibleCharacters(fragment.text) <= hardMaximumCJKUnits
+        }.count
+
+        // Fragment-level words from whisper.cpp naturally contain particles like を / に / が.
+        // Treating those as malformed line starts deletes legitimate repeated choruses. Dense
+        // whole-phrase loops are handled after cue formation, where we can preserve readable lyric
+        // lead-in lines instead of dropping an entire chorus island too early.
+        return longSparseFragmentCount > 0
+    }
+
+    private static func japaneseLyricLoopCueRunEnd(startingAt start: Int, in cues: [SubtitleCue]) -> Int? {
+        var latestSuspiciousEnd: Int?
+        var end = start
+        while end < cues.count {
+            if end > start {
+                let gap = cueStartSeconds(cues[end]) - cueEndSeconds(cues[end - 1])
+                if gap > japaneseLyricLoopCueMaxGapSeconds { break }
+            }
+            let span = cueEndSeconds(cues[end]) - cueStartSeconds(cues[start])
+            if span > japaneseLyricLoopCueMaxSpanSeconds { break }
+
+            let count = end - start + 1
+            if count >= japaneseLyricLoopCueMinCount,
+               isSuspiciousJapaneseLyricLoopCueRun(Array(cues[start...end])) {
+                latestSuspiciousEnd = end + 1
+            }
+            end += 1
+        }
+        return latestSuspiciousEnd
+    }
+
+    private static func isSuspiciousJapaneseLyricLoopCueRun(_ cues: [SubtitleCue]) -> Bool {
+        let normalizedParts = cues.map { normalizedJapaneseLoopText($0.text) }
+        let normalized = normalizedParts.joined()
+        guard normalized.count >= japaneseLyricLoopCueMinNormalizedCharacters else { return false }
+
+        let uniqueRatio = Double(Set(normalized).count) / Double(normalized.count)
+        guard uniqueRatio <= japaneseLyricLoopCueMaxUniqueCharacterRatio else { return false }
+        guard repeatedBigramExcess(in: normalized) >= japaneseLyricLoopCueMinRepeatedBigramExcess else {
+            return false
+        }
+
+        let longSparseCueCount = cues.filter { cue in
+            let duration = cueEndSeconds(cue) - cueStartSeconds(cue)
+            return duration >= japaneseLyricLoopCueLongSparseSeconds
+                && SubtitleTimingPlanner.visibleCharacters(cue.text) <= hardMaximumCJKUnits
+        }.count
+
+        // Legitimate choruses can repeat short, particle-heavy phrases many times. Treat approximate
+        // repetition as hallucination only when a short text is stretched across an implausibly long
+        // span or a longer phrase densely repeats far beyond normal chorus cadence.
+        return longSparseCueCount > 0 || hasDominantRepeatedJapaneseLyricSubstring(normalized)
+    }
+
+    private static func hasDominantRepeatedJapaneseLyricSubstring(_ text: String) -> Bool {
+        dominantRepeatedJapaneseLyricSubstring(in: text) != nil
+    }
+
+    private static func dominantRepeatedJapaneseLyricSubstring(in text: String) -> String? {
+        let characters = Array(text)
+        guard characters.count >= japaneseLyricDenseLoopMinCharacters else { return nil }
+        let maxLength = min(japaneseLyricDenseLoopMaxSubstringCharacters, characters.count / 2)
+        guard maxLength >= japaneseLyricDenseLoopMinSubstringCharacters else { return nil }
+
+        for length in stride(from: maxLength, through: japaneseLyricDenseLoopMinSubstringCharacters, by: -1) {
+            var counts: [String: Int] = [:]
+            for index in 0...(characters.count - length) {
+                let substring = String(characters[index..<(index + length)])
+                guard Set(substring).count >= 3 else { continue }
+                counts[substring, default: 0] += 1
+            }
+            if let match = counts.max(by: { $0.value < $1.value }),
+               match.value >= japaneseLyricDenseLoopMinOccurrences,
+               Double(length * match.value) / Double(characters.count) >= japaneseLyricDenseLoopMinCoverage {
+                return match.key
+            }
+        }
+        return nil
+    }
+
+    private static func japaneseLyricDenseLoopPreservePrefixCount(_ cues: [SubtitleCue]) -> Int {
+        let normalized = cues.map { normalizedJapaneseLoopText($0.text) }.joined()
+        guard let motif = dominantRepeatedJapaneseLyricSubstring(in: normalized) else { return 0 }
+        let motifPrefix = String(motif.prefix(min(8, motif.count)))
+        guard motifPrefix.count >= japaneseLyricDenseLoopMinSubstringCharacters else { return 0 }
+        for (offset, cue) in cues.enumerated() {
+            if normalizedJapaneseLoopText(cue.text).contains(motifPrefix) {
+                return offset
+            }
+        }
+        return 0
+    }
+
+    private static func repeatedBigramExcess(in text: String) -> Int {
+        let characters = Array(text)
+        guard characters.count >= 2 else { return 0 }
+        var counts: [String: Int] = [:]
+        for index in 0..<(characters.count - 1) {
+            counts[String(characters[index...index + 1]), default: 0] += 1
+        }
+        return counts.values.reduce(0) { total, count in
+            total + max(0, count - 1)
+        }
+    }
+
+    private static func cueStartSeconds(_ cue: SubtitleCue) -> Double {
+        cue.sourceFragments.first?.startSeconds ?? 0
+    }
+
+    private static func cueEndSeconds(_ cue: SubtitleCue) -> Double {
+        cue.sourceFragments.last?.endSeconds ?? cueStartSeconds(cue)
     }
 
     private static func repeatedJapaneseLoopMatch(
@@ -2327,13 +3938,24 @@ public enum WhisperCueRetimer {
     }
 }
 
+/// 本地 ASR 生成结果：源 SRT 路径 + 转写整体置信度（用于「识别质量较低」提示）。
+public struct GeneratedLocalASRSource: Sendable {
+    public let url: URL
+    public let confidence: LocalASRConfidenceSummary?
+
+    public init(url: URL, confidence: LocalASRConfidenceSummary?) {
+        self.url = url
+        self.confidence = confidence
+    }
+}
+
 public protocol LocalASRSubtitleGenerator: Sendable {
     func generateSourceSubtitle(
         videoFile: URL,
         languageCode: String,
         control: TaskControlToken?,
         progress: @escaping @Sendable (ASRProgress) -> Void
-    ) async throws -> URL
+    ) async throws -> GeneratedLocalASRSource
 }
 
 public enum ASRPromptBuilder {
@@ -2356,13 +3978,19 @@ public enum ASRPromptBuilder {
         return nil
     }
 
-    public static func defaultPrompt(videoURL: URL, languageCode: String) -> String? {
+    public static func defaultPrompt(
+        videoURL: URL,
+        languageCode: String,
+        recognitionProfile: ASRRecognitionProfile = .speech
+    ) -> String? {
         let title = videoURL.deletingPathExtension().lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
         var parts: [String] = []
         // CJK：前置标点范例，引导 whisper.cpp 输出句末标点（分段强边界依赖它）。
-        if language.lowercased() != "auto", let exemplar = punctuationExemplar(forLanguage: language) {
+        if recognitionProfile == .speech,
+           language.lowercased() != "auto",
+           let exemplar = punctuationExemplar(forLanguage: language) {
             parts.append(exemplar)
         }
         if !title.isEmpty {
@@ -2372,6 +4000,55 @@ public enum ASRPromptBuilder {
             parts.append("language=\(language)")
         }
         return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
+
+    public static func maxTextContextTokens(
+        videoURL: URL,
+        languageCode: String,
+        recognitionProfile: ASRRecognitionProfile = .speech
+    ) -> Int? {
+        if recognitionProfile == .lyricsHighQuality {
+            return 0
+        }
+        let title = videoURL.deletingPathExtension().lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !title.isEmpty else { return nil }
+        let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cjkLanguage = language.hasPrefix("ja")
+            || language.hasPrefix("ko")
+            || language.hasPrefix("zh")
+            || language.hasPrefix("yue")
+            || language.hasPrefix("cmn")
+        guard cjkLanguage else { return nil }
+        let strongMusicMarkers = [
+            "official music video", "music video", "official mv", " mv", "mv ",
+            "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ"
+        ]
+        return strongMusicMarkers.contains(where: { title.contains($0) }) ? 0 : nil
+    }
+
+    public static func recognitionProfile(videoURL: URL, languageCode: String) -> ASRRecognitionProfile {
+        let title = videoURL.deletingPathExtension().lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !title.isEmpty else { return .speech }
+        let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let supportedLyricsLanguage = language.hasPrefix("ja")
+            || language.hasPrefix("ko")
+            || language.hasPrefix("zh")
+            || language.hasPrefix("yue")
+            || language.hasPrefix("cmn")
+            || language.hasPrefix("en")
+            || language.hasPrefix("fr")
+            || language.hasPrefix("es")
+            || language.hasPrefix("it")
+        guard supportedLyricsLanguage || language == "auto" else { return .speech }
+        let strongMusicMarkers = [
+            "official music video", "music video", "official mv", " mv", "mv ",
+            "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ"
+        ]
+        return strongMusicMarkers.contains(where: { title.contains($0) }) ? .lyricsHighQuality : .speech
     }
 }
 
@@ -2663,12 +4340,18 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         languageCode: String,
         control: TaskControlToken?,
         progress: @escaping @Sendable (ASRProgress) -> Void
-    ) async throws -> URL {
+    ) async throws -> GeneratedLocalASRSource {
         try Task.checkCancellation()
         try await control?.gate()
         try FileManager.default.createDirectory(at: workDirectoryURL, withIntermediateDirectories: true)
 
+        let recognitionProfile = ASRPromptBuilder.recognitionProfile(videoURL: videoFile, languageCode: languageCode)
         let prompt = promptProvider?(videoFile, languageCode)
+        let maxTextContextTokens = ASRPromptBuilder.maxTextContextTokens(
+            videoURL: videoFile,
+            languageCode: languageCode,
+            recognitionProfile: recognitionProfile
+        )
         let audioURL = audioURL(for: videoFile, languageCode: languageCode)
         if FileManager.default.fileExists(atPath: audioURL.path) {
             progress(ASRProgress(phase: .audioExtract, completedUnits: 1, totalUnits: 1))
@@ -2682,9 +4365,17 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             languageCode: languageCode,
             modelID: modelID,
             prompt: prompt,
+            recognitionProfile: recognitionProfile,
+            maxTextContextTokens: maxTextContextTokens,
             vadEnabled: true,
             wordTimestamps: true,
-            cacheKey: cacheKey(for: videoFile, languageCode: languageCode, prompt: prompt)
+            cacheKey: cacheKey(
+                for: videoFile,
+                languageCode: languageCode,
+                prompt: prompt,
+                recognitionProfile: recognitionProfile,
+                maxTextContextTokens: maxTextContextTokens
+            )
         )
         let transcript = try await recognizer.transcribe(request, control: control, progress: progress)
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 0, totalUnits: 1))
@@ -2700,7 +4391,9 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             audioActivity: audioActivity
         )
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 1, totalUnits: 1))
-        return outputURL
+        return GeneratedLocalASRSource(
+            url: outputURL,
+            confidence: LocalASRConfidence.assess(words: transcript.words))
     }
 
     private func audioActivityIfNeeded(
@@ -2737,8 +4430,14 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             .appendingPathComponent("\(stableFileStem(audioSeed(videoFile: videoFile, languageCode: languageCode))).wav", isDirectory: false)
     }
 
-    private func cacheKey(for videoFile: URL, languageCode: String, prompt: String?) -> String {
-        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\n\(prompt ?? "")"))"
+    private func cacheKey(
+        for videoFile: URL,
+        languageCode: String,
+        prompt: String?,
+        recognitionProfile: ASRRecognitionProfile,
+        maxTextContextTokens: Int?
+    ) -> String {
+        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\n\(prompt ?? "")\nrp=\(recognitionProfile.rawValue)\nmc=\(maxTextContextTokens.map(String.init) ?? "default")"))"
     }
 
     private func audioSeed(videoFile: URL, languageCode: String) -> String {
@@ -2797,7 +4496,11 @@ public enum LocalASRGeneratorFactory {
             recognizer: recognizer,
             modelID: modelID,
             promptProvider: { videoURL, languageCode in
-                ASRPromptBuilder.defaultPrompt(videoURL: videoURL, languageCode: languageCode)
+                ASRPromptBuilder.defaultPrompt(
+                    videoURL: videoURL,
+                    languageCode: languageCode,
+                    recognitionProfile: ASRPromptBuilder.recognitionProfile(videoURL: videoURL, languageCode: languageCode)
+                )
             }
         )
     }
@@ -2901,6 +4604,9 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
         if let prompt = request.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
            !prompt.isEmpty {
             arguments.append(contentsOf: ["--prompt", prompt])
+        }
+        if let maxTextContextTokens = request.maxTextContextTokens {
+            arguments.append(contentsOf: ["-mc", String(max(0, maxTextContextTokens))])
         }
         self.arguments = arguments
     }
@@ -3145,10 +4851,13 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         let tokens = (segment["tokens"] as? [[String: Any]])
             ?? (segment["words"] as? [[String: Any]])
             ?? []
-        return tokens.compactMap { token in
-            guard let text = cleanText(token["text"] as? String),
+        var entries: [(word: ASRWord, dtwStart: Double?)] = []
+        var mergeEligible: [Bool] = []
+        for token in tokens {
+            let rawText = token["text"] as? String ?? ""
+            guard let text = cleanText(rawText),
                   let interval = interval(in: token, offsetValuesAreMilliseconds: true) else {
-                return nil
+                continue
             }
             let word = ASRWord(
                 text: text,
@@ -3163,8 +4872,73 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
             } else {
                 dtwStart = nil
             }
-            return (word, dtwStart)
+            let startsNewWhisperTokenWord = rawText.first?.isWhitespace == true
+                && !parserContainsCJKOrHangul(text)
+            if let previous = entries.last,
+               shouldMergeLatinParserToken(
+                previousText: previous.word.text,
+                previousMergeEligible: mergeEligible.last == true,
+                currentText: text,
+                rawCurrentText: rawText
+               ) {
+                let mergedWord = ASRWord(
+                    text: previous.word.text + text,
+                    startSeconds: previous.word.startSeconds,
+                    endSeconds: max(previous.word.endSeconds, word.endSeconds),
+                    probability: min(previous.word.probability ?? 1.0, word.probability ?? 1.0)
+                )
+                entries[entries.count - 1] = (mergedWord, previous.dtwStart ?? dtwStart)
+                mergeEligible[mergeEligible.count - 1] = true
+            } else {
+                entries.append((word, dtwStart))
+                mergeEligible.append(startsNewWhisperTokenWord)
+            }
         }
+        return entries
+    }
+
+    private func shouldMergeLatinParserToken(
+        previousText: String,
+        previousMergeEligible: Bool,
+        currentText: String,
+        rawCurrentText: String
+    ) -> Bool {
+        guard previousMergeEligible else { return false }
+        guard rawCurrentText.first?.isWhitespace != true else { return false }
+        let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !previous.isEmpty, !current.isEmpty else { return false }
+        if parserContainsCJKOrHangul(previous) || parserContainsCJKOrHangul(current) { return false }
+        if parserIsLatinJoinPunctuation(current) { return true }
+        if parserIsLatinApostrophePrefix(previous) && parserContainsLetterOutsideCJK(current) { return true }
+        return parserContainsLetterOutsideCJK(previous) && parserContainsLetterOutsideCJK(current)
+    }
+
+    private func parserIsLatinJoinPunctuation(_ text: String) -> Bool {
+        text.allSatisfy { character in
+            character == "'" || character == "’" || character == "." || character == "," || character == "!" || character == "?" || character == ":" || character == ";"
+        } || (text.first == "'" || text.first == "’")
+    }
+
+    private func parserIsLatinApostrophePrefix(_ text: String) -> Bool {
+        text.allSatisfy { $0 == "'" || $0 == "’" }
+    }
+
+    private func parserContainsLetterOutsideCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            CharacterSet.letters.contains(scalar) && !parserIsCJKOrHangulScalar(scalar)
+        }
+    }
+
+    private func parserContainsCJKOrHangul(_ text: String) -> Bool {
+        text.unicodeScalars.contains { parserIsCJKOrHangulScalar($0) }
+    }
+
+    private func parserIsCJKOrHangulScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3040...0x30FF).contains(Int(scalar.value))
+            || (0x3400...0x4DBF).contains(Int(scalar.value))
+            || (0x4E00...0x9FFF).contains(Int(scalar.value))
+            || (0xAC00...0xD7A3).contains(Int(scalar.value))
     }
 
     /// Rewrites word start/end using DTW token points: word i starts at its DTW point and ends at

@@ -109,6 +109,58 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         return url
     }
 
+    func testTranslateDropsObviousCJKRomanizedGarbageBeforeModelInput() async throws {
+        let source = try writeSRT("dirty.ja.srt", [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "好きなことを続けること"),
+            SubtitleCue(index: 2, start: "00:00:02,000", end: "00:00:03,000", text: "ni"),
+            SubtitleCue(index: 3, start: "00:00:03,000", end: "00:00:04,000", text: "dare ni"),
+            SubtitleCue(index: 4, start: "00:00:04,000", end: "00:00:05,000", text: "それは楽しいだけじゃない"),
+            SubtitleCue(index: 5, start: "00:00:05,000", end: "00:00:06,000", text: "carano"),
+            SubtitleCue(index: 6, start: "00:00:06,000", end: "00:00:07,000", text: "本当にできる")
+        ])
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, userContent, _, _ in
+                XCTAssertFalse(userContent.contains("ni"))
+                XCTAssertFalse(userContent.contains("dare"))
+                XCTAssertFalse(userContent.contains("carano"))
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 3)
+        XCTAssertEqual(result.map(\.start), ["00:00:01,000", "00:00:04,000", "00:00:06,000"])
+    }
+
+    func testSanitizedSourceCuesForTranslationStripsJapaneseRomajiGlosses() {
+        let cues = [
+            SubtitleCue(index: 1, start: "00:00:00,790", end: "00:00:05,620", text: "沈むように溶けていくように (Shizumu you ni tokete yuku you ni)"),
+            SubtitleCue(index: 2, start: "00:00:08,500", end: "00:00:14,900", text: "二人だけの空が広がる夜に (Futari dake no sora ga hirogaru you ni)")
+        ]
+
+        let sanitized = ConfiguredTranslator.sanitizedSourceCuesForTranslation(
+            cues,
+            sourceLanguageCode: "ja"
+        )
+
+        XCTAssertEqual(sanitized.map(\.text), [
+            "沈むように溶けていくように",
+            "二人だけの空が広がる夜に"
+        ])
+        XCTAssertEqual(sanitized.map(\.index), [1, 2])
+        XCTAssertEqual(sanitized.map(\.start), ["00:00:00,790", "00:00:08,500"])
+    }
+
     // MARK: - ASR 重分段
 
     private func asrCues() -> [SubtitleCue] {
@@ -279,7 +331,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                         reachedOutputLimit: false)
                 }
                 // 摘要分析请求（smart）：返回最简 JSON。
-                if let system, system.contains("字幕内容规划器") {
+                if let system, system.contains("字幕流水线规划器") {
                     XCTAssertTrue(system.contains("- songLyrics："))
                     XCTAssertTrue(system.contains("意象"))
                     XCTAssertTrue(system.contains("- lectureCourse："))
@@ -311,7 +363,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             appleTranslationExecutor: DefaultAppleTranslationExecutor(),
             modelSender: { _, system, userContent, _, _ in
                 let system = system ?? ""
-                if system.contains("字幕内容规划器") {
+                if system.contains("字幕流水线规划器") {
                     return ModelReply(
                         text: #"{"summary":"日语歌曲歌词","context":"MV 演唱内容","preset":"songLyrics"}"#,
                         reachedOutputLimit: false
@@ -344,12 +396,12 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         let flags = await promptFlags.snapshot()
         XCTAssertTrue(flags.segment, "songLyrics advice 应先于 local-ASR 重分段生效")
         XCTAssertTrue(flags.translation, "同一个 songLyrics advice 应继续用于翻译提示词")
-        let rewrittenSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
-        XCTAssertEqual(rewrittenSource.map(\.text).prefix(3), [
-            "青い世界",
-            "好きなものを好きだという",
-            "怖くて仕方ないけど"
-        ])
+        let unchangedSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
+        XCTAssertEqual(
+            unchangedSource.map(\.text),
+            japaneseLyricsCues().map(\.text),
+            "LLM 重分段只能作为翻译内存视图，不能写回污染 local-ASR 源字幕"
+        )
     }
 
     func testTranslateUsesLyricsFallbackForLocalASRMusicFilenameWhenSmartDisabled() async throws {
@@ -360,7 +412,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             appleTranslationExecutor: DefaultAppleTranslationExecutor(),
             modelSender: { _, system, userContent, _, _ in
                 let system = system ?? ""
-                XCTAssertFalse(system.contains("字幕内容规划器"), "smart 关闭时兜底不应额外请求增强分析")
+                XCTAssertFalse(system.contains("字幕流水线规划器"), "smart 关闭时兜底不应额外请求增强分析")
                 if system.contains("待断句文本") {
                     await promptFlags.markLyricsSegmentPrompt(
                         system.contains("歌词行") && !system.contains("按完整句子重新断行")
@@ -401,7 +453,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             appleTranslationExecutor: DefaultAppleTranslationExecutor(),
             modelSender: { _, system, userContent, _, _ in
                 let system = system ?? ""
-                if system.contains("字幕内容规划器") {
+                if system.contains("字幕流水线规划器") {
                     return ModelReply(
                         text: #"{"summary":"两位音乐人的访谈对话","preset":"interviewConversation","sourceLanguageCode":"ja"}"#,
                         reachedOutputLimit: false
@@ -445,7 +497,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             appleTranslationExecutor: DefaultAppleTranslationExecutor(),
             modelSender: { _, system, userContent, _, _ in
                 let system = system ?? ""
-                if system.contains("字幕内容规划器") {
+                if system.contains("字幕流水线规划器") {
                     return ModelReply(
                         text: #"{"summary":"动画对白片段","preset":"anime","sourceLanguageCode":"ja"}"#,
                         reachedOutputLimit: false
@@ -491,7 +543,7 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
                     _ = await didSegment.next()
                     return ModelReply(text: "1|\(userContent).", reachedOutputLimit: false)
                 }
-                if (system ?? "").contains("字幕内容规划器") {
+                if (system ?? "").contains("字幕流水线规划器") {
                     return ModelReply(text: #"{"summary":"测试","preset":"general"}"#, reachedOutputLimit: false)
                 }
                 return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
@@ -609,8 +661,34 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(output.map(\.text), input.map(\.text), "对齐失败应原样返回")
     }
 
-    func testTranslateResegmentsLocalASRSourceWithoutSmartAndWritesBack() async throws {
-        // 本地 Whisper 源字幕（.local-asr.ja.srt）即使 smart 关闭也应重分段，并把句子级结果写回源文件。
+    func testResegmentSongLyricsFallsBackOnInternalDuplicateNoise() async throws {
+        let input = [
+            SubtitleCue(index: 1, start: "00:01:59,880", end: "00:02:02,000", text: "好きなことを続けること、"),
+            SubtitleCue(index: 2, start: "00:02:02,000", end: "00:02:04,618", text: "好こときをな続ことける、そ"),
+            SubtitleCue(index: 3, start: "00:02:04,618", end: "00:02:08,000", text: "れは楽しいだけじゃない")
+        ]
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(
+                    text: "1|好きなことを続けること、好こときをな続ことける、それは楽しいだけじゃない",
+                    reachedOutputLimit: false
+                )
+            }
+        )
+
+        let output = try await translator.resegmentForReadability(
+            input,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            preset: .songLyrics
+        )
+
+        XCTAssertEqual(output.map(\.text), input.map(\.text), "歌词重分段发现 cue 内乱码重复时应回退原边界")
+    }
+
+    func testTranslateResegmentsLocalASRSourceWithoutSmartButDoesNotOverwriteSource() async throws {
+        // 本地 Whisper 源字幕可以在翻译内存视图里重分段，但不能把 LLM 结果写回源 .local-asr.ja.srt。
         let source = try writeSRT("clip.local-asr.ja.srt", japaneseAsrCues())
         let settings = cloudSettings()           // smartTranslationPromptsEnabled = false
         let translator = ConfiguredTranslator(
@@ -630,9 +708,8 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
             control: nil, progress: { _ in })
 
-        let rewrittenSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
-        XCTAssertEqual(rewrittenSource.count, 4, "源 .local-asr.ja.srt 应被写回为 4 条整句")
-        XCTAssertEqual(rewrittenSource[2].text, "顔洗ってえらい。")
+        let unchangedSource = parseSRT(try String(contentsOf: source, encoding: .utf8))
+        XCTAssertEqual(unchangedSource.map(\.text), japaneseAsrCues().map(\.text))
         let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
         XCTAssertEqual(result.count, 4, "译文应基于句子级源字幕，4 条")
     }

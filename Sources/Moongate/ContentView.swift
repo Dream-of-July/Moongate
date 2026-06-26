@@ -323,8 +323,8 @@ struct ContentView: View {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
-                    section(localizer.t(L.Ready.subtitleSourceSection)) {
-                        primarySubtitleSourceRows(model.availableSubtitleChoices(for: info))
+                    section(localizer.t(L.Ready.subtitleLanguageSection)) {
+                        subtitleLanguageRows(info)
                     }
                     section(localizer.t(L.Ready.subtitleOutputSection)) {
                         subtitleOutputRows(info)
@@ -500,44 +500,76 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Language-first subtitle selection
+
+    /// Main area: the single recommended language + an explanation that the source is auto-chosen,
+    /// a "no subtitles" option, and a disclosure for other languages. Technical source details
+    /// (official / auto / local recognition badges) only appear once expanded.
     @ViewBuilder
-    private func primarySubtitleSourceRows(_ subtitles: [SubtitleChoice]) -> some View {
-        let noneBinding = primarySubtitleTrackBinding(nil)
+    private func subtitleLanguageRows(_ info: VideoInfo) -> some View {
+        let recommended = model.recommendedLanguage(for: info)
+        let others = model.otherLanguages(for: info)
+        if let recommended {
+            subtitleLanguageRow(recommended, isRecommended: true)
+            Text(localizer.t(L.Ready.autoSourceExplanation))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
+        }
+        Divider().padding(.leading, 12)
         primarySubtitleSourceRow(
             title: localizer.t(L.Ready.noSubtitleSource),
-            detail: subtitles.isEmpty || subtitles.allSatisfy { $0.sourceKind == .localASR }
-                ? localizer.t(L.Ready.noSubtitles) : nil,
+            detail: recommended == nil ? localizer.t(L.Ready.noSubtitles) : nil,
             badge: nil,
             isSelected: model.primarySubtitleTrackID == nil,
-            action: { noneBinding.wrappedValue = true }
+            action: { model.primarySubtitleTrackID = nil }
         )
-        if !subtitles.isEmpty {
-            Divider().padding(.leading, 12)
-        }
-        ForEach(Array(subtitles.enumerated()), id: \.element.id) { index, subtitle in
-            let binding = primarySubtitleTrackBinding(subtitle.id)
-            let isLocalASRUnavailable = subtitle.sourceKind == .localASR && !model.localASRReadyForDownload
-            primarySubtitleSourceRow(
-                title: subtitle.label,
-                detail: subtitle.sourceKind == .localASR
-                    ? localizer.t(isLocalASRUnavailable ? L.Ready.localASRSetupRequired : L.Ready.localASRHint)
-                    : nil,
-                badge: subtitleSourceBadge(subtitle),
-                isSelected: model.primarySubtitleTrackID == subtitle.id,
-                trailingActionLabel: isLocalASRUnavailable ? localizer.t(L.Ready.localASRConfigure) : nil,
-                action: {
-                    if isLocalASRUnavailable {
-                        model.openLocalASRSettings()
-                    } else {
-                        binding.wrappedValue = true
+        if !others.isEmpty {
+            DisclosureGroup(isExpanded: $model.languageSectionExpanded) {
+                ForEach(Array(others.enumerated()), id: \.element.id) { index, language in
+                    subtitleLanguageRow(language, isRecommended: false)
+                    if index < others.count - 1 {
+                        Divider().padding(.leading, 12)
                     }
                 }
-            )
-            .accessibilityLabel(subtitleAccessibilityLabel(subtitle))
-            if index < subtitles.count - 1 {
-                Divider().padding(.leading, 12)
+            } label: {
+                Text(localizer.t(L.Ready.moreLanguages))
+                    .font(.callout)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
         }
+    }
+
+    /// One language row: display label + optional "recommended" badge; the technical source badge
+    /// (auto / local recognition) only shows in the expanded list, never for the recommended row.
+    @ViewBuilder
+    private func subtitleLanguageRow(_ language: SubtitleLanguageChoice, isRecommended: Bool) -> some View {
+        let needsLocalASRConfig = !language.hasManualTrack && !language.hasAutoTrack
+            && language.supportsLocalASR && !model.localASRReadyForDownload
+        primarySubtitleSourceRow(
+            title: language.displayLabel,
+            detail: nil,
+            badge: isRecommended ? localizer.t(L.Ready.recommendedBadge) : subtitleLanguageSourceBadge(language),
+            isSelected: model.isLanguageSelected(language),
+            trailingActionLabel: needsLocalASRConfig ? localizer.t(L.Ready.localASRConfigure) : nil,
+            action: {
+                if needsLocalASRConfig {
+                    model.openLocalASRSettings()
+                } else {
+                    model.selectLanguage(language)
+                }
+            }
+        )
+    }
+
+    /// Technical source badge for the expanded list: prefers manual (none), then auto, then local.
+    private func subtitleLanguageSourceBadge(_ language: SubtitleLanguageChoice) -> String? {
+        if language.hasManualTrack { return nil }
+        if language.hasAutoTrack { return localizer.t(L.Ready.autoGenerated) }
+        if language.supportsLocalASR { return localizer.t(L.Ready.localASR) }
+        return nil
     }
 
     private func primarySubtitleSourceRow(
@@ -589,41 +621,6 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityHint(localizer.t(L.Ready.subtitleSelectHint))
         .accessibilityValue(isSelected ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
-    }
-
-    private func subtitleSourceBadge(_ subtitle: SubtitleChoice) -> String? {
-        if subtitle.sourceKind == .localASR {
-            return localizer.t(L.Ready.localASR)
-        }
-        if subtitle.isAuto {
-            return localizer.t(L.Ready.autoGenerated)
-        }
-        return nil
-    }
-
-    private func subtitleAccessibilityLabel(_ subtitle: SubtitleChoice) -> String {
-        if subtitle.sourceKind == .localASR {
-            return localizer.t(L.Ready.localASRSubtitleLabel, subtitle.label)
-        }
-        if subtitle.isAuto {
-            return localizer.t(L.Ready.autoGeneratedSubtitleLabel, subtitle.label)
-        }
-        return subtitle.label
-    }
-
-    private func primarySubtitleTrackBinding(_ id: String?) -> Binding<Bool> {
-        Binding(
-            get: {
-                if let id {
-                    return model.primarySubtitleTrackID == id
-                }
-                return model.primarySubtitleTrackID == nil
-            },
-            set: { isOn in
-                guard isOn else { return }
-                model.primarySubtitleTrackID = id
-            }
-        )
     }
 
     /// 「字幕输出」分组：依赖上方选择一个主字幕来源；只有翻译类模式需要翻译服务。

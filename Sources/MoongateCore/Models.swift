@@ -275,6 +275,83 @@ public struct SubtitleChoice: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Upper-level language aggregation consumed by the ready page UI. A language groups all of its
+/// technical tracks (manual / platform-auto / local ASR) so users pick a language, not a source.
+/// Pure derived view: never persisted, never sent to yt-dlp directly.
+public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
+    /// Normalized language code (lowercased, first `-` segment), e.g. "ja". Also the identity.
+    public let languageCode: String
+    /// Display label, taken from the best (first non-localASR) track in the group.
+    public let displayLabel: String
+    /// Tracks for this language, sorted manual → platformAuto → localASR.
+    public let tracks: [SubtitleChoice]
+
+    public var id: String { languageCode }
+
+    public var hasManualTrack: Bool { tracks.contains { $0.sourceKind == .manual } }
+    public var hasAutoTrack: Bool { tracks.contains { $0.sourceKind == .platformAuto } }
+    /// Whether the group carries a local-ASR option (independent of runtime readiness).
+    public var supportsLocalASR: Bool { tracks.contains { $0.sourceKind == .localASR } }
+    /// Preferred technical track: manual > auto > localASR (tracks are pre-sorted).
+    public var preferredTrack: SubtitleChoice? { tracks.first }
+
+    public init(languageCode: String, displayLabel: String, tracks: [SubtitleChoice]) {
+        self.languageCode = languageCode
+        self.displayLabel = displayLabel
+        self.tracks = tracks
+    }
+
+    /// Normalizes a subtitle language code to a stable bucket key: lowercased, first `-` segment.
+    /// So "ja", "ja-JP", "ja-orig" all collapse to "ja".
+    public static func normalizedLanguageCode(_ code: String) -> String {
+        let lower = code.lowercased()
+        if let dash = lower.firstIndex(of: "-") {
+            return String(lower[..<dash])
+        }
+        return lower
+    }
+
+    /// Sort rank for technical tracks within a language group.
+    public static func trackRank(_ kind: SubtitleSourceKind) -> Int {
+        switch kind {
+        case .manual: return 0
+        case .platformAuto: return 1
+        case .hlsManifest: return 2
+        case .localASR: return 3
+        case .importedFile: return 4
+        }
+    }
+
+    /// Groups flat subtitle choices by normalized language code into ordered language choices.
+    /// Group order follows first appearance of each language; tracks within a group are stably
+    /// sorted by source rank. Deterministic, no regex.
+    public static func aggregate(_ choices: [SubtitleChoice]) -> [SubtitleLanguageChoice] {
+        var order: [String] = []
+        var grouped: [String: [SubtitleChoice]] = [:]
+        for choice in choices {
+            let key = normalizedLanguageCode(choice.languageCode)
+            guard !key.isEmpty else { continue }
+            if grouped[key] == nil {
+                grouped[key] = []
+                order.append(key)
+            }
+            grouped[key]?.append(choice)
+        }
+        return order.map { key in
+            let tracks = (grouped[key] ?? []).enumerated().sorted { lhs, rhs in
+                let lr = trackRank(lhs.element.sourceKind)
+                let rr = trackRank(rhs.element.sourceKind)
+                if lr != rr { return lr < rr }
+                return lhs.offset < rhs.offset
+            }.map(\.element)
+            let label = tracks.first { $0.sourceKind != .localASR }?.label
+                ?? tracks.first?.label
+                ?? key
+            return SubtitleLanguageChoice(languageCode: key, displayLabel: label, tracks: tracks)
+        }
+    }
+}
+
 public struct VideoInfo: Sendable {
     public let sourceURL: String
     /// yt-dlp 信息里的视频 id（用于定位产出文件）
@@ -325,6 +402,10 @@ public struct DownloadRequest: Sendable {
     public let subtitleTracks: [SubtitleChoice]
     /// The single primary subtitle source selected on the ready page. Legacy arrays remain as yt-dlp inputs.
     public let primarySubtitleTrackID: String?
+    /// The language (normalized code) the user picked on the language-first ready page. The
+    /// post-download source resolver uses this for language matching / quality fallback.
+    /// nil falls back to `primarySubtitleTrack?.languageCode`.
+    public let preferredSubtitleLanguageCode: String?
     public let destinationDirectory: URL
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
     /// （如 "homepage_trailer"），此时用嗅探得到的页面标题命名更友好；nil 用 yt-dlp 默认标题。
@@ -339,6 +420,7 @@ public struct DownloadRequest: Sendable {
         subtitleLangs: [String], autoSubtitleLangs: [String],
         subtitleTracks: [SubtitleChoice] = [],
         primarySubtitleTrackID: String? = nil,
+        preferredSubtitleLanguageCode: String? = nil,
         destinationDirectory: URL, preferredTitle: String? = nil,
         preferHDR: Bool = false, outputFormat: OutputFormat = .original
     ) {
@@ -349,6 +431,7 @@ public struct DownloadRequest: Sendable {
         self.autoSubtitleLangs = autoSubtitleLangs
         self.subtitleTracks = subtitleTracks
         self.primarySubtitleTrackID = primarySubtitleTrackID
+        self.preferredSubtitleLanguageCode = preferredSubtitleLanguageCode
         self.destinationDirectory = destinationDirectory
         self.preferredTitle = preferredTitle
         self.preferHDR = preferHDR
@@ -377,6 +460,12 @@ public struct DownloadRequest: Sendable {
 
     public var primarySubtitleLanguageCode: String? {
         primarySubtitleTrack?.languageCode
+    }
+
+    /// The language the post-download source resolver should match against: the user's
+    /// language-first pick, falling back to the primary track's language.
+    public var effectivePreferredLanguageCode: String? {
+        preferredSubtitleLanguageCode ?? primarySubtitleTrack?.languageCode
     }
 
     public var ytDlpSubtitleLangs: [String] {

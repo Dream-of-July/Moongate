@@ -158,6 +158,28 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(cliSource.contains("缺省 1080p"))
     }
 
+    func testCLIInjectsKeychainCredentialStoreBeforeLoadingSettings() throws {
+        let cliSource = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("moongate-cli")
+            .appendingPathComponent("main.swift"))
+
+        let injectionRange = try XCTUnwrap(cliSource.range(of: "AppSettings.credentialStore = KeychainCredentialStore()"))
+        let firstLoadRange = try XCTUnwrap(cliSource.range(of: "AppSettings.load()"))
+        XCTAssertLessThan(injectionRange.lowerBound, firstLoadRange.lowerBound)
+        XCTAssertTrue(cliSource.contains("#if canImport(Security)"))
+    }
+
+    func testCLIEndpointFlagsDisableFollowDefaultForCurrentCommand() throws {
+        let cliSource = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("moongate-cli")
+            .appendingPathComponent("main.swift"))
+
+        XCTAssertTrue(cliSource.contains("var endpointOverridden = false"))
+        XCTAssertTrue(cliSource.contains("settings.translationFollowsDefault = false"))
+    }
+
     func testCompletionNotificationSettingsDefaultOnAndRoundTrip() throws {
         let fresh = AppSettings()
         XCTAssertTrue(fresh.completionNotificationsEnabled)
@@ -376,6 +398,70 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(advice.sourceLanguageCode, "unknown")
         XCTAssertEqual(advice.characters, [])
         XCTAssertEqual(advice.translationNotes, [])
+    }
+
+    func testSubtitlePipelineAdviceParsesSourceActionAndTimingProfile() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseSubtitlePipelineAdvice("""
+        {
+          "summary":"YOASOBI 歌曲 MV，YouTube 自动字幕疑似罗马音循环。",
+          "context":"日语歌词，源字幕混入大量 ni/dare/carano。",
+          "sourceLanguageCode":"ja",
+          "preset":"songLyrics",
+          "terms":["群青：歌名，保留意象"],
+          "translationNotes":["按整段歌词意象翻译"],
+          "sourceAssessment":"bad",
+          "recommendedSourceAction":"useLocalASR",
+          "timingProfile":"japaneseLyrics",
+          "asrHints":{
+            "disablePromptContext":true,
+            "preferVAD":true,
+            "suppressIntroHallucination":true
+          },
+          "qualityRisks":["romajiLoop","lyricsContext"]
+        }
+        """))
+
+        XCTAssertEqual(advice.sourceLanguageCode, "ja")
+        XCTAssertEqual(advice.preset, .songLyrics)
+        XCTAssertEqual(advice.sourceAssessment, .bad)
+        XCTAssertEqual(advice.recommendedSourceAction, .useLocalASR)
+        XCTAssertEqual(advice.timingProfile, .japaneseLyrics)
+        XCTAssertTrue(advice.asrHints.disablePromptContext)
+        XCTAssertTrue(advice.asrHints.preferVAD)
+        XCTAssertTrue(advice.asrHints.suppressIntroHallucination)
+        XCTAssertEqual(advice.qualityRisks, ["romajiLoop", "lyricsContext"])
+
+        let translationAdvice = advice.translationAdvice
+        XCTAssertEqual(translationAdvice.preset, .songLyrics)
+        XCTAssertEqual(translationAdvice.translationNotes, ["按整段歌词意象翻译"])
+    }
+
+    func testSubtitlePipelineAdviceLegacyTranslationJSONDefaultsToSafeSourceDecision() throws {
+        let advice = try XCTUnwrap(ConfiguredTranslator.parseSubtitlePipelineAdvice("""
+        {"summary":"测试摘要","preset":"anime","sourceLanguageCode":"ja"}
+        """))
+
+        XCTAssertEqual(advice.preset, .anime)
+        XCTAssertEqual(advice.sourceLanguageCode, "ja")
+        XCTAssertEqual(advice.sourceAssessment, .unknown)
+        XCTAssertEqual(advice.recommendedSourceAction, .keepPlatform)
+        XCTAssertEqual(advice.timingProfile, .speech)
+        XCTAssertFalse(advice.asrHints.disablePromptContext)
+        XCTAssertEqual(advice.translationAdvice.preset, .anime)
+    }
+
+    func testSubtitlePipelinePlanningPromptIncludesSourceAndASRDecisionSchema() {
+        let prompt = ConfiguredTranslator.subtitlePipelinePlanningSystemPrompt
+
+        XCTAssertTrue(prompt.contains("字幕流水线规划器"))
+        XCTAssertTrue(prompt.contains("sourceAssessment"))
+        XCTAssertTrue(prompt.contains("recommendedSourceAction"))
+        XCTAssertTrue(prompt.contains("timingProfile"))
+        XCTAssertTrue(prompt.contains("asrHints"))
+        XCTAssertTrue(prompt.contains("useLocalASR"))
+        XCTAssertTrue(prompt.contains("japaneseLyrics"))
+        XCTAssertTrue(prompt.contains("不能直接写时间轴"))
+        XCTAssertTrue(prompt.contains("不能覆盖 local-ASR 源字幕"))
     }
 
     func testSmartTranslationAdviceNormalizesSourceLanguageAndCapsLists() throws {
@@ -1434,6 +1520,28 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 2.0, accuracy: 0.001)
     }
 
+    func testParseVTTDropsRollingTransitionAndDisplaysOnlyNewText() {
+        let raw = """
+        WEBVTT
+
+        00:00:15.760 --> 00:00:20.150 align:start position:0%
+        やる<00:00:16.760><c>ちっちゃ</c><00:00:17.240><c>な</c><00:00:17.400><c>頃</c>
+
+        00:00:20.150 --> 00:00:20.160 align:start position:0%
+        やるちっちゃな頃
+
+        00:00:20.160 --> 00:00:24.990 align:start position:0%
+        やるちっちゃな頃
+        大人<00:00:20.600><c>に</c><00:00:20.800><c>なっ</c><00:00:21.080><c>て</c><00:00:21.320><c>た</c>
+        """
+
+        let cues = parseVTT(raw)
+
+        XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues.map(\.text), ["やるちっちゃな頃", "大人になってた"])
+        XCTAssertEqual(cues[1].sourceFragments.map(\.text), ["大人", "に", "なっ", "て", "た"])
+    }
+
     func testParseVTTSkipsCueIdentifiersAndMetadataBlocks() {
         let raw = """
         WEBVTT
@@ -1498,6 +1606,7 @@ final class TranslationSettingsTests: XCTestCase {
         let cues = parseVTT(raw)
 
         XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues[1].text, "euros")
         XCTAssertEqual(cues[1].sourceFragments.map(\.text), ["euros"])
         XCTAssertEqual(cues[1].sourceFragments[0].startSeconds, 3.0, accuracy: 0.001)
         XCTAssertEqual(cues[1].sourceFragments[0].endSeconds, 4.3, accuracy: 0.001)
@@ -1518,6 +1627,7 @@ final class TranslationSettingsTests: XCTestCase {
         let cues = parseVTT(raw)
 
         XCTAssertEqual(cues.count, 2)
+        XCTAssertEqual(cues[1].text, "kilo.")
         XCTAssertEqual(cues[1].sourceFragments.map(\.text), ["kilo."])
         XCTAssertEqual(cues[1].sourceFragments[0].startSeconds, 3.0, accuracy: 0.001)
         XCTAssertEqual(cues[1].sourceFragments[0].endSeconds, 5.0, accuracy: 0.001)

@@ -297,6 +297,19 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(keys.contains("subtitleSegmentingPercent"))
     }
 
+    /// M3：下载后源质量解析的接线必须存在于 QueueManager——平台自动字幕过质量门，
+    /// 不可用且本地识别可用时自动回退 whisper（不比时序），并把来源/原因记到 item 上供 UI 展开区显示。
+    func testQueueManagerWiresPostDownloadQualityGateFallback() throws {
+        let source = try queueManagerSource()
+        XCTAssertTrue(source.contains("resolveSubtitleSourceWithQualityGate"))
+        XCTAssertTrue(source.contains("PlatformSubtitleQualityGate.assess"))
+        XCTAssertTrue(source.contains("effectivePreferredLanguageCode"))
+        XCTAssertTrue(source.contains("$0.resolvedSubtitleSource = resolution.resolved"))
+        XCTAssertTrue(source.contains("subtitleSourceNote"))
+        XCTAssertTrue(source.contains("pickedIsAuto"))
+        XCTAssertTrue(source.contains("subtitleSourceLowQualityEnableLocalASR"))
+    }
+
     func testQueueItemUsesOverallProgressAndAddsRemainingDetails() throws {
         let source = try queueItemSource()
         let progressBody = try XCTUnwrap(functionBody(named: "progressBar", in: source))

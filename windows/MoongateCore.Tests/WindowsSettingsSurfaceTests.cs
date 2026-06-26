@@ -257,8 +257,9 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("\"auto\"", viewModel);
         Assert.Contains("Loc.S(\"L.Ready.LocalASRAutoDetect\")", viewModel);
         Assert.Contains("IsLocalAsr", viewModel);
+        // 展开区里仍以本地识别徽标标示 local-ASR 来源。
         Assert.Contains("L.Ready.LocalASR", mainWindow);
-        Assert.Contains("L.Ready.LocalASRHint", mainWindow);
+        Assert.Contains("ShowLocalAsrBadge", mainWindow);
 
         foreach (var resource in new[] { zh, en, zhHant })
         {
@@ -702,19 +703,31 @@ public class WindowsSettingsSurfaceTests
         var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
         var en = Read("windows", "MoongateApp", "Strings.en.xaml");
 
-        Assert.Contains("L.Ready.SubtitleSourceSection", xaml);
+        // 语言优先：语言选择区与字幕输出区分离的两个 section。
+        Assert.Contains("L.Ready.SubtitleLanguageSection", xaml);
         Assert.Contains("L.Ready.SubtitleOutputSection", xaml);
-        Assert.Contains("IsChecked=\"{Binding IsPrimarySource}\"", xaml);
-        Assert.DoesNotContain("IsChecked=\"{Binding IsSelected}\"", xaml);
+        // 主区域推荐语言 + 自动定源说明，展开区其他语言。
+        Assert.Contains("L.Ready.RecommendedBadge", xaml);
+        Assert.Contains("L.Ready.AutoSourceExplanation", xaml);
+        Assert.Contains("L.Ready.MoreLanguages", xaml);
+        Assert.Contains("RecommendedLanguageOption", xaml);
+        Assert.Contains("OtherLanguageOptions", xaml);
+        Assert.Contains("LanguageSectionExpanded", xaml);
+        // ViewModel 语言优先 API + 仍保留主源 trackId 兼容路径。
         Assert.Contains("public string? PrimarySubtitleTrackId", viewModel);
-        Assert.Contains("SelectedPrimarySubtitleOption", viewModel);
+        Assert.Contains("SubtitleLanguageRecommender.Recommend(", viewModel);
+        Assert.Contains("public void SelectLanguage(SubtitleLanguageChoice language)", viewModel);
         Assert.Contains("PrimarySubtitleTrackId = primary?.Id", viewModel);
-        Assert.Contains("selectedLangs = primary is null ? [] : [primary.LanguageCode]", viewModel);
+        Assert.Contains("AvailableSubtitleChoices(info)", viewModel);
+        Assert.Contains("recommended.PreferredTrack", viewModel);
+        Assert.DoesNotContain("info.Subtitles.FirstOrDefault(s => !s.IsAuto) ?? info.Subtitles.FirstOrDefault()", viewModel);
         foreach (var resource in new[] { zh, zhHant, en })
         {
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceSection\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleLanguageSection\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SubtitleOutputSection\"", resource);
             Assert.Contains("x:Key=\"L.Ready.NoSubtitleSource\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.RecommendedBadge\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.MoreLanguages\"", resource);
         }
     }
 

@@ -104,6 +104,30 @@ public class SrtParsingTests
     }
 
     [Fact]
+    public void ParseVtt_DropsRollingTransitionAndDisplaysOnlyNewText()
+    {
+        const string raw = """
+            WEBVTT
+
+            00:00:15.760 --> 00:00:20.150 align:start position:0%
+            やる<00:00:16.760><c>ちっちゃ</c><00:00:17.240><c>な</c><00:00:17.400><c>頃</c>
+
+            00:00:20.150 --> 00:00:20.160 align:start position:0%
+            やるちっちゃな頃
+
+            00:00:20.160 --> 00:00:24.990 align:start position:0%
+            やるちっちゃな頃
+            大人<00:00:20.600><c>に</c><00:00:20.800><c>なっ</c><00:00:21.080><c>て</c><00:00:21.320><c>た</c>
+            """;
+
+        var cues = SrtTools.ParseVtt(raw);
+
+        Assert.Equal(2, cues.Count);
+        Assert.Equal(["やるちっちゃな頃", "大人になってた"], cues.Select(cue => cue.Text).ToArray());
+        Assert.Equal(["大人", "に", "なっ", "て", "た"], cues[1].SourceFragments.Select(fragment => fragment.Text).ToArray());
+    }
+
+    [Fact]
     public void ParseVtt_SkipsCueIdentifiersAndMetadataBlocks()
     {
         const string raw = """
@@ -173,6 +197,7 @@ public class SrtParsingTests
         var cues = SrtTools.ParseVtt(raw);
 
         Assert.Equal(2, cues.Count);
+        Assert.Equal("euros", cues[1].Text);
         Assert.Equal(["euros"], cues[1].SourceFragments.Select(fragment => fragment.Text).ToArray());
         Assert.Equal(3.0, cues[1].SourceFragments[0].StartSeconds, precision: 3);
         Assert.Equal(4.3, cues[1].SourceFragments[0].EndSeconds, precision: 3);
@@ -195,6 +220,7 @@ public class SrtParsingTests
         var cues = SrtTools.ParseVtt(raw);
 
         Assert.Equal(2, cues.Count);
+        Assert.Equal("kilo.", cues[1].Text);
         Assert.Equal(["kilo."], cues[1].SourceFragments.Select(fragment => fragment.Text).ToArray());
         Assert.Equal(3.0, cues[1].SourceFragments[0].StartSeconds, precision: 3);
         Assert.Equal(5.0, cues[1].SourceFragments[0].EndSeconds, precision: 3);

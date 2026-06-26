@@ -272,6 +272,91 @@ public sealed record SubtitleChoice
         };
 }
 
+/// <summary>
+/// Upper-level language aggregation consumed by the ready page UI. A language groups all of its
+/// technical tracks (manual / platform-auto / local ASR) so users pick a language, not a source.
+/// Pure derived view: never persisted, never sent to yt-dlp directly.
+/// </summary>
+public sealed record SubtitleLanguageChoice
+{
+    /// <summary>Normalized language code (lowercased, first '-' segment), e.g. "ja". Also the identity.</summary>
+    public required string LanguageCode { get; init; }
+    /// <summary>Display label, taken from the best (first non-localASR) track in the group.</summary>
+    public required string DisplayLabel { get; init; }
+    /// <summary>Tracks for this language, sorted manual → platformAuto → localASR.</summary>
+    public required IReadOnlyList<SubtitleChoice> Tracks { get; init; }
+
+    public bool HasManualTrack => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.Manual);
+    public bool HasAutoTrack => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.PlatformAuto);
+    /// <summary>Whether the group carries a local-ASR option (independent of runtime readiness).</summary>
+    public bool SupportsLocalAsr => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.LocalAsr);
+    /// <summary>Preferred technical track: manual > auto > localASR (tracks are pre-sorted).</summary>
+    public SubtitleChoice? PreferredTrack => Tracks.Count > 0 ? Tracks[0] : null;
+
+    /// <summary>
+    /// Normalizes a subtitle language code to a stable bucket key: lowercased, first '-' segment.
+    /// So "ja", "ja-JP", "ja-orig" all collapse to "ja".
+    /// </summary>
+    public static string NormalizedLanguageCode(string code)
+    {
+        var lower = code.ToLowerInvariant();
+        var dash = lower.IndexOf('-');
+        return dash >= 0 ? lower[..dash] : lower;
+    }
+
+    /// <summary>Sort rank for technical tracks within a language group.</summary>
+    public static int TrackRank(SubtitleSourceKind kind) => kind switch
+    {
+        SubtitleSourceKind.Manual => 0,
+        SubtitleSourceKind.PlatformAuto => 1,
+        SubtitleSourceKind.HlsManifest => 2,
+        SubtitleSourceKind.LocalAsr => 3,
+        SubtitleSourceKind.ImportedFile => 4,
+        _ => 5,
+    };
+
+    /// <summary>
+    /// Groups flat subtitle choices by normalized language code into ordered language choices.
+    /// Group order follows first appearance of each language; tracks within a group are stably
+    /// sorted by source rank. Deterministic, no regex.
+    /// </summary>
+    public static IReadOnlyList<SubtitleLanguageChoice> Aggregate(IReadOnlyList<SubtitleChoice> choices)
+    {
+        var order = new List<string>();
+        var grouped = new Dictionary<string, List<SubtitleChoice>>(StringComparer.Ordinal);
+        foreach (var choice in choices)
+        {
+            var key = NormalizedLanguageCode(choice.LanguageCode);
+            if (key.Length == 0) continue;
+            if (!grouped.TryGetValue(key, out var list))
+            {
+                list = [];
+                grouped[key] = list;
+                order.Add(key);
+            }
+            list.Add(choice);
+        }
+        return order.Select(key =>
+        {
+            var tracks = grouped[key]
+                .Select((choice, index) => (choice, index))
+                .OrderBy(pair => TrackRank(pair.choice.SourceKind))
+                .ThenBy(pair => pair.index)
+                .Select(pair => pair.choice)
+                .ToList();
+            var label = tracks.FirstOrDefault(t => t.SourceKind != SubtitleSourceKind.LocalAsr)?.Label
+                ?? tracks.FirstOrDefault()?.Label
+                ?? key;
+            return new SubtitleLanguageChoice
+            {
+                LanguageCode = key,
+                DisplayLabel = label,
+                Tracks = tracks,
+            };
+        }).ToList();
+    }
+}
+
 public sealed record VideoInfo
 {
     public required string SourceUrl { get; init; }
@@ -307,6 +392,12 @@ public sealed record DownloadRequest
     public IReadOnlyList<SubtitleChoice> SubtitleTracks { get; init; } = [];
     /// <summary>The single primary subtitle source selected on the ready page.</summary>
     public string? PrimarySubtitleTrackId { get; init; }
+    /// <summary>
+    /// The language (normalized code) the user picked on the language-first ready page. The
+    /// post-download source resolver uses this for language matching / quality fallback.
+    /// null falls back to <see cref="PrimarySubtitleLanguageCode"/>.
+    /// </summary>
+    public string? PreferredSubtitleLanguageCode { get; init; }
     public required string DestinationDirectory { get; init; }
     /// <summary>
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
@@ -344,6 +435,12 @@ public sealed record DownloadRequest
     }
 
     public string? PrimarySubtitleLanguageCode => PrimarySubtitleTrack?.LanguageCode;
+
+    /// <summary>
+    /// The language the post-download source resolver should match against: the user's
+    /// language-first pick, falling back to the primary track's language.
+    /// </summary>
+    public string? EffectivePreferredLanguageCode => PreferredSubtitleLanguageCode ?? PrimarySubtitleTrack?.LanguageCode;
 
     public IReadOnlyList<string> YtDlpSubtitleLangs =>
         UniqueForYtDlpSubLangs(RequestedSubtitleTracks
