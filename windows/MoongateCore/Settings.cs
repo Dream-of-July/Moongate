@@ -132,6 +132,22 @@ public sealed record AppSettings
     public string LocalAsrModelPath { get; init; } = "";
     /// <summary>用户选择/安装的模型标识，用于缓存与 UI 展示。</summary>
     public string LocalAsrModelId { get; init; } = "";
+    /// <summary>是否优先使用用户配置的本地精准识别 sidecar。默认关闭；不自动下载 Python/模型。</summary>
+    public bool LocalAsrPreciseModeEnabled { get; init; }
+    /// <summary>本地精准识别 sidecar 可执行文件路径。契约：接收 --input/--output/--language/--model/--format srt。</summary>
+    public string LocalAsrSidecarRuntimePath { get; init; } = "";
+    /// <summary>本地精准识别 sidecar 模型或模型目录路径。</summary>
+    public string LocalAsrSidecarModelPath { get; init; } = "";
+    /// <summary>是否允许上传音频到用户配置的云端转写服务。默认关闭，避免隐式上传。</summary>
+    public bool CloudAsrEnabled { get; init; }
+    /// <summary>用户是否已确认云端识别会上传音频且可能产生 API 费用。</summary>
+    public bool CloudAsrConsentAccepted { get; init; }
+    /// <summary>OpenAI-compatible 转写服务地址；默认 OpenAI 官方根地址。</summary>
+    public string CloudAsrBaseUrl { get; init; } = "https://api.openai.com";
+    /// <summary>可直接返回 SRT/VTT 的转写模型。默认 whisper-1；新模型需要 alignment 前不作为直接字幕源。</summary>
+    public string CloudAsrModel { get; init; } = "whisper-1";
+    /// <summary>云端转写 API 凭证，使用独立安全存储槽，不复用翻译凭证。</summary>
+    public string CloudAsrAuthToken { get; init; } = "";
     /// <summary>队列完成时是否允许发完成提醒。默认开；前台 App 仍优先使用应用内状态。</summary>
     public bool CompletionNotificationsEnabled { get; init; } = true;
     /// <summary>队列完成时是否播放提示音。默认开，满足长任务完成后的可感知提醒。</summary>
@@ -208,6 +224,7 @@ public sealed record AppSettings
     private const string TranslationTokenKey = "translationAuthToken";
     private const string AITokenKey = "aiAuthToken";
     private const string SummaryTokenKey = "summaryAuthToken";
+    private const string CloudAsrTokenKey = "cloudASRAuthToken";
 
     /// <summary>
     /// 上次 Load 把损坏的 settings.json 备份后的路径（供 UI 一次性提示）；正常加载为 null。
@@ -251,7 +268,8 @@ public sealed record AppSettings
     {
         var hasLegacyPlaintext = !string.IsNullOrEmpty(parsed.TranslationAuthToken)
             || !string.IsNullOrEmpty(parsed.AIAuthToken)
-            || !string.IsNullOrEmpty(parsed.SummaryAuthToken);
+            || !string.IsNullOrEmpty(parsed.SummaryAuthToken)
+            || !string.IsNullOrEmpty(parsed.CloudAsrAuthToken);
         if (hasLegacyPlaintext)
         {
             try
@@ -271,15 +289,17 @@ public sealed record AppSettings
             TranslationAuthToken = CredentialStore.Get(TranslationTokenKey) ?? parsed.TranslationAuthToken,
             AIAuthToken = CredentialStore.Get(AITokenKey) ?? parsed.AIAuthToken,
             SummaryAuthToken = CredentialStore.Get(SummaryTokenKey) ?? parsed.SummaryAuthToken,
+            CloudAsrAuthToken = CredentialStore.Get(CloudAsrTokenKey) ?? parsed.CloudAsrAuthToken,
         };
     }
 
-    /// <summary>把三个 Token 写入安全存储（空值则删除）。任一写入失败向上抛。</summary>
+    /// <summary>把 Token 写入安全存储（空值则删除）。任一写入失败向上抛。</summary>
     private void WriteTokensToStore()
     {
         SetOrDeleteToken(TranslationTokenKey, TranslationAuthToken);
         SetOrDeleteToken(AITokenKey, AIAuthToken);
         SetOrDeleteToken(SummaryTokenKey, SummaryAuthToken);
+        SetOrDeleteToken(CloudAsrTokenKey, CloudAsrAuthToken);
     }
 
     private static void SetOrDeleteToken(string key, string value)
@@ -387,6 +407,17 @@ public sealed record AppSettings
         var localAsrRuntimePath = SingleLineField(StringField(root, "localASRRuntimePath") ?? "");
         var localAsrModelPath = SingleLineField(StringField(root, "localASRModelPath") ?? "");
         var localAsrModelId = SingleLineField(StringField(root, "localASRModelID") ?? "");
+        var localAsrPreciseModeEnabled = root.TryGetProperty("localASRPreciseModeEnabled", out var lapme)
+            && lapme.ValueKind == JsonValueKind.True;
+        var localAsrSidecarRuntimePath = SingleLineField(StringField(root, "localASRSidecarRuntimePath") ?? "");
+        var localAsrSidecarModelPath = SingleLineField(StringField(root, "localASRSidecarModelPath") ?? "");
+        var cloudAsrEnabled = root.TryGetProperty("cloudASREnabled", out var cloudAsrEnabledValue)
+            && cloudAsrEnabledValue.ValueKind == JsonValueKind.True;
+        var cloudAsrConsentAccepted = root.TryGetProperty("cloudASRConsentAccepted", out var casca)
+            && casca.ValueKind == JsonValueKind.True;
+        var cloudAsrBaseUrl = SingleLineField(StringField(root, "cloudASRBaseURL") ?? "https://api.openai.com");
+        var cloudAsrModel = SingleLineField(StringField(root, "cloudASRModel") ?? "whisper-1");
+        var cloudAsrAuthToken = StringField(root, "cloudASRAuthToken") ?? "";
         var completionNotificationsEnabled = !root.TryGetProperty("completionNotificationsEnabled", out var cne)
             || cne.ValueKind != JsonValueKind.False;
         var completionSoundEnabled = !root.TryGetProperty("completionSoundEnabled", out var cse)
@@ -452,6 +483,14 @@ public sealed record AppSettings
             LocalAsrRuntimePath = localAsrRuntimePath,
             LocalAsrModelPath = localAsrModelPath,
             LocalAsrModelId = localAsrModelId,
+            LocalAsrPreciseModeEnabled = localAsrPreciseModeEnabled,
+            LocalAsrSidecarRuntimePath = localAsrSidecarRuntimePath,
+            LocalAsrSidecarModelPath = localAsrSidecarModelPath,
+            CloudAsrEnabled = cloudAsrEnabled,
+            CloudAsrConsentAccepted = cloudAsrConsentAccepted,
+            CloudAsrBaseUrl = cloudAsrBaseUrl,
+            CloudAsrModel = cloudAsrModel,
+            CloudAsrAuthToken = cloudAsrAuthToken,
             CompletionNotificationsEnabled = completionNotificationsEnabled,
             CompletionSoundEnabled = completionSoundEnabled,
             ReceiveBetaUpdates = receiveBetaUpdates,
@@ -500,6 +539,14 @@ public sealed record AppSettings
             ["localASRRuntimePath"] = SingleLineField(LocalAsrRuntimePath),
             ["localASRModelPath"] = SingleLineField(LocalAsrModelPath),
             ["localASRModelID"] = SingleLineField(LocalAsrModelId),
+            ["localASRPreciseModeEnabled"] = LocalAsrPreciseModeEnabled,
+            ["localASRSidecarRuntimePath"] = SingleLineField(LocalAsrSidecarRuntimePath),
+            ["localASRSidecarModelPath"] = SingleLineField(LocalAsrSidecarModelPath),
+            ["cloudASREnabled"] = CloudAsrEnabled,
+            ["cloudASRConsentAccepted"] = CloudAsrConsentAccepted,
+            ["cloudASRBaseURL"] = SingleLineField(CloudAsrBaseUrl),
+            ["cloudASRModel"] = SingleLineField(CloudAsrModel),
+            ["cloudASRAuthToken"] = CloudAsrAuthToken,
             ["completionNotificationsEnabled"] = CompletionNotificationsEnabled,
             ["completionSoundEnabled"] = CompletionSoundEnabled,
             ["receiveBetaUpdates"] = ReceiveBetaUpdates,
@@ -517,10 +564,10 @@ public sealed record AppSettings
     }
 
     /// <summary>
-    /// 落盘用 JSON：与 ToJson 相同但三个 Token 字段强制为空——明文凭证只进安全存储，绝不写进 settings.json。
+    /// 落盘用 JSON：与 ToJson 相同但 Token 字段强制为空——明文凭证只进安全存储，绝不写进 settings.json。
     /// </summary>
     private string ToPersistedJson() =>
-        (this with { TranslationAuthToken = "", AIAuthToken = "", SummaryAuthToken = "" }).ToJson();
+        (this with { TranslationAuthToken = "", AIAuthToken = "", SummaryAuthToken = "", CloudAsrAuthToken = "" }).ToJson();
 
     /// <summary>
     /// 原子写：先写临时文件再替换。写失败时旧配置原样保留。
@@ -559,6 +606,25 @@ public sealed record AppSettings
 
     /// <summary>AI 总结功能是否已配置完整。</summary>
     public bool IsSummaryConfigured => HasCloudEndpoint(ForSummary());
+
+    /// <summary>云端精准识别必须显式开启、确认上传/费用，并填好服务地址、模型和独立凭证。</summary>
+    public bool IsCloudAsrConfigured =>
+        CloudAsrEnabled
+        && CloudAsrConsentAccepted
+        && !string.IsNullOrWhiteSpace(CloudAsrBaseUrl)
+        && !string.IsNullOrWhiteSpace(CloudAsrModel)
+        && CloudAsrModelCapabilities.SupportsDirectSubtitleOutput(CloudAsrModel)
+        && !string.IsNullOrWhiteSpace(CloudAsrAuthToken);
+
+    public bool CloudAsrModelRequiresAlignment =>
+        CloudAsrModelCapabilities.RequiresAlignment(CloudAsrModel);
+
+    /// <summary>本地精准 sidecar 仅在本地识别开启、精准模式开启且两个本地路径完整时可用。</summary>
+    public bool IsLocalAsrSidecarConfigured =>
+        LocalAsrEnabled
+        && LocalAsrPreciseModeEnabled
+        && !string.IsNullOrWhiteSpace(LocalAsrSidecarRuntimePath)
+        && !string.IsNullOrWhiteSpace(LocalAsrSidecarModelPath);
 
     /// <summary>把翻译有效配置投影成 TranslationApi 可直接使用的设置对象。</summary>
     public AppSettings ForTranslation()

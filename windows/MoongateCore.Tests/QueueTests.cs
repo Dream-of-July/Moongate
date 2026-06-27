@@ -98,6 +98,7 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
     public List<(string Video, string Language)> Calls { get; } = [];
     /// <summary>When true the generated transcript is reported as pervasively low-confidence.</summary>
     public bool LowConfidence { get; set; }
+    public string? OutputSrt { get; set; }
 
     public Task<GeneratedLocalAsrSource> GenerateSourceSubtitleAsync(
         string videoFile,
@@ -115,11 +116,33 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
             Path.GetDirectoryName(videoFile) ?? ".",
             Path.GetFileNameWithoutExtension(videoFile) + ".local-asr." + languageCode + ".srt");
         Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
-        File.WriteAllText(output, "1\n00:00:00,000 --> 00:00:01,500\n梅雨 が 明ける。\n");
+        File.WriteAllText(output, OutputSrt ?? "1\n00:00:00,000 --> 00:00:01,500\n梅雨 が 明ける。\n");
         var confidence = LowConfidence
             ? new LocalAsrConfidenceSummary(30, 0.6, 0.3, true)
             : new LocalAsrConfidenceSummary(30, 0.95, 0.02, false);
         return Task.FromResult(new GeneratedLocalAsrSource(output, confidence));
+    }
+}
+
+internal sealed class FakeCloudAsrGenerator : ICloudAsrSubtitleGenerator
+{
+    public int CallCount;
+    public List<(string Video, string Language)> Calls { get; } = [];
+
+    public Task<GeneratedCloudAsrSource> GenerateSourceSubtitleAsync(
+        string videoFile,
+        string languageCode,
+        TaskControlToken? control,
+        CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref CallCount);
+        lock (Calls) Calls.Add((videoFile, languageCode));
+        var output = Path.Combine(
+            Path.GetDirectoryName(videoFile) ?? ".",
+            Path.GetFileNameWithoutExtension(videoFile) + ".cloud-asr." + languageCode + ".srt");
+        Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+        File.WriteAllText(output, "1\n00:00:00,000 --> 00:00:01,500\n今日はいい天気ですね。\n");
+        return Task.FromResult(new GeneratedCloudAsrSource(output));
     }
 }
 
@@ -489,7 +512,8 @@ public class QueueManagerTests
         string? primarySubtitleTrackId = null,
         string? preferredSubtitleLanguageCode = null,
         string destinationDirectory = "/tmp/downloads",
-        OutputFormat outputFormat = OutputFormat.Original) => new()
+        OutputFormat outputFormat = OutputFormat.Original,
+        SubtitleSourcePolicy subtitleSourcePolicy = SubtitleSourcePolicy.AutoBest) => new()
     {
         Url = $"https://example.com/{videoId}",
         VideoId = videoId,
@@ -500,6 +524,7 @@ public class QueueManagerTests
         PreferredSubtitleLanguageCode = preferredSubtitleLanguageCode,
         DestinationDirectory = destinationDirectory,
         OutputFormat = outputFormat,
+        SubtitleSourcePolicy = subtitleSourcePolicy,
     };
 
     private static AppSettings Settings(int downloads = 1, int burns = 1, int? maxBurnHeight = null) => new()
@@ -1342,6 +1367,236 @@ public class QueueManagerTests
             Assert.NotNull(item.SubtitleSourceNote);
             // 翻译输入是 whisper 产物，不是低质 .vtt。
             Assert.Contains(".local-asr.", translator.LastInput);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// 明确选择“比较平台字幕和本地识别”时，即使平台自动字幕本身可用，也要生成本地识别候选。
+    [Fact]
+    public async Task CompareLocalAsrPolicyGeneratesLocalAsrEvenWhenAutoCaptionIsUsable()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-compare-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 24; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n");
+                sb.Append($"今日はいい天気ですね {i}\n\n");
+            }
+            File.WriteAllText(autoVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request(
+                    "a",
+                    subtitleTracks: [auto],
+                    primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja",
+                    destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.CompareLocalAsr),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(1, asr.CallCount);
+            Assert.Contains(item.ResolvedSubtitleSource?.CandidateReports ?? [], report => report.SourceKind == SubtitleSourceKind.PlatformAuto);
+            Assert.Contains(item.ResolvedSubtitleSource?.CandidateReports ?? [], report => report.SourceKind == SubtitleSourceKind.LocalAsr);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// 明确选择“比较平台字幕和本地识别”时，最终来源必须由 scorer/resolver 决定，
+    /// 而不是平台字幕只要过 gate 就固定胜出。
+    [Fact]
+    public async Task CompareLocalAsrPolicyChoosesHigherScoredLocalAsrEvenWhenPlatformUsable()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-compare-winner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+
+            var platform = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 9; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 3);
+                var end = TimeSpan.FromSeconds(i * 3 + 2.2);
+                platform.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n");
+                platform.Append($"今日はいい天気ですね {i}\n\n");
+            }
+            File.WriteAllText(autoVtt, platform.ToString());
+
+            var local = new System.Text.StringBuilder();
+            for (var i = 0; i < 36; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 1.5);
+                var end = TimeSpan.FromSeconds(i * 1.5 + 1.1);
+                local.Append(i + 1).Append('\n');
+                local.Append($"{start:hh\\:mm\\:ss\\,fff} --> {end:hh\\:mm\\:ss\\,fff}\n");
+                local.Append($"みんなでチョコバナナを食べよう {i}\n\n");
+            }
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator { OutputSrt = local.ToString() };
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request(
+                    "a",
+                    subtitleTracks: [auto],
+                    primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja",
+                    destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.CompareLocalAsr),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(1, asr.CallCount);
+            Assert.Equal(SubtitleSourceKind.LocalAsr, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.True(item.ResolvedSubtitleSource?.UsedLocalAsrFallback);
+            Assert.Contains(".local-asr.", translator.LastInput);
+            Assert.Contains(item.ResolvedSubtitleSource?.CandidateReports ?? [],
+                report => report.SourceKind == SubtitleSourceKind.LocalAsr && report.Selected);
+            Assert.Contains(item.ResolvedSubtitleSource?.CandidateReports ?? [],
+                report => report.SourceKind == SubtitleSourceKind.PlatformAuto && !report.Selected);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CloudAsrPolicyGeneratesCloudSubtitleAndUsesItAsSource()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-cloud-asr-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            File.WriteAllText(video, "fake");
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var localAsr = new FakeLocalAsrGenerator();
+            var cloudAsr = new FakeCloudAsrGenerator();
+            var queue = new QueueManager(
+                engine,
+                _ => translator,
+                localAsrGenerator: localAsr,
+                cloudAsrGenerator: cloudAsr,
+                settings: Settings());
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request(
+                    "a",
+                    preferredSubtitleLanguageCode: "ja",
+                    destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.CloudAsr),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(1, cloudAsr.CallCount);
+            Assert.Equal(0, localAsr.CallCount);
+            Assert.NotNull(translator.LastInput);
+            Assert.Contains(".cloud-asr.ja.", translator.LastInput);
+            Assert.Equal(SubtitleSourceKind.CloudAsr, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.Contains(
+                item.ResolvedSubtitleSource?.CandidateReports ?? [],
+                report => report.SourceKind == SubtitleSourceKind.CloudAsr && report.Selected);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ImportedSubtitleFileIsCopiedAndUsedAsSource()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-imported-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var externalSubtitle = Path.Combine(dir, "external input.srt");
+            var video = Path.Combine(dir, "v [a].mp4");
+            File.WriteAllText(externalSubtitle, "1\n00:00:00,000 --> 00:00:01,500\n今日はいい天気ですね。\n");
+            File.WriteAllText(video, "fake");
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var queue = new QueueManager(engine, _ => translator, settings: Settings());
+            var imported = SubtitleChoice.Create(
+                "ja",
+                "external input.srt",
+                SubtitleSourceKind.ImportedFile,
+                provider: "file",
+                variant: "imported",
+                metadata: new Dictionary<string, string> { ["path"] = externalSubtitle });
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request(
+                    "a",
+                    subtitleTracks: [imported],
+                    primarySubtitleTrackId: imported.Id,
+                    preferredSubtitleLanguageCode: "ja",
+                    destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.ImportedFile),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.NotNull(translator.LastInput);
+            Assert.NotEqual(externalSubtitle, translator.LastInput);
+            Assert.True(File.Exists(translator.LastInput));
+            Assert.StartsWith("imported-subtitle.", Path.GetFileName(translator.LastInput));
+            Assert.Equal(SubtitleSourceKind.ImportedFile, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.Equal(translator.LastInput, item.ResolvedSubtitleSource?.SelectedFile);
         }
         finally
         {

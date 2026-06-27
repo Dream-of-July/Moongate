@@ -249,7 +249,7 @@ public enum SubtitleLanguageRecommender {
             if lr != rr { return lr < rr }
             return lhs.offset < rhs.offset
         }.map(\.element)
-        let label = tracks.first { $0.sourceKind != .localASR }?.label
+        let label = tracks.first { $0.sourceKind != .localASR && $0.sourceKind != .cloudASR }?.label
             ?? tracks.first?.label
             ?? language.displayLabel
         return SubtitleLanguageChoice(
@@ -271,7 +271,9 @@ public enum SubtitleLanguageRecommender {
         targetLanguage: String?
     ) -> Bool {
         guard let targetLanguage else { return false }
-        guard track.sourceKind != .localASR, track.sourceKind != .platformAuto else { return false }
+        guard track.sourceKind != .localASR,
+              track.sourceKind != .cloudASR,
+              track.sourceKind != .platformAuto else { return false }
         return TranslationLanguage.normalizedScript(track.languageCode) == targetLanguage
     }
 

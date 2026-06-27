@@ -279,9 +279,31 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             LocalASRSetupStatusView(state: localASRSetupState)
+            if draft.localASREnabled {
+                LocalASRVADStatusView(vadModelURL: localASRVADModelURL)
+                Toggle(localizer.t(L.Settings.localASRPreciseModeEnabled), isOn: $draft.localASRPreciseModeEnabled)
+                Text(localizer.t(L.Settings.localASRPreciseModeHelp))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if draft.localASRPreciseModeEnabled {
+                    TextField(localizer.t(L.Settings.localASRSidecarRuntimePath), text: $draft.localASRSidecarRuntimePath)
+                        .textContentType(.none)
+                        .help(localizer.t(L.Settings.localASRSidecarRuntimePathPrompt))
+                    TextField(localizer.t(L.Settings.localASRSidecarModelPath), text: $draft.localASRSidecarModelPath)
+                        .textContentType(.none)
+                        .help(localizer.t(L.Settings.localASRSidecarModelPathPrompt))
+                    Text(localASRSidecarReadinessText)
+                        .font(.caption)
+                        .foregroundStyle(draft.isLocalASRSidecarConfigured ? .green : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         } header: {
             Text(localizer.t(L.Settings.localASRSection))
         }
+
+        cloudASRSection
 
         // Recommended models.
         Section {
@@ -302,6 +324,70 @@ struct SettingsView: View {
                 importAction: importLocalASRModel
             )
         }
+    }
+
+    private var cloudASRSection: some View {
+        Section {
+            Toggle(localizer.t(L.Settings.cloudASREnabled), isOn: $draft.cloudASREnabled)
+            Text(localizer.t(L.Settings.cloudASRPrivacyNotice))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(localizer.t(L.Settings.cloudASRCostNotice))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if draft.cloudASREnabled {
+                TextField(localizer.t(L.Settings.cloudASRBaseURL), text: $draft.cloudASRBaseURL)
+                    .textContentType(.URL)
+                TextField(localizer.t(L.Settings.cloudASRModel), text: $draft.cloudASRModel)
+                    .textContentType(.none)
+                SecureField(localizer.t(L.Settings.cloudASRAuthToken), text: $draft.cloudASRAuthToken)
+                Toggle(localizer.t(L.Settings.cloudASRConsentAccepted), isOn: $draft.cloudASRConsentAccepted)
+                Text(cloudASRReadinessText)
+                    .font(.caption)
+                    .foregroundStyle(cloudASRReadinessStyle)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text(localizer.t(L.Settings.cloudASRSection))
+        }
+    }
+
+    private var cloudASRReadinessText: String {
+        if draft.isCloudASRConfigured {
+            return localizer.t(L.Settings.cloudASRReady)
+        }
+        if cloudASRCanUseLocalTimingGuide {
+            return localizer.t(L.Settings.cloudASRUsesLocalTimingGuide)
+        }
+        if draft.cloudASRModelRequiresAlignment {
+            return localizer.t(L.Settings.cloudASRModelNeedsAlignment)
+        }
+        return localizer.t(L.Settings.cloudASRNeedsSetup)
+    }
+
+    private var cloudASRReadinessStyle: Color {
+        if draft.isCloudASRConfigured { return .green }
+        if cloudASRCanUseLocalTimingGuide { return .orange }
+        if draft.cloudASRModelRequiresAlignment { return .orange }
+        return .secondary
+    }
+
+    private var cloudASRCanUseLocalTimingGuide: Bool {
+        guard draft.cloudASRModelRequiresAlignment else { return false }
+        let localASRGenerator = LocalASRGeneratorFactory.make(settings: draft)
+        return CloudASRGeneratorFactory.make(
+            settings: draft,
+            localASRGenerator: localASRGenerator
+        ) != nil
+    }
+
+    private var localASRSidecarReadinessText: String {
+        draft.isLocalASRSidecarConfigured
+            ? localizer.t(L.Settings.localASRSidecarReady)
+            : localizer.t(L.Settings.localASRSidecarNeedsSetup)
     }
 
     @ViewBuilder
@@ -330,6 +416,23 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(localASRSetupTitle(for: state))
         .accessibilityValue(localASRSetupDetail(for: state))
+    }
+
+    @ViewBuilder
+    private func LocalASRVADStatusView(vadModelURL: URL?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: vadModelURL == nil ? "waveform.path.ecg" : "checkmark.circle.fill")
+                .foregroundStyle(vadModelURL == nil ? Color.secondary : .green)
+                .frame(width: 20)
+            Text(vadModelURL == nil
+                 ? localizer.t(L.Settings.localASRVADMissing)
+                 : localizer.t(L.Settings.localASRVADReady))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -574,6 +677,14 @@ struct SettingsView: View {
         let path = draft.localASRRuntimePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) else { return nil }
         return path
+    }
+
+    private var localASRVADModelURL: URL? {
+        guard let runtimePath = availableLocalASRRuntimePath else { return nil }
+        return WhisperCppVADModelLocator.locate(
+            runtime: ASRRuntimeInfo(executableURL: URL(fileURLWithPath: runtimePath)),
+            extraSearchURLs: localASRRuntimeSearchURLs
+        )
     }
 
     private var selectedCatalogLocalASRModel: ASRModelCatalogEntry? {

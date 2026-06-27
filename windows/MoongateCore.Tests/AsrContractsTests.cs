@@ -1703,6 +1703,60 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void WhisperCppCommandPlanUsesVADModelWhenAvailable()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-vad-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var runtimeDirectory = Path.Combine(directory, "runtime");
+            Directory.CreateDirectory(runtimeDirectory);
+            var runtime = new AsrRuntimeInfo { ExecutablePath = Path.Combine(runtimeDirectory, "whisper-cli") };
+            var model = Path.Combine(directory, "ggml-small.bin");
+            var audio = Path.Combine(directory, "audio.wav");
+            File.WriteAllText(runtime.ExecutablePath, "#!/bin/sh\n");
+            File.WriteAllText(model, "model");
+            File.WriteAllText(audio, "audio");
+
+            var request = new AsrRequest
+            {
+                AudioPath = audio,
+                LanguageCode = "ja",
+                ModelId = "whisper.cpp:small",
+                VadEnabled = true,
+            };
+            var missingPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request,
+                Path.Combine(directory, "missing"));
+            Assert.DoesNotContain("--vad", missingPlan.Arguments);
+            Assert.DoesNotContain("--vad-model", missingPlan.Arguments);
+
+            var vadModel = Path.Combine(runtimeDirectory, "ggml-silero-v5.1.2.bin");
+            File.WriteAllText(vadModel, "fake vad model");
+            var readyPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request,
+                Path.Combine(directory, "ready"));
+            Assert.Contains("--vad", readyPlan.Arguments);
+            Assert.Equal(vadModel, ArgumentValueAfter("--vad-model", readyPlan.Arguments));
+
+            var disabledPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request with { VadEnabled = false },
+                Path.Combine(directory, "disabled"));
+            Assert.DoesNotContain("--vad", disabledPlan.Arguments);
+            Assert.DoesNotContain("--vad-model", disabledPlan.Arguments);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void DefaultLocalAsrPromptOmitsLanguageHintForAutoDetect()
     {
         var video = Path.Combine(Path.GetTempPath(), "Moon Gate Clip.mp4");
@@ -1723,6 +1777,30 @@ public class AsrContractsTests
             "title=Moon Gate Clip; language=en",
             AsrPromptBuilder.DefaultPrompt(video, "en"));
         Assert.Null(AsrPromptBuilder.DefaultPrompt(Path.Combine(Path.GetTempPath(), "   .mp4"), "auto"));
+    }
+
+    [Fact]
+    public void DefaultLocalAsrPromptInjectsMetadataGlossaryAndCharacters()
+    {
+        var video = Path.Combine(Path.GetTempPath(), "コウペンちゃん 夏祭り.mp4");
+        var metadata = new AsrPromptMetadata(
+            Title: "コウペンちゃん 夏祭り",
+            Channel: "Koupen Channel",
+            Characters: ["コウペンちゃん", "邪エナガさん"],
+            GlossaryTerms: ["チョコバナナ", "ソースせんべい", "くじ引きやろう"]);
+
+        var prompt = AsrPromptBuilder.DefaultPrompt(video, "ja", metadata);
+
+        Assert.NotNull(prompt);
+        Assert.Contains("title=コウペンちゃん 夏祭り", prompt);
+        Assert.Contains("channel=Koupen Channel", prompt);
+        Assert.Contains("characters=コウペンちゃん, 邪エナガさん", prompt);
+        Assert.Contains("glossary=チョコバナナ, ソースせんべい, くじ引きやろう", prompt);
+
+        var inferred = AsrPromptBuilder.DefaultPrompt(video, "ja");
+        Assert.NotNull(inferred);
+        Assert.Contains("characters=コウペンちゃん", inferred);
+        Assert.Contains("glossary=チョコバナナ, ソースせんべい, くじ引きやろう", inferred);
     }
 
     [Fact]
@@ -3720,6 +3798,92 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public async Task SidecarLocalAsrSubtitleGeneratorRunsLocalProcessAndWritesSourceSrt()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-sidecar-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var sidecar = Path.Combine(directory, "sidecar");
+            await File.WriteAllTextAsync(sidecar, """
+                #!/bin/sh
+                output=""
+                while [ "$#" -gt 0 ]; do
+                  case "$1" in
+                    --output) output="$2"; shift 2 ;;
+                    *) shift 2 ;;
+                  esac
+                done
+                printf '1\n00:00:00,000 --> 00:00:01,200\nコウペンちゃん\n' > "$output"
+                """);
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var model = Path.Combine(directory, "faster-whisper-small");
+            Directory.CreateDirectory(model);
+            var video = Path.Combine(directory, "koupen.mp4");
+            await File.WriteAllTextAsync(video, "video");
+            var generator = new SidecarLocalAsrSubtitleGenerator(
+                sidecar,
+                model,
+                Path.Combine(directory, "work"));
+
+            var result = await generator.GenerateSourceSubtitleAsync(
+                video,
+                "ja",
+                null,
+                _ => { });
+
+            Assert.Equal("koupen.local-asr.ja.srt", Path.GetFileName(result.Url));
+            var raw = await File.ReadAllTextAsync(result.Url);
+            Assert.Contains("コウペンちゃん", raw);
+            Assert.DoesNotContain("emptyTranscript", result.Confidence?.QualityIssues ?? []);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LocalAsrGeneratorFactoryUsesPreciseSidecarWhenEnabled()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-sidecar-factory-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var sidecar = Path.Combine(directory, OperatingSystem.IsWindows() ? "sidecar.exe" : "sidecar");
+            File.WriteAllText(sidecar, "#!/bin/sh\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            var model = Path.Combine(directory, "model-dir");
+            Directory.CreateDirectory(model);
+            var settings = new AppSettings
+            {
+                LocalAsrEnabled = true,
+                LocalAsrRuntimePath = Path.Combine(directory, "missing-whisper-cli"),
+                LocalAsrModelPath = Path.Combine(directory, "missing-ggml.bin"),
+                LocalAsrModelId = "custom:missing",
+                LocalAsrPreciseModeEnabled = true,
+                LocalAsrSidecarRuntimePath = sidecar,
+                LocalAsrSidecarModelPath = model,
+            };
+
+            Assert.IsType<SidecarLocalAsrSubtitleGenerator>(
+                LocalAsrGeneratorFactory.Create(settings, null, directory));
+            Assert.Null(LocalAsrGeneratorFactory.Create(settings with
+            {
+                LocalAsrSidecarRuntimePath = "",
+            }, null, directory));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LocalAsrGeneratorFactoryRejectsBadHashForRecommendedModel()
     {
         var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-factory-bad-hash-" + Guid.NewGuid().ToString("N"));
@@ -3924,6 +4088,15 @@ public class AsrContractsTests
         {
             Assert.Equal(expected.Words[index], actual.Words[index]);
         }
+    }
+
+    private static string? ArgumentValueAfter(string flag, IReadOnlyList<string> arguments)
+    {
+        for (var index = 0; index < arguments.Count - 1; index += 1)
+        {
+            if (arguments[index] == flag) return arguments[index + 1];
+        }
+        return null;
     }
 
     private sealed class RecordingAsrCommandRunner(

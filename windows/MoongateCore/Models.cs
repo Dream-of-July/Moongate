@@ -184,7 +184,39 @@ public enum SubtitleSourceKind
     PlatformAuto,
     HlsManifest,
     LocalAsr,
+    CloudAsr,
     ImportedFile,
+}
+
+public enum SubtitleSourcePolicy
+{
+    AutoBest,
+    PreferPlatform,
+    ForcePlatform,
+    PreferLocalAsr,
+    ForceLocalAsr,
+    CompareLocalAsr,
+    CloudAsr,
+    ImportedFile,
+}
+
+public enum SubtitleIntent
+{
+    None,
+    SourceSrt,
+    TranslatedSrt,
+    BurnTranslated,
+    BurnSource,
+}
+
+public readonly record struct SourceLanguageIntent(string? LanguageCode)
+{
+    public static SourceLanguageIntent Automatic { get; } = new(null);
+
+    public static SourceLanguageIntent Language(string code) => new(code);
+
+    public bool IsAutomatic => string.IsNullOrWhiteSpace(LanguageCode)
+        || string.Equals(LanguageCode, "auto", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed record SubtitleTrackId(
@@ -236,6 +268,7 @@ public sealed record SubtitleTrackId(
         SubtitleSourceKind.PlatformAuto => "platformAuto",
         SubtitleSourceKind.HlsManifest => "hlsManifest",
         SubtitleSourceKind.LocalAsr => "localASR",
+        SubtitleSourceKind.CloudAsr => "cloudASR",
         SubtitleSourceKind.ImportedFile => "importedFile",
         _ => "manual",
     };
@@ -246,6 +279,7 @@ public sealed record SubtitleTrackId(
         "platformAuto" => SubtitleSourceKind.PlatformAuto,
         "hlsManifest" => SubtitleSourceKind.HlsManifest,
         "localASR" => SubtitleSourceKind.LocalAsr,
+        "cloudASR" => SubtitleSourceKind.CloudAsr,
         "importedFile" => SubtitleSourceKind.ImportedFile,
         _ => null,
     };
@@ -290,7 +324,7 @@ public sealed record SubtitleChoice
 
 /// <summary>
 /// Upper-level language aggregation consumed by the ready page UI. A language groups all of its
-/// technical tracks (manual / platform-auto / local ASR) so users pick a language, not a source.
+/// technical tracks (manual / platform-auto / local ASR / cloud ASR) so users pick a language, not a source.
 /// Pure derived view: never persisted, never sent to yt-dlp directly.
 /// </summary>
 public sealed record SubtitleLanguageChoice
@@ -299,7 +333,7 @@ public sealed record SubtitleLanguageChoice
     public required string LanguageCode { get; init; }
     /// <summary>Display label, taken from the best (first non-localASR) track in the group.</summary>
     public required string DisplayLabel { get; init; }
-    /// <summary>Tracks for this language, sorted manual → platformAuto → localASR.</summary>
+    /// <summary>Tracks for this language, sorted manual → platformAuto → cloudASR → localASR.</summary>
     public required IReadOnlyList<SubtitleChoice> Tracks { get; init; }
 
     public bool HasManualTrack => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.Manual);
@@ -326,9 +360,10 @@ public sealed record SubtitleLanguageChoice
         SubtitleSourceKind.Manual => 0,
         SubtitleSourceKind.PlatformAuto => 1,
         SubtitleSourceKind.HlsManifest => 2,
-        SubtitleSourceKind.LocalAsr => 3,
-        SubtitleSourceKind.ImportedFile => 4,
-        _ => 5,
+        SubtitleSourceKind.CloudAsr => 3,
+        SubtitleSourceKind.LocalAsr => 4,
+        SubtitleSourceKind.ImportedFile => 5,
+        _ => 6,
     };
 
     /// <summary>
@@ -360,7 +395,7 @@ public sealed record SubtitleLanguageChoice
                 .ThenBy(pair => pair.index)
                 .Select(pair => pair.choice)
                 .ToList();
-            var label = tracks.FirstOrDefault(t => t.SourceKind != SubtitleSourceKind.LocalAsr)?.Label
+            var label = tracks.FirstOrDefault(t => t.SourceKind != SubtitleSourceKind.LocalAsr && t.SourceKind != SubtitleSourceKind.CloudAsr)?.Label
                 ?? tracks.FirstOrDefault()?.Label
                 ?? key;
             return new SubtitleLanguageChoice
@@ -414,6 +449,13 @@ public sealed record DownloadRequest
     /// null falls back to <see cref="PrimarySubtitleLanguageCode"/>.
     /// </summary>
     public string? PreferredSubtitleLanguageCode { get; init; }
+    /// <summary>
+    /// How the queue should resolve the final subtitle source after download. Default preserves the
+    /// existing "pick best available, only run local ASR when needed" behavior.
+    /// </summary>
+    public SubtitleSourcePolicy SubtitleSourcePolicy { get; init; } = SubtitleSourcePolicy.AutoBest;
+    public SubtitleIntent SubtitleIntent { get; init; } = SubtitleIntent.None;
+    public SourceLanguageIntent SourceLanguageIntent { get; init; } = SourceLanguageIntent.Automatic;
     public required string DestinationDirectory { get; init; }
     /// <summary>
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名

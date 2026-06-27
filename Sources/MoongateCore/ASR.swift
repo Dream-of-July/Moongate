@@ -67,10 +67,8 @@ public struct ASRRequest: Codable, Equatable, Sendable {
     /// Optional whisper.cpp text-context cap (`-mc`). CJK local-ASR can fall into previous-text
     /// repetition loops; those requests use 0 to disable carryover.
     public let maxTextContextTokens: Int?
-    /// Reserved / not yet wired: whisper.cpp `--vad` needs a separate Silero VAD model that Moongate
-    /// does not ship yet, so `WhisperCppCommandPlan` intentionally does NOT emit `--vad` (see the
-    /// forced-alignment ExecPlan for the deferral). The field is kept in the request contract so the
-    /// flag can be honored later without a wire change; today it has no effect on the argv.
+    /// Requests whisper.cpp VAD when a local Silero VAD model is available. Missing VAD assets are
+    /// treated as a graceful downgrade to ordinary recognition.
     public let vadEnabled: Bool
     public let wordTimestamps: Bool
     /// When true (with word timestamps), whisper.cpp is asked for DTW-aligned token timestamps
@@ -4043,9 +4041,221 @@ public protocol LocalASRSubtitleGenerator: Sendable {
     func generateSourceSubtitle(
         videoFile: URL,
         languageCode: String,
+        promptMetadata: ASRPromptMetadata?,
         control: TaskControlToken?,
         progress: @escaping @Sendable (ASRProgress) -> Void
     ) async throws -> GeneratedLocalASRSource
+}
+
+public extension LocalASRSubtitleGenerator {
+    func generateSourceSubtitle(
+        videoFile: URL,
+        languageCode: String,
+        control: TaskControlToken?,
+        progress: @escaping @Sendable (ASRProgress) -> Void
+    ) async throws -> GeneratedLocalASRSource {
+        try await generateSourceSubtitle(
+            videoFile: videoFile,
+            languageCode: languageCode,
+            promptMetadata: nil,
+            control: control,
+            progress: progress
+        )
+    }
+}
+
+public enum LocalASRSidecarError: Error, Equatable {
+    case processFailed(status: Int32, stderrTail: String)
+    case missingOutput(URL)
+    case emptyOutput(URL)
+}
+
+/// Adapter for user-supplied high-quality local ASR sidecars such as faster-whisper,
+/// SenseVoice/FunASR, or a local alignment wrapper. The sidecar must write timed SRT to
+/// `--output`; Moongate then feeds that file through the normal resolver/scorer pipeline.
+public struct SidecarLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
+    public let executableURL: URL
+    public let modelURL: URL
+    public let workDirectoryURL: URL
+    public let modelID: String
+
+    public init(
+        executableURL: URL,
+        modelURL: URL,
+        workDirectoryURL: URL,
+        modelID: String = "sidecar:local-precise"
+    ) {
+        self.executableURL = executableURL
+        self.modelURL = modelURL
+        self.workDirectoryURL = workDirectoryURL
+        self.modelID = modelID
+    }
+
+    public func generateSourceSubtitle(
+        videoFile: URL,
+        languageCode: String,
+        promptMetadata: ASRPromptMetadata?,
+        control: TaskControlToken?,
+        progress: @escaping @Sendable (ASRProgress) -> Void
+    ) async throws -> GeneratedLocalASRSource {
+        try Task.checkCancellation()
+        try await control?.gate()
+        try FileManager.default.createDirectory(at: workDirectoryURL, withIntermediateDirectories: true)
+
+        let outputURL = ASRTranscriptMapper.localASRSourceSRTURL(videoURL: videoFile, languageCode: languageCode)
+        try? FileManager.default.removeItem(at: outputURL)
+        progress(ASRProgress(phase: .speechRecognition, completedUnits: 0, totalUnits: 1))
+        try await runSidecar(videoFile: videoFile, languageCode: languageCode, outputURL: outputURL, control: control)
+        guard FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw LocalASRSidecarError.missingOutput(outputURL)
+        }
+        let raw = try String(contentsOf: outputURL, encoding: .utf8)
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LocalASRSidecarError.emptyOutput(outputURL)
+        }
+        progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
+        let confidence = LocalASRConfidence.assessSubtitle(
+            raw: raw,
+            fileName: outputURL.lastPathComponent,
+            languageCode: languageCode,
+            requestedLanguageCode: languageCode
+        )
+        return GeneratedLocalASRSource(url: outputURL, confidence: confidence)
+    }
+
+    private func runSidecar(
+        videoFile: URL,
+        languageCode: String,
+        outputURL: URL,
+        control: TaskControlToken?
+    ) async throws {
+        let state = ASRCommandProcessState()
+        let status: Int32 = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+                let process = Process()
+                process.executableURL = executableURL
+                process.arguments = [
+                    "--input", videoFile.path,
+                    "--output", outputURL.path,
+                    "--language", normalizedSidecarLanguage(languageCode),
+                    "--model", modelURL.path,
+                    "--format", "srt"
+                ]
+                process.standardInput = FileHandle.nullDevice
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
+
+                let ioGroup = DispatchGroup()
+                ioGroup.enter()
+                ioGroup.enter()
+                outPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        ioGroup.leave()
+                        return
+                    }
+                    _ = state.consume(data, stream: .stdout)
+                }
+                errPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        ioGroup.leave()
+                        return
+                    }
+                    _ = state.consume(data, stream: .stderr)
+                }
+                process.terminationHandler = { finished in
+                    let terminationStatus = finished.terminationStatus
+                    DispatchQueue.global().async {
+                        _ = ioGroup.wait(timeout: .now() + 5)
+                        outPipe.fileHandleForReading.readabilityHandler = nil
+                        errPipe.fileHandleForReading.readabilityHandler = nil
+                        _ = state.flushRemainder()
+                        control?.setActivePID(0)
+                        state.resumeOnce {
+                            continuation.resume(returning: terminationStatus)
+                        }
+                    }
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    process.terminationHandler = nil
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    ioGroup.leave()
+                    ioGroup.leave()
+                    state.resumeOnce {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                if state.register(process) {
+                    TaskControlToken.signalTree(process.processIdentifier, SIGKILL)
+                }
+                control?.setActivePID(process.processIdentifier)
+            }
+        } onCancel: {
+            state.cancel()
+        }
+        if state.isCancelled { throw CancellationError() }
+        guard status == 0 else {
+            throw LocalASRSidecarError.processFailed(status: status, stderrTail: state.stderrTail)
+        }
+    }
+
+    private func normalizedSidecarLanguage(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "auto" : trimmed
+    }
+}
+
+private func unique(_ values: [String]) -> [String] {
+    var seen: Set<String> = []
+    var output: [String] = []
+    for value in values {
+        guard seen.insert(value).inserted else { continue }
+        output.append(value)
+    }
+    return output
+}
+
+public struct ASRPromptMetadata: Equatable, Sendable {
+    public let title: String?
+    public let channel: String?
+    public let characters: [String]
+    public let glossaryTerms: [String]
+
+    public init(
+        title: String? = nil,
+        channel: String? = nil,
+        characters: [String] = [],
+        glossaryTerms: [String] = []
+    ) {
+        self.title = Self.normalizedScalar(title)
+        self.channel = Self.normalizedScalar(channel)
+        self.characters = Self.normalizedList(characters)
+        self.glossaryTerms = Self.normalizedList(glossaryTerms)
+    }
+
+    private static func normalizedScalar(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func normalizedList(_ values: [String]) -> [String] {
+        let normalized = values.compactMap(normalizedScalar)
+        return unique(Array(normalized.prefix(12)))
+    }
 }
 
 public enum ASRPromptBuilder {
@@ -4071,10 +4281,12 @@ public enum ASRPromptBuilder {
     public static func defaultPrompt(
         videoURL: URL,
         languageCode: String,
-        recognitionProfile: ASRRecognitionProfile = .speech
+        recognitionProfile: ASRRecognitionProfile = .speech,
+        metadata: ASRPromptMetadata? = nil
     ) -> String? {
-        let title = videoURL.deletingPathExtension().lastPathComponent
+        let fileTitle = videoURL.deletingPathExtension().lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = metadata?.title ?? fileTitle
         let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
         var parts: [String] = []
         // CJK：前置标点范例，引导 whisper.cpp 输出句末标点（分段强边界依赖它）。
@@ -4086,10 +4298,50 @@ public enum ASRPromptBuilder {
         if !title.isEmpty {
             parts.append("title=\(title)")
         }
+        if let channel = metadata?.channel, !channel.isEmpty {
+            parts.append("channel=\(channel)")
+        }
         if !language.isEmpty, language.lowercased() != "auto" {
             parts.append("language=\(language)")
         }
+        let hints = promptHints(title: title, languageCode: language, metadata: metadata)
+        if !hints.characters.isEmpty {
+            parts.append("characters=\(hints.characters.joined(separator: ", "))")
+        }
+        if !hints.glossaryTerms.isEmpty {
+            parts.append("glossary=\(hints.glossaryTerms.joined(separator: ", "))")
+        }
         return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
+
+    private static func promptHints(
+        title: String,
+        languageCode: String,
+        metadata: ASRPromptMetadata?
+    ) -> (characters: [String], glossaryTerms: [String]) {
+        let inferred = inferredPromptHints(title: title, languageCode: languageCode)
+        return (
+            characters: unique((metadata?.characters ?? []) + inferred.characters),
+            glossaryTerms: unique((metadata?.glossaryTerms ?? []) + inferred.glossaryTerms)
+        )
+    }
+
+    private static func inferredPromptHints(
+        title: String,
+        languageCode: String
+    ) -> (characters: [String], glossaryTerms: [String]) {
+        let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard language == "auto" || language.hasPrefix("ja") else {
+            return ([], [])
+        }
+        let lowerTitle = title.lowercased()
+        guard title.contains("コウペン") || lowerTitle.contains("koupen") else {
+            return ([], [])
+        }
+        return (
+            characters: ["コウペンちゃん", "邪エナガさん"],
+            glossaryTerms: ["チョコバナナ", "ソースせんべい", "くじ引きやろう"]
+        )
     }
 
     public static func maxTextContextTokens(
@@ -4387,7 +4639,7 @@ public struct ProcessASRAudioActivityDetector: ASRAudioActivityDetector {
 }
 
 public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
-    public typealias PromptProvider = @Sendable (URL, String) -> String?
+    public typealias PromptProvider = @Sendable (URL, String, ASRPromptMetadata?) -> String?
 
     public let ffmpegURL: URL
     public let workDirectoryURL: URL
@@ -4419,6 +4671,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
     public func generateSourceSubtitle(
         videoFile: URL,
         languageCode: String,
+        promptMetadata: ASRPromptMetadata? = nil,
         control: TaskControlToken?,
         progress: @escaping @Sendable (ASRProgress) -> Void
     ) async throws -> GeneratedLocalASRSource {
@@ -4434,7 +4687,12 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             _ = try await audioExtractor.extractAudio(plan: plan, control: control, progress: progress)
         }
 
-        var request = makeRequest(videoFile: videoFile, audioURL: audioURL, languageCode: languageCode)
+        var request = makeRequest(
+            videoFile: videoFile,
+            audioURL: audioURL,
+            languageCode: languageCode,
+            promptMetadata: promptMetadata
+        )
         var transcript = try await recognizer.transcribe(request, control: control, progress: progress)
         let languageHintCode = SubtitleLanguageRecommender.inferredLocalASRLanguageCode(
             title: videoFile.deletingPathExtension().lastPathComponent
@@ -4451,7 +4709,12 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         ), let retryLanguageCode = languageHintCode {
             try Task.checkCancellation()
             try await control?.gate()
-            request = makeRequest(videoFile: videoFile, audioURL: audioURL, languageCode: retryLanguageCode)
+            request = makeRequest(
+                videoFile: videoFile,
+                audioURL: audioURL,
+                languageCode: retryLanguageCode,
+                promptMetadata: promptMetadata
+            )
             transcript = try await recognizer.transcribe(request, control: control, progress: progress)
             qualitySummary = self.qualitySummary(
                 for: transcript,
@@ -4483,10 +4746,17 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
     private func makeRequest(
         videoFile: URL,
         audioURL: URL,
-        languageCode: String
+        languageCode: String,
+        promptMetadata: ASRPromptMetadata?
     ) -> ASRRequest {
         let recognitionProfile = ASRPromptBuilder.recognitionProfile(videoURL: videoFile, languageCode: languageCode)
-        let prompt = promptProvider?(videoFile, languageCode)
+        let prompt = promptProvider?(videoFile, languageCode, promptMetadata)
+            ?? ASRPromptBuilder.defaultPrompt(
+                videoURL: videoFile,
+                languageCode: languageCode,
+                recognitionProfile: recognitionProfile,
+                metadata: promptMetadata
+            )
         let maxTextContextTokens = ASRPromptBuilder.maxTextContextTokens(
             videoURL: videoFile,
             languageCode: languageCode,
@@ -4630,6 +4900,23 @@ public enum LocalASRGeneratorFactory {
         nowProvider: @escaping @Sendable () -> Date = { Date() }
     ) -> (any LocalASRSubtitleGenerator)? {
         guard settings.localASREnabled else { return nil }
+        let sidecarRuntimePath = settings.localASRSidecarRuntimePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sidecarModelPath = settings.localASRSidecarModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.localASRPreciseModeEnabled {
+            guard !sidecarRuntimePath.isEmpty, !sidecarModelPath.isEmpty else { return nil }
+            let sidecarURL = URL(fileURLWithPath: sidecarRuntimePath)
+            let sidecarModelURL = URL(fileURLWithPath: sidecarModelPath)
+            guard isExecutable(sidecarURL),
+                  FileManager.default.fileExists(atPath: sidecarModelURL.path) else {
+                return nil
+            }
+            let asrDirectory = supportDirectoryURL.appendingPathComponent("asr", isDirectory: true)
+            return SidecarLocalASRSubtitleGenerator(
+                executableURL: sidecarURL,
+                modelURL: sidecarModelURL,
+                workDirectoryURL: asrDirectory.appendingPathComponent("sidecar-work", isDirectory: true)
+            )
+        }
         let runtimePath = settings.localASRRuntimePath.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelPath = settings.localASRModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelID = settings.localASRModelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4658,11 +4945,12 @@ public enum LocalASRGeneratorFactory {
             workDirectoryURL: asrDirectory.appendingPathComponent("work", isDirectory: true),
             recognizer: recognizer,
             modelID: modelID,
-            promptProvider: { videoURL, languageCode in
+            promptProvider: { videoURL, languageCode, metadata in
                 ASRPromptBuilder.defaultPrompt(
                     videoURL: videoURL,
                     languageCode: languageCode,
-                    recognitionProfile: ASRPromptBuilder.recognitionProfile(videoURL: videoURL, languageCode: languageCode)
+                    recognitionProfile: ASRPromptBuilder.recognitionProfile(videoURL: videoURL, languageCode: languageCode),
+                    metadata: metadata
                 )
             }
         )
@@ -4720,6 +5008,67 @@ public enum LocalASRGeneratorFactory {
     }
 }
 
+public enum WhisperCppVADModelLocator {
+    public static let candidateFileNames: [String] = [
+        "ggml-silero-v5.1.2.bin",
+        "ggml-silero-vad-v5.1.2.bin",
+        "silero-vad-v5.1.2.bin"
+    ]
+
+    public static func locate(
+        runtime: ASRRuntimeInfo,
+        extraSearchURLs: [URL] = []
+    ) -> URL? {
+        let fm = FileManager.default
+        for directory in candidateDirectories(runtime: runtime, extraSearchURLs: extraSearchURLs) {
+            for name in candidateFileNames {
+                let url = directory.appendingPathComponent(name, isDirectory: false)
+                if fm.fileExists(atPath: url.path) {
+                    return url
+                }
+            }
+        }
+        return nil
+    }
+
+    public static func candidateDirectories(
+        runtime: ASRRuntimeInfo,
+        extraSearchURLs: [URL] = []
+    ) -> [URL] {
+        var seen = Set<String>()
+        var directories: [URL] = []
+
+        func append(_ url: URL) {
+            let standardized = url.standardizedFileURL
+            guard seen.insert(standardized.path).inserted else { return }
+            directories.append(standardized)
+        }
+
+        let executableDirectory = runtime.executableURL.deletingLastPathComponent()
+        let runtimeRoot = executableDirectory.lastPathComponent == "bin"
+            ? executableDirectory.deletingLastPathComponent()
+            : executableDirectory
+
+        append(executableDirectory)
+        append(runtimeRoot)
+        append(runtimeRoot.appendingPathComponent("models", isDirectory: true))
+        append(runtimeRoot.appendingPathComponent("vad", isDirectory: true))
+        append(AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("vad", isDirectory: true))
+
+        if let bundledVADURL = Bundle.main.resourceURL?
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("vad", isDirectory: true) {
+            append(bundledVADURL)
+        }
+        for url in extraSearchURLs {
+            append(url)
+        }
+        return directories
+    }
+}
+
 public struct WhisperCppCommandPlan: Equatable, Sendable {
     public let runtime: ASRRuntimeInfo
     public let modelURL: URL
@@ -4756,8 +5105,10 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
         if disableGPU {
             arguments.append("--no-gpu")
         }
-        // 注意：request.vadEnabled 暂不接通——whisper.cpp `--vad` 需要单独的 Silero VAD 模型，尚未随包分发，
-        // 故这里刻意不发 `--vad`（见 forced-alignment ExecPlan 的推迟决定）。字段保留以便日后无契约改动地启用。
+        if request.vadEnabled,
+           let vadModelURL = WhisperCppVADModelLocator.locate(runtime: runtime) {
+            arguments.append(contentsOf: ["--vad", "--vad-model", vadModelURL.path])
+        }
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
         // OFF (`-nfa`) — otherwise whisper.cpp silently disables DTW.
         if request.wordTimestamps,

@@ -1473,6 +1473,64 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(plan.arguments.contains("auto"))
     }
 
+    func testWhisperCppCommandPlanUsesVADOnlyWhenSileroModelExists() throws {
+        let fm = FileManager.default
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-vad-plan-\(UUID().uuidString)", isDirectory: true)
+        let runtimeDirectory = directory.appendingPathComponent("runtime", isDirectory: true)
+        try fm.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+        let runtimeURL = runtimeDirectory.appendingPathComponent("whisper-cli")
+        try Data("#!/bin/sh\n".utf8).write(to: runtimeURL)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeURL.path)
+        let model = directory.appendingPathComponent("ggml-small.bin")
+        let audio = directory.appendingPathComponent("audio.wav")
+        try Data("model".utf8).write(to: model)
+        try Data("audio".utf8).write(to: audio)
+
+        let request = ASRRequest(
+            audioURL: audio,
+            languageCode: "ja",
+            modelID: "whisper.cpp:small",
+            vadEnabled: true
+        )
+        let missingPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: request,
+            outputBaseURL: directory.appendingPathComponent("missing")
+        )
+        XCTAssertFalse(missingPlan.arguments.contains("--vad"))
+        XCTAssertFalse(missingPlan.arguments.contains("--vad-model"))
+
+        let vadModel = runtimeDirectory.appendingPathComponent("ggml-silero-v5.1.2.bin")
+        try Data("fake vad model".utf8).write(to: vadModel)
+        let readyPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: request,
+            outputBaseURL: directory.appendingPathComponent("ready")
+        )
+        XCTAssertTrue(readyPlan.arguments.contains("--vad"))
+        XCTAssertEqual(
+            argumentValue(after: "--vad-model", in: readyPlan.arguments),
+            vadModel.path
+        )
+
+        let disabledPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: ASRRequest(
+                audioURL: audio,
+                languageCode: "ja",
+                modelID: "whisper.cpp:small",
+                vadEnabled: false
+            ),
+            outputBaseURL: directory.appendingPathComponent("disabled")
+        )
+        XCTAssertFalse(disabledPlan.arguments.contains("--vad"))
+        XCTAssertFalse(disabledPlan.arguments.contains("--vad-model"))
+    }
+
     func testDefaultLocalASRPromptOmitsLanguageHintForAutoDetect() {
         let video = URL(fileURLWithPath: "/tmp/Moon Gate Clip.mp4")
 
@@ -1498,6 +1556,31 @@ final class ASRContractsTests: XCTestCase {
             "title=Moon Gate Clip; language=en"
         )
         XCTAssertNil(ASRPromptBuilder.defaultPrompt(videoURL: URL(fileURLWithPath: "/tmp/   .mp4"), languageCode: "auto"))
+    }
+
+    func testDefaultLocalASRPromptInjectsMetadataGlossaryAndCharacters() throws {
+        let video = URL(fileURLWithPath: "/tmp/コウペンちゃん 夏祭り.mp4")
+        let metadata = ASRPromptMetadata(
+            title: "コウペンちゃん 夏祭り",
+            channel: "Koupen Channel",
+            characters: ["コウペンちゃん", "邪エナガさん"],
+            glossaryTerms: ["チョコバナナ", "ソースせんべい", "くじ引きやろう"]
+        )
+
+        let prompt = try XCTUnwrap(ASRPromptBuilder.defaultPrompt(
+            videoURL: video,
+            languageCode: "ja",
+            metadata: metadata
+        ))
+
+        XCTAssertTrue(prompt.contains("title=コウペンちゃん 夏祭り"))
+        XCTAssertTrue(prompt.contains("channel=Koupen Channel"))
+        XCTAssertTrue(prompt.contains("characters=コウペンちゃん, 邪エナガさん"))
+        XCTAssertTrue(prompt.contains("glossary=チョコバナナ, ソースせんべい, くじ引きやろう"))
+
+        let inferred = try XCTUnwrap(ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: "ja"))
+        XCTAssertTrue(inferred.contains("characters=コウペンちゃん"))
+        XCTAssertTrue(inferred.contains("glossary=チョコバナナ, ソースせんべい, くじ引きやろう"))
     }
 
     func testLyricsRecognitionProfileAvoidsPromptContextAndDialogueExemplar() {
@@ -3103,7 +3186,7 @@ final class ASRContractsTests: XCTestCase {
             workDirectoryURL: workDirectory,
             recognizer: recognizer,
             modelID: "whisper.cpp:test",
-            promptProvider: { videoURL, languageCode in
+            promptProvider: { videoURL, languageCode, _ in
                 "title=\(videoURL.deletingPathExtension().lastPathComponent); lang=\(languageCode)"
             },
             audioExtractor: audioExtractor
@@ -3197,7 +3280,7 @@ final class ASRContractsTests: XCTestCase {
             workDirectoryURL: workDirectory,
             recognizer: recognizer,
             modelID: "whisper.cpp:test",
-            promptProvider: { videoURL, languageCode in
+            promptProvider: { videoURL, languageCode, _ in
                 ASRPromptBuilder.defaultPrompt(videoURL: videoURL, languageCode: languageCode)
             },
             audioExtractor: audioExtractor
@@ -3281,7 +3364,7 @@ final class ASRContractsTests: XCTestCase {
             workDirectoryURL: workDirectory,
             recognizer: recognizer,
             modelID: "whisper.cpp:test",
-            promptProvider: { videoURL, languageCode in
+            promptProvider: { videoURL, languageCode, _ in
                 ASRPromptBuilder.defaultPrompt(videoURL: videoURL, languageCode: languageCode)
             },
             audioExtractor: audioExtractor
@@ -3338,6 +3421,87 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertNotNil(LocalASRGeneratorFactory.make(
             settings: enabled,
             ffmpegURL: ffmpeg,
+            supportDirectoryURL: directory
+        ))
+    }
+
+    func testSidecarLocalASRSubtitleGeneratorRunsLocalProcessAndWritesSourceSRT() async throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("moongate-asr-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: directory) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sidecar = directory.appendingPathComponent("sidecar")
+        try Data("""
+        #!/bin/sh
+        output=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --output) output="$2"; shift 2 ;;
+            *) shift 2 ;;
+          esac
+        done
+        printf '1\\n00:00:00,000 --> 00:00:01,200\\nコウペンちゃん\\n' > "$output"
+        """.utf8).write(to: sidecar)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sidecar.path)
+        let model = directory.appendingPathComponent("faster-whisper-small")
+        try fm.createDirectory(at: model, withIntermediateDirectories: true)
+        let video = directory.appendingPathComponent("koupen.mp4")
+        try Data("video".utf8).write(to: video)
+        let generator = SidecarLocalASRSubtitleGenerator(
+            executableURL: sidecar,
+            modelURL: model,
+            workDirectoryURL: directory.appendingPathComponent("work", isDirectory: true)
+        )
+
+        let result = try await generator.generateSourceSubtitle(
+            videoFile: video,
+            languageCode: "ja",
+            control: nil
+        ) { _ in }
+
+        XCTAssertEqual(result.url.lastPathComponent, "koupen.local-asr.ja.srt")
+        let raw = try String(contentsOf: result.url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("コウペンちゃん"))
+        XCTAssertFalse(result.confidence?.qualityIssues.contains("emptyTranscript") ?? false)
+    }
+
+    func testLocalASRGeneratorFactoryUsesPreciseSidecarWhenEnabled() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("moongate-asr-sidecar-factory-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: directory) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sidecar = directory.appendingPathComponent("sidecar")
+        try Data("#!/bin/sh\n".utf8).write(to: sidecar)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sidecar.path)
+        let model = directory.appendingPathComponent("model-dir", isDirectory: true)
+        try fm.createDirectory(at: model, withIntermediateDirectories: true)
+        let settings = AppSettings(
+            localASREnabled: true,
+            localASRRuntimePath: "/missing/whisper-cli",
+            localASRModelPath: "/missing/ggml.bin",
+            localASRModelID: "custom:missing",
+            localASRPreciseModeEnabled: true,
+            localASRSidecarRuntimePath: sidecar.path,
+            localASRSidecarModelPath: model.path
+        )
+
+        let generator = LocalASRGeneratorFactory.make(
+            settings: settings,
+            ffmpegURL: nil,
+            supportDirectoryURL: directory
+        )
+        XCTAssertTrue(generator is SidecarLocalASRSubtitleGenerator)
+        let incomplete = AppSettings(
+            localASREnabled: true,
+            localASRPreciseModeEnabled: true,
+            localASRSidecarRuntimePath: "",
+            localASRSidecarModelPath: model.path
+        )
+        XCTAssertNil(LocalASRGeneratorFactory.make(
+            settings: incomplete,
+            ffmpegURL: nil,
             supportDirectoryURL: directory
         ))
     }
@@ -3494,6 +3658,13 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(runner.callCount, 2)
         XCTAssertFalse(runner.plans[0].arguments.contains("--no-gpu"))
         XCTAssertTrue(runner.plans[1].arguments.contains("--no-gpu"))
+    }
+
+    private func argumentValue(after flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag) else { return nil }
+        let valueIndex = arguments.index(after: index)
+        guard valueIndex < arguments.endIndex else { return nil }
+        return arguments[valueIndex]
     }
 }
 

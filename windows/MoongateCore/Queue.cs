@@ -234,6 +234,7 @@ public sealed class QueueManager
     private readonly Func<AppSettings, ISubtitleTranslator> _translatorFactory;
     private readonly Func<ISubtitleBurner> _burnerFactory;
     private ILocalAsrSubtitleGenerator? _localAsrGenerator;
+    private ICloudAsrSubtitleGenerator? _cloudAsrGenerator;
     private readonly IQueueCompletionNotifier? _completionNotifier;
     private readonly HashSet<Guid> _notifiedTerminalIds = [];
 
@@ -302,12 +303,14 @@ public sealed class QueueManager
         Func<ISubtitleBurner>? burnerFactory = null,
         AppSettings? settings = null,
         ILocalAsrSubtitleGenerator? localAsrGenerator = null,
+        ICloudAsrSubtitleGenerator? cloudAsrGenerator = null,
         IQueueCompletionNotifier? completionNotifier = null)
     {
         _engine = engine;
         _translatorFactory = translatorFactory ?? (s => new ConfiguredTranslator(s));
         _burnerFactory = burnerFactory ?? (() => new FFmpegBurner());
         _localAsrGenerator = localAsrGenerator;
+        _cloudAsrGenerator = cloudAsrGenerator;
         _completionNotifier = completionNotifier;
         var loaded = settings ?? AppSettings.Load();
         _maxConcurrentDownloads = loaded.MaxConcurrentDownloads;
@@ -319,10 +322,16 @@ public sealed class QueueManager
     }
 
     public bool HasLocalAsrGenerator => _localAsrGenerator is not null;
+    public bool HasCloudAsrGenerator => _cloudAsrGenerator is not null;
 
     public void SyncLocalAsrGenerator(ILocalAsrSubtitleGenerator? generator)
     {
         _localAsrGenerator = generator;
+    }
+
+    public void SyncCloudAsrGenerator(ICloudAsrSubtitleGenerator? generator)
+    {
+        _cloudAsrGenerator = generator;
     }
 
     public bool CanRetryWithLocalAsr(Guid id)
@@ -503,29 +512,44 @@ public sealed class QueueManager
     private static TaskWorkPlan WorkPlanFor(DownloadRequest request, ChineseSubtitleMode mode)
     {
         var needsLocalAsr = ShouldPrepareLocalAsrSource(request);
+        var needsCloudAsr = ShouldPrepareCloudAsrSource(request);
+        var needsSpeechRecognition = needsLocalAsr || needsCloudAsr;
         // Weights approximate real wall-clock so the bar tracks time (download/transcription/
         // translation/burn are all multi-minute). Mirrors the Swift QueueManager.workPlan.
         return new TaskWorkPlan(
             shouldExtractAudio: needsLocalAsr,
-            shouldRunASR: needsLocalAsr,
+            shouldRunASR: needsSpeechRecognition,
             shouldSegmentSubtitles: needsLocalAsr,
             shouldTranscode: Transcoder.NeedsProcessing(request.OutputFormat),
             shouldTranslate: mode is ChineseSubtitleMode.SrtOnly or ChineseSubtitleMode.BurnIn,
             shouldBurn: mode is ChineseSubtitleMode.BurnIn or ChineseSubtitleMode.BurnOriginal,
             downloadUnits: 2,
             audioExtractUnits: 1,
-            speechRecognitionUnits: needsLocalAsr ? 6 : 1,
+            speechRecognitionUnits: needsSpeechRecognition ? 6 : 1,
             subtitleSegmentUnits: 1,
             transcodeUnits: 2,
             translateUnits: 6,
             burnUnits: 4);
     }
 
+    private static bool ShouldPrepareCloudAsrSource(DownloadRequest request) =>
+        request.SubtitleSourcePolicy == SubtitleSourcePolicy.CloudAsr
+        || request.PrimarySubtitleTrack?.SourceKind == SubtitleSourceKind.CloudAsr
+        || request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.CloudAsr);
+
     private static bool ShouldPrepareLocalAsrSource(DownloadRequest request)
     {
-        if (request.PrimarySubtitleTrack is { } primarySubtitleTrack)
+        if (request.SubtitleSourcePolicy == SubtitleSourcePolicy.CompareLocalAsr)
         {
-            return primarySubtitleTrack.SourceKind == SubtitleSourceKind.LocalAsr;
+            if (request.PrimarySubtitleTrack is { } primarySubtitleTrack)
+            {
+                return primarySubtitleTrack.SourceKind == SubtitleSourceKind.PlatformAuto;
+            }
+            return request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.PlatformAuto);
+        }
+        if (request.PrimarySubtitleTrack is { } primaryLocalTrack)
+        {
+            return primaryLocalTrack.SourceKind == SubtitleSourceKind.LocalAsr;
         }
         var hasNonLocalTrack = request.RequestedSubtitleTracks.Any(track => track.SourceKind != SubtitleSourceKind.LocalAsr);
         return !hasNonLocalTrack && request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.LocalAsr);
@@ -732,6 +756,18 @@ public sealed class QueueManager
 
         try
         {
+            downloadFiles = AppendImportedSubtitleFileIfNeeded(downloadFiles, current.Request);
+        }
+        catch (Exception error)
+        {
+            if (GenerationOf(id) != generation) return;
+            SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
+                L10n.T("导入字幕", "匯入字幕", "imported subtitles"));
+            return;
+        }
+
+        try
+        {
             downloadFiles = await PrepareLocalAsrSourceSubtitleIfNeededAsync(
                 downloadFiles,
                 current.Request,
@@ -745,6 +781,24 @@ public sealed class QueueManager
             if (GenerationOf(id) != generation) return;
             SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
                 L10n.T("语音识别", "語音識別", "speech recognition"));
+            return;
+        }
+
+        try
+        {
+            downloadFiles = await PrepareCloudAsrSourceSubtitleIfNeededAsync(
+                downloadFiles,
+                current.Request,
+                id,
+                generation,
+                control,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            if (GenerationOf(id) != generation) return;
+            SettlePartial(id, generation, Item(id)?.ResultFiles?.ToList() ?? downloadFiles, error,
+                L10n.T("云端精准识别", "雲端精準識別", "cloud precise recognition"));
             return;
         }
 
@@ -1606,16 +1660,34 @@ public sealed class QueueManager
         CancellationToken ct)
     {
         var language = preferredLang ?? LangCode(pickedSource) ?? "";
+        var videoDurationSeconds = PlatformSubtitleQualityGate.ParseDurationSeconds(info.DurationText);
+        SubtitleSourceCandidate Candidate(
+            SubtitleSourceKind kind,
+            string? filePath,
+            string? displayName = null,
+            string? provider = null)
+        {
+            return new SubtitleSourceCandidate(
+                $"{kind}:{language}:{filePath ?? "missing"}",
+                kind,
+                string.IsNullOrWhiteSpace(language) ? "auto" : language,
+                displayName ?? Path.GetFileName(filePath ?? "") ?? kind.ToString(),
+                filePath,
+                kind is SubtitleSourceKind.LocalAsr or SubtitleSourceKind.CloudAsr or SubtitleSourceKind.PlatformAuto,
+                provider);
+        }
         var pickedIsLocalAsr = IsLocalAsrSubtitle(pickedSource);
         IReadOnlyList<SubtitleSourceCandidateReport> ArbitrationReports(
             PlatformSubtitleQualityGate.Verdict? verdict = null,
-            bool? localAsrAvailable = null)
+            bool? localAsrAvailable = null,
+            bool? cloudAsrAvailable = null)
         {
             return SongSubtitleSourceArbiter.Arbitrate(
                 language,
                 primarySubtitleTrack is null ? [] : [primarySubtitleTrack],
                 verdict,
-                localAsrAvailable ?? (_localAsrGenerator is not null)).CandidateReports;
+                localAsrAvailable ?? (_localAsrGenerator is not null),
+                cloudAsrAvailable ?? (_cloudAsrGenerator is not null)).CandidateReports;
         }
         if (pickedIsLocalAsr)
         {
@@ -1629,18 +1701,35 @@ public sealed class QueueManager
                 },
                 null);
         }
-        var pickedIsAuto = primarySubtitleTrack is not null
-            ? primarySubtitleTrack.SourceKind == SubtitleSourceKind.PlatformAuto
-            : ExtensionOf(pickedSource) == "vtt";
-        if (!pickedIsAuto)
+        var pickedIsCloudAsr = IsCloudAsrSubtitle(pickedSource);
+        if (pickedIsCloudAsr)
         {
-            // Manual / official subtitle: trusted, no gate.
             return new SubtitleSourceResolution(pickedSource, downloadFiles,
                 new ResolvedSubtitleSource
                 {
                     LanguageCode = language,
                     SelectedFile = pickedSource,
-                    SelectedKind = SubtitleSourceKind.Manual,
+                    SelectedKind = SubtitleSourceKind.CloudAsr,
+                    CandidateReports = ArbitrationReports(cloudAsrAvailable: true),
+                },
+                null);
+        }
+        var pickedIsAuto = primarySubtitleTrack is not null
+            ? primarySubtitleTrack.SourceKind == SubtitleSourceKind.PlatformAuto
+            : ExtensionOf(pickedSource) == "vtt";
+        if (!pickedIsAuto)
+        {
+            var trustedSourceKind = primarySubtitleTrack?.SourceKind == SubtitleSourceKind.ImportedFile
+                || IsImportedSubtitle(pickedSource)
+                    ? SubtitleSourceKind.ImportedFile
+                    : SubtitleSourceKind.Manual;
+            // Manual / imported / official subtitle: trusted, no gate.
+            return new SubtitleSourceResolution(pickedSource, downloadFiles,
+                new ResolvedSubtitleSource
+                {
+                    LanguageCode = language,
+                    SelectedFile = pickedSource,
+                    SelectedKind = trustedSourceKind,
                     CandidateReports = ArbitrationReports(),
                 },
                 null);
@@ -1648,8 +1737,9 @@ public sealed class QueueManager
 
         var verdict = PlatformSubtitleQualityGate.Assess(
             pickedSource, preferredLang, LangCode(pickedSource),
-            PlatformSubtitleQualityGate.ParseDurationSeconds(info.DurationText));
-        if (verdict.Usable)
+            videoDurationSeconds);
+        var shouldCompareLocalAsr = request.SubtitleSourcePolicy == SubtitleSourcePolicy.CompareLocalAsr;
+        if (verdict.Usable && !shouldCompareLocalAsr)
         {
             return new SubtitleSourceResolution(pickedSource, downloadFiles,
                 new ResolvedSubtitleSource
@@ -1678,10 +1768,15 @@ public sealed class QueueManager
                     FallbackReasons = verdict.Reasons,
                     CandidateReports = ArbitrationReports(verdict, false),
                 },
-                L10n.T(
-                    "平台字幕质量较差，可在设置中启用本地识别提升质量",
-                    "平台字幕品質較差，可在設定中啟用本機識別提升品質",
-                    "Platform subtitles are low quality; enable local recognition in Settings to improve"));
+                verdict.Usable
+                    ? L10n.T(
+                        "本地识别未配置，无法比较；已保留平台字幕。",
+                        "本機識別尚未設定，無法比較；已保留平台字幕。",
+                        "Local recognition is not configured, so Moongate could not compare sources. Platform subtitles were kept.")
+                    : L10n.T(
+                        "平台字幕质量较差，可在设置中启用本地识别提升质量",
+                        "平台字幕品質較差，可在設定中啟用本機識別提升品質",
+                        "Platform subtitles are low quality; enable local recognition in Settings to improve"));
         }
 
         Update(id, generation, item =>
@@ -1713,18 +1808,44 @@ public sealed class QueueManager
             item.IsPostDownloadProcessing = false;
             item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
         });
-        return new SubtitleSourceResolution(sourceSrt, nextFiles,
+
+        var resolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(
+            request.SourceLanguageIntent,
+            request.SubtitleSourcePolicy,
+            [
+                Candidate(
+                    SubtitleSourceKind.PlatformAuto,
+                    pickedSource,
+                    primarySubtitleTrack?.Label,
+                    primarySubtitleTrack?.Provider),
+                Candidate(
+                    SubtitleSourceKind.LocalAsr,
+                    sourceSrt,
+                    primarySubtitleTrack?.Label,
+                    "whisper.cpp"),
+            ],
+            videoDurationSeconds));
+        var selectedKind = resolved?.SelectedKind ?? (verdict.Usable ? SubtitleSourceKind.PlatformAuto : SubtitleSourceKind.LocalAsr);
+        var selectedSource = selectedKind == SubtitleSourceKind.PlatformAuto ? pickedSource : sourceSrt;
+        var candidateReports = resolved?.CandidateReports ?? ArbitrationReports(verdict, true);
+        var qualityVerdict = resolved?.QualityVerdict ?? verdict;
+        var sourceQualityVerdict = resolved?.SourceQualityVerdict;
+        var fallbackReasons = selectedKind == SubtitleSourceKind.LocalAsr ? verdict.Reasons : [];
+        return new SubtitleSourceResolution(selectedSource, nextFiles,
             new ResolvedSubtitleSource
             {
                 LanguageCode = language,
-                SelectedFile = sourceSrt,
-                SelectedKind = SubtitleSourceKind.LocalAsr,
-                QualityVerdict = verdict,
-                UsedLocalAsrFallback = true,
-                FallbackReasons = verdict.Reasons,
-                CandidateReports = ArbitrationReports(verdict, true),
+                SelectedFile = selectedSource,
+                SelectedKind = selectedKind,
+                QualityVerdict = qualityVerdict,
+                SourceQualityVerdict = sourceQualityVerdict,
+                UsedLocalAsrFallback = selectedKind == SubtitleSourceKind.LocalAsr,
+                FallbackReasons = fallbackReasons,
+                CandidateReports = candidateReports,
             },
-            LocalAsrSourceNote(verdict.Reasons, generated.Confidence));
+            selectedKind == SubtitleSourceKind.LocalAsr
+                ? LocalAsrSourceNote(verdict.Reasons, generated.Confidence)
+                : null);
     }
 
     /// <summary>Honest "recognition quality is low" caveat for pervasively low-confidence local ASR.</summary>
@@ -1868,6 +1989,63 @@ public sealed class QueueManager
             "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。",
             "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.");
 
+    private async Task<List<string>> PrepareCloudAsrSourceSubtitleIfNeededAsync(
+        List<string> files,
+        DownloadRequest request,
+        Guid id,
+        int generation,
+        TaskControlToken control,
+        CancellationToken ct)
+    {
+        if (!ShouldPrepareCloudAsrSource(request)) return files;
+        var languageCode = CloudAsrLanguageCode(request);
+        if (ExistingCloudAsrSubtitle(files, languageCode) is { } existing)
+        {
+            var reusedFiles = files.ToList();
+            if (!reusedFiles.Contains(existing)) reusedFiles.Add(existing);
+            return reusedFiles;
+        }
+        if (_cloudAsrGenerator is null)
+        {
+            throw MoongateException.DownloadFailed(L10n.T(
+                "请先配置云端精准识别。",
+                "請先設定雲端精準識別。",
+                "Configure cloud precise recognition before using it."));
+        }
+        var videoFile = files.FirstOrDefault(file => VideoExtensions.Contains(ExtensionOf(file)));
+        if (videoFile is null) return files;
+
+        Update(id, generation, item =>
+        {
+            item.Stage = ItemStage.Downloading;
+            item.ClearProgress();
+            item.StatusText = null;
+            item.IsPostDownloadProcessing = true;
+            item.PostDownloadProcessingKind = PostDownloadProcessingKind.Generic;
+            ApplyProgress(item, id, generation, QueueProgressPhase.SpeechRecognition, null);
+        });
+        var generated = await _cloudAsrGenerator.GenerateSourceSubtitleAsync(
+            videoFile,
+            languageCode,
+            control,
+            ct).ConfigureAwait(false);
+        var sourceSrt = generated.Url;
+        if (GenerationOf(id) != generation) return files;
+
+        CompleteProgressPhase(id, generation, QueueProgressPhase.SpeechRecognition);
+        var nextFiles = files.ToList();
+        if (!nextFiles.Contains(sourceSrt)) nextFiles.Add(sourceSrt);
+        Update(id, generation, item =>
+        {
+            item.ResultFiles = nextFiles;
+            item.ClearProgress();
+            item.StatusText = null;
+            item.IsPostDownloadProcessing = false;
+            item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+        });
+        return nextFiles;
+    }
+
     private void ApplyAsrProgress(Guid id, int generation, AsrProgress progress)
     {
         Update(id, generation, item =>
@@ -1898,6 +2076,72 @@ public sealed class QueueManager
         return request.RequestedSubtitleTracks
             .FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.LocalAsr)?
             .LanguageCode;
+    }
+
+    private static string CloudAsrLanguageCode(DownloadRequest request)
+    {
+        var code = request.PrimarySubtitleTrack?.SourceKind == SubtitleSourceKind.CloudAsr
+            ? request.PrimarySubtitleTrack.LanguageCode
+            : request.RequestedSubtitleTracks.FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.CloudAsr)?.LanguageCode
+                ?? request.EffectivePreferredLanguageCode;
+        var normalized = string.IsNullOrWhiteSpace(code) ? "auto" : SubtitleLanguageChoice.NormalizedLanguageCode(code);
+        return string.IsNullOrWhiteSpace(normalized) ? "auto" : normalized;
+    }
+
+    private static List<string> AppendImportedSubtitleFileIfNeeded(
+        List<string> files,
+        DownloadRequest request)
+    {
+        if (request.PrimarySubtitleTrack is not { SourceKind: SubtitleSourceKind.ImportedFile } importedTrack)
+        {
+            return files;
+        }
+        if (!importedTrack.Metadata.TryGetValue("path", out var sourcePath)
+            || string.IsNullOrWhiteSpace(sourcePath))
+        {
+            return files;
+        }
+        var ext = ExtensionOf(sourcePath);
+        if (ext is not ("srt" or "vtt")) return files;
+        if (!File.Exists(sourcePath)) return files;
+        if (files.Any(file => PathsEqual(file, sourcePath))) return files;
+
+        var language = SubtitleLanguageChoice.NormalizedLanguageCode(
+            request.EffectivePreferredLanguageCode ?? importedTrack.LanguageCode);
+        if (string.IsNullOrWhiteSpace(language)) language = "auto";
+        var destination = ImportedSubtitleDestination(
+            request.DestinationDirectory,
+            language,
+            ext);
+        Directory.CreateDirectory(request.DestinationDirectory);
+        var nextFiles = files.ToList();
+        if (PathsEqual(sourcePath, destination))
+        {
+            nextFiles.Add(sourcePath);
+            return nextFiles;
+        }
+        File.Copy(sourcePath, destination, overwrite: false);
+        nextFiles.Add(destination);
+        return nextFiles;
+    }
+
+    private static string ImportedSubtitleDestination(
+        string directory,
+        string languageCode,
+        string extension)
+    {
+        var safeLanguage = new string(languageCode.Select(ch =>
+            char.IsLetterOrDigit(ch) || ch == '-' ? ch : '-').ToArray());
+        if (string.IsNullOrWhiteSpace(safeLanguage)) safeLanguage = "auto";
+        var stem = $"imported-subtitle.{safeLanguage}";
+        var candidate = Path.Combine(directory, stem + "." + extension);
+        var index = 2;
+        while (File.Exists(candidate))
+        {
+            candidate = Path.Combine(directory, $"{stem}-{index}.{extension}");
+            index++;
+        }
+        return candidate;
     }
 
     private static string? ExistingLocalAsrSubtitle(IEnumerable<string> files, string languageCode)
@@ -1967,6 +2211,20 @@ public sealed class QueueManager
             .Where(f => ExtensionOf(f) is "srt" or "vtt")
             .OrderBy(SubtitleSourceRank)
             .ToList();
+        if (preferredTrack?.SourceKind == SubtitleSourceKind.ImportedFile)
+        {
+            if (preferredTrack.Metadata.TryGetValue("path", out var importedPath)
+                && subtitleFiles.FirstOrDefault(file =>
+                    PathsEqual(file, importedPath)
+                    || string.Equals(Path.GetFileName(file), Path.GetFileName(importedPath), StringComparison.OrdinalIgnoreCase)) is { } exact)
+            {
+                return exact;
+            }
+            if (subtitleFiles.FirstOrDefault(IsImportedSubtitle) is { } imported)
+            {
+                return imported;
+            }
+        }
         if (preferredLang is { Length: > 0 })
         {
             var lang = preferredLang.ToLowerInvariant();
@@ -1982,9 +2240,15 @@ public sealed class QueueManager
                 var matched = matches.FirstOrDefault(IsLocalAsrSubtitle);
                 if (matched is not null) return matched;
             }
-            if (preferredTrack is not null && preferredTrack.SourceKind != SubtitleSourceKind.LocalAsr)
+            if (preferredTrack?.SourceKind == SubtitleSourceKind.CloudAsr)
             {
-                var matched = matches.FirstOrDefault(file => !IsLocalAsrSubtitle(file));
+                var matched = matches.FirstOrDefault(IsCloudAsrSubtitle);
+                if (matched is not null) return matched;
+            }
+            if (preferredTrack is not null
+                && preferredTrack.SourceKind is not (SubtitleSourceKind.LocalAsr or SubtitleSourceKind.CloudAsr))
+            {
+                var matched = matches.FirstOrDefault(file => !IsLocalAsrSubtitle(file) && !IsCloudAsrSubtitle(file));
                 if (matched is not null) return matched;
             }
             if (matches.FirstOrDefault() is { } fallback) return fallback;
@@ -1997,14 +2261,31 @@ public sealed class QueueManager
 
     private static int SubtitleSourceRank(string file) => ExtensionOf(file) switch
     {
+        _ when IsCloudAsrSubtitle(file) => -3,
+        _ when IsImportedSubtitle(file) => -2,
         _ when IsLocalAsrSubtitle(file) => -1,
         "vtt" => 0,
         "srt" => 1,
         _ => 2,
     };
 
+    private static string? ExistingCloudAsrSubtitle(IReadOnlyList<string> files, string languageCode)
+    {
+        var normalized = languageCode.Trim().ToLowerInvariant();
+        return files.FirstOrDefault(file =>
+            IsCloudAsrSubtitle(file)
+            && (normalized == "auto"
+                || string.Equals(LangCode(file), normalized, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsCloudAsrSubtitle(string file) =>
+        Path.GetFileName(file).Contains(".cloud-asr.", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsLocalAsrSubtitle(string file) =>
         Path.GetFileName(file).Contains(".local-asr.", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsImportedSubtitle(string file) =>
+        Path.GetFileName(file).StartsWith("imported-subtitle.", StringComparison.OrdinalIgnoreCase);
 
     private static string EnsureSrtSubtitle(string file)
     {

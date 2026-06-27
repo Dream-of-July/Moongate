@@ -8,6 +8,7 @@ public struct ResolvedSubtitleSource: Equatable, Sendable {
     public let selectedFile: URL
     public let selectedKind: SubtitleSourceKind
     public let qualityVerdict: PlatformSubtitleQualityGate.Verdict?
+    public let sourceQualityVerdict: SubtitleQualityVerdict?
     public let usedLocalASRFallback: Bool
     public let fallbackReasons: [PlatformSubtitleQualityGate.Reason]
     public let candidateReports: [SubtitleSourceCandidateReport]
@@ -17,6 +18,7 @@ public struct ResolvedSubtitleSource: Equatable, Sendable {
         selectedFile: URL,
         selectedKind: SubtitleSourceKind,
         qualityVerdict: PlatformSubtitleQualityGate.Verdict? = nil,
+        sourceQualityVerdict: SubtitleQualityVerdict? = nil,
         usedLocalASRFallback: Bool = false,
         fallbackReasons: [PlatformSubtitleQualityGate.Reason] = [],
         candidateReports: [SubtitleSourceCandidateReport] = []
@@ -25,6 +27,7 @@ public struct ResolvedSubtitleSource: Equatable, Sendable {
         self.selectedFile = selectedFile
         self.selectedKind = selectedKind
         self.qualityVerdict = qualityVerdict
+        self.sourceQualityVerdict = sourceQualityVerdict
         self.usedLocalASRFallback = usedLocalASRFallback
         self.fallbackReasons = fallbackReasons
         self.candidateReports = candidateReports
@@ -37,6 +40,7 @@ public struct SubtitleSourceCandidateReport: Equatable, Sendable {
     public let available: Bool
     public let selected: Bool
     public let usable: Bool
+    public let qualityVerdict: SubtitleQualityVerdict?
     public let reasons: [String]
 
     public init(
@@ -45,6 +49,7 @@ public struct SubtitleSourceCandidateReport: Equatable, Sendable {
         available: Bool,
         selected: Bool,
         usable: Bool,
+        qualityVerdict: SubtitleQualityVerdict? = nil,
         reasons: [String] = []
     ) {
         self.sourceKind = sourceKind
@@ -52,6 +57,7 @@ public struct SubtitleSourceCandidateReport: Equatable, Sendable {
         self.available = available
         self.selected = selected
         self.usable = usable
+        self.qualityVerdict = qualityVerdict
         self.reasons = reasons
     }
 }

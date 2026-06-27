@@ -186,6 +186,12 @@
                                                         </Style>
                                                     </TextBlock.Style>
                                                 </TextBlock>
+                                                <TextBlock Text="{Binding SubtitleSourceDetailText}" FontSize="11"
+                                                           Margin="0,3,0,0"
+                                                           TextWrapping="Wrap" MaxHeight="34"
+                                                           Foreground="{DynamicResource TertiaryTextBrush}"
+                                                           ToolTip="{Binding SubtitleSourceDetailText}"
+                                                           Visibility="{Binding SubtitleSourceDetailText, Converter={StaticResource TextToVis}}"/>
                                                 <ProgressBar Height="4" Margin="0,6,0,0" Minimum="0" Maximum="1"
                                                              Value="{Binding ProgressValue, Mode=OneWay}"
                                                              IsIndeterminate="{Binding ProgressIndeterminate}"
@@ -448,8 +454,38 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="{DynamicResource L.Ready.SubtitleLanguageSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
-                        <Border Style="{StaticResource Card}" Padding="12,8">
+                        <TextBlock Text="{DynamicResource L.Ready.SubtitleOutputSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
+                        <Border Style="{StaticResource Card}" Padding="12">
+                            <StackPanel>
+                                <StackPanel>
+                                    <RadioButton Content="{DynamicResource L.Mode.Off}" GroupName="ChineseMode" Margin="0,3"
+                                                 IsChecked="{Binding ChineseModeOff}"/>
+                                    <RadioButton Content="{DynamicResource L.Mode.SrtOnly}" GroupName="ChineseMode" Margin="0,3"
+                                                 IsChecked="{Binding ChineseModeSrtOnly}"/>
+                                    <RadioButton Content="{DynamicResource L.Mode.BurnIn}" GroupName="ChineseMode" Margin="0,3"
+                                                 IsChecked="{Binding ChineseModeBurnIn}"/>
+                                    <!-- 直压模式：不翻译直接把所选字幕压进视频，无需配置翻译服务 -->
+                                    <RadioButton Content="{DynamicResource L.Mode.BurnOriginal}" GroupName="ChineseMode" Margin="0,3"
+                                                 IsChecked="{Binding ChineseModeBurnOriginal}"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ChineseHintText}" Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                           Visibility="{Binding ChineseHintText, Converter={StaticResource TextToVis}}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                            Visibility="{Binding ShowTranslationUnconfigured, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{DynamicResource L.Ready.NotConfigured}" Style="{StaticResource Caption}"/>
+                                    <Button Content="{DynamicResource L.Ready.GoSettings}" FontSize="11.5" Margin="8,0,0,0"
+                                            Style="{StaticResource LinkButton}"
+                                            Command="{Binding OpenSettingsCommand}"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ChineseSourceNote}" Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                           Visibility="{Binding ChineseSourceNote, Converter={StaticResource TextToVis}}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"
+                                   Visibility="{Binding SubtitleSourceControlsVisible, Converter={StaticResource BoolToVis}}"/>
+                        <Border Style="{StaticResource Card}" Padding="12,8"
+                                Visibility="{Binding SubtitleSourceControlsVisible, Converter={StaticResource BoolToVis}}">
                             <StackPanel>
                                 <DockPanel Margin="0,4,0,8">
                                     <TextBlock Text="{DynamicResource L.Ready.SourceLanguagePickerAccessibility}" VerticalAlignment="Center"/>
@@ -465,32 +501,50 @@
                                     <RadioButton GroupName="SubtitleSource" Margin="0,5" VerticalContentAlignment="Center"
                                                  IsChecked="{Binding RecommendedLanguageOption.IsSelected}"
                                                  DataContext="{Binding RecommendedLanguageOption}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock Text="{Binding DisplayLabel}"/>
-                                            <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0">
-                                                <TextBlock Text="{DynamicResource L.Ready.RecommendedBadge}" FontSize="10.5"
-                                                           Foreground="{DynamicResource SecondaryTextBrush}"/>
-                                            </Border>
-                                            <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0"
-                                                    Visibility="{Binding ShowAutoBadge, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="{DynamicResource L.Ready.AutoTag}" FontSize="10.5"
-                                                           Foreground="{DynamicResource SecondaryTextBrush}"/>
-                                            </Border>
-                                            <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0"
-                                                    Visibility="{Binding ShowLocalAsrBadge, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="{DynamicResource L.Ready.LocalASR}" FontSize="10.5"
-                                                           Foreground="{DynamicResource SecondaryTextBrush}"/>
-                                            </Border>
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{DynamicResource L.Ready.SubtitleSourcePolicyAutoBest}"/>
+                                                <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0">
+                                                    <TextBlock Text="{DynamicResource L.Ready.RecommendedBadge}" FontSize="10.5"
+                                                               Foreground="{DynamicResource SecondaryTextBrush}"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding DisplayLabel}"
+                                                       Style="{StaticResource Caption}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,2,0,0"/>
                                         </StackPanel>
                                     </RadioButton>
                                     <TextBlock Text="{DynamicResource L.Ready.AutoSourceExplanation}" Style="{StaticResource Caption}"
                                                TextWrapping="Wrap" Margin="0,2,0,4"/>
                                 </StackPanel>
-                                <!-- “不需要字幕” -->
-                                <RadioButton Content="{DynamicResource L.Ready.NoSubtitleSource}"
-                                             GroupName="SubtitleSource"
-                                             Margin="0,5"
-                                             IsChecked="{Binding PrimarySubtitleNone}"/>
+                                <Expander Header="{DynamicResource L.Ready.SubtitleSourceAdvanced}" Margin="0,6,0,0">
+                                    <StackPanel Margin="0,6,0,0">
+                                        <DockPanel>
+                                            <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceSection}" VerticalAlignment="Center"/>
+                                            <ComboBox DockPanel.Dock="Right"
+                                                      ItemsSource="{Binding SubtitleSourcePolicyOptions}"
+                                                      SelectedItem="{Binding SelectedSubtitleSourcePolicyOption}"
+                                                      DisplayMemberPath="Label"
+                                                      MinWidth="220"
+                                                      AutomationProperties.Name="{DynamicResource L.Ready.SubtitleSourceAdvanced}"/>
+                                        </DockPanel>
+                                        <DockPanel Margin="0,8,0,0">
+                                            <Button Content="{DynamicResource L.Ready.ImportSubtitleFile}"
+                                                    Click="OnImportSubtitleFileClick"
+                                                    DockPanel.Dock="Left"/>
+                                            <Button Content="{DynamicResource L.Ready.ClearImportedSubtitle}"
+                                                    Command="{Binding ClearImportedSubtitleFileCommand}"
+                                                    DockPanel.Dock="Right"
+                                                    Visibility="{Binding ImportedSubtitleSummary, Converter={StaticResource TextToVis}}"/>
+                                            <TextBlock Text="{Binding ImportedSubtitleSummary}"
+                                                       Style="{StaticResource Caption}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="8,4,8,0"
+                                                       Visibility="{Binding ImportedSubtitleSummary, Converter={StaticResource TextToVis}}"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Expander>
                                 <TextBlock Text="{DynamicResource L.Ready.NoSubtitles}" Margin="0,4"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            Visibility="{Binding HasNoSubtitles, Converter={StaticResource BoolToVis}}"/>
@@ -520,34 +574,6 @@
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
                                 </Expander>
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="{DynamicResource L.Ready.SubtitleOutputSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
-                        <Border Style="{StaticResource Card}" Padding="12">
-                            <StackPanel>
-                                <StackPanel IsEnabled="{Binding ChineseModeEnabled}">
-                                    <RadioButton Content="{DynamicResource L.Mode.Off}" GroupName="ChineseMode" Margin="0,3"
-                                                 IsChecked="{Binding ChineseModeOff}"/>
-                                    <RadioButton Content="{DynamicResource L.Mode.SrtOnly}" GroupName="ChineseMode" Margin="0,3"
-                                                 IsChecked="{Binding ChineseModeSrtOnly}"/>
-                                    <RadioButton Content="{DynamicResource L.Mode.BurnIn}" GroupName="ChineseMode" Margin="0,3"
-                                                 IsChecked="{Binding ChineseModeBurnIn}"/>
-                                    <!-- 直压模式：不翻译直接把所选字幕压进视频，无需配置翻译服务 -->
-                                    <RadioButton Content="{DynamicResource L.Mode.BurnOriginal}" GroupName="ChineseMode" Margin="0,3"
-                                                 IsChecked="{Binding ChineseModeBurnOriginal}"/>
-                                </StackPanel>
-                                <TextBlock Text="{Binding ChineseHintText}" Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                           Visibility="{Binding ChineseHintText, Converter={StaticResource TextToVis}}"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
-                                            Visibility="{Binding ShowTranslationUnconfigured, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock Text="{DynamicResource L.Ready.NotConfigured}" Style="{StaticResource Caption}"/>
-                                    <Button Content="{DynamicResource L.Ready.GoSettings}" FontSize="11.5" Margin="8,0,0,0"
-                                            Style="{StaticResource LinkButton}"
-                                            Command="{Binding OpenSettingsCommand}"/>
-                                </StackPanel>
-                                <TextBlock Text="{Binding ChineseSourceNote}" Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                           Visibility="{Binding ChineseSourceNote, Converter={StaticResource TextToVis}}"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>

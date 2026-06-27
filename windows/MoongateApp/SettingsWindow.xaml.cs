@@ -34,6 +34,7 @@ public partial class SettingsWindow : Window
         AITokenBox.Password = _vm.AIAuthToken;
         TokenBox.Password = _vm.AuthToken;
         SummaryTokenBox.Password = _vm.SummaryAuthToken;
+        CloudAsrAuthTokenBox.Password = _vm.CloudAsrAuthToken;
         // 安装更新前的队列闸：有未完成任务时先向用户确认（继续任务 / 取消全部任务并更新）。
         Updater.ConfirmInstallReady = ConfirmUpdateInstall;
         Closed += (_, _) =>
@@ -68,6 +69,11 @@ public partial class SettingsWindow : Window
     private void OnSummaryTokenChanged(object sender, RoutedEventArgs e)
     {
         _vm.SummaryAuthToken = SummaryTokenBox.Password;
+    }
+
+    private void OnCloudAsrTokenChanged(object sender, RoutedEventArgs e)
+    {
+        _vm.CloudAsrAuthToken = CloudAsrAuthTokenBox.Password;
     }
 
     private void OnCancelClick(object sender, RoutedEventArgs e)

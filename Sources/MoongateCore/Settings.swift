@@ -82,6 +82,24 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var localASRModelPath: String
     /// 用户选择/安装的模型标识，用于缓存与 UI 展示。
     public var localASRModelID: String
+    /// 是否优先使用用户配置的本地精准识别 sidecar。默认关闭；不下载 Python/模型。
+    public var localASRPreciseModeEnabled: Bool
+    /// 本地精准识别 sidecar 可执行文件路径。契约：接收 --input/--output/--language/--model/--format srt。
+    public var localASRSidecarRuntimePath: String
+    /// 本地精准识别 sidecar 模型或模型目录路径。
+    public var localASRSidecarModelPath: String
+
+    // MARK: 云端精准识别（默认关闭）
+    /// 是否允许下载流水线调用云端音频转写。默认关闭；只有用户明确同意后才可用。
+    public var cloudASREnabled: Bool
+    /// 用户是否确认理解会上传音频并可能产生 API 费用。
+    public var cloudASRConsentAccepted: Bool
+    /// OpenAI-compatible audio transcription endpoint base URL, without `/v1/audio/transcriptions`.
+    public var cloudASRBaseURL: String
+    /// Direct SRT/VTT transcription model. Defaults to `whisper-1` because newer models need alignment before timed subtitle output.
+    public var cloudASRModel: String
+    /// Cloud ASR API credential. Stored in the credential store when persisted.
+    public var cloudASRAuthToken: String
 
     // MARK: 完成提醒（v0.8）
     /// 队列完成时是否允许发完成提醒。默认开；前台 App 仍优先使用应用内状态。
@@ -141,6 +159,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         localASRRuntimePath: String = "",
         localASRModelPath: String = "",
         localASRModelID: String = "",
+        localASRPreciseModeEnabled: Bool = false,
+        localASRSidecarRuntimePath: String = "",
+        localASRSidecarModelPath: String = "",
+        cloudASREnabled: Bool = false,
+        cloudASRConsentAccepted: Bool = false,
+        cloudASRBaseURL: String = "https://api.openai.com",
+        cloudASRModel: String = "whisper-1",
+        cloudASRAuthToken: String = "",
         completionNotificationsEnabled: Bool = true,
         completionSoundEnabled: Bool = true
     ) {
@@ -185,6 +211,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.localASRRuntimePath = Self.normalizedSingleLineField(localASRRuntimePath)
         self.localASRModelPath = Self.normalizedSingleLineField(localASRModelPath)
         self.localASRModelID = Self.normalizedSingleLineField(localASRModelID)
+        self.localASRPreciseModeEnabled = localASRPreciseModeEnabled
+        self.localASRSidecarRuntimePath = Self.normalizedSingleLineField(localASRSidecarRuntimePath)
+        self.localASRSidecarModelPath = Self.normalizedSingleLineField(localASRSidecarModelPath)
+        self.cloudASREnabled = cloudASREnabled
+        self.cloudASRConsentAccepted = cloudASRConsentAccepted
+        self.cloudASRBaseURL = Self.normalizedSingleLineField(cloudASRBaseURL)
+        self.cloudASRModel = Self.normalizedSingleLineField(cloudASRModel)
+        self.cloudASRAuthToken = cloudASRAuthToken
         self.completionNotificationsEnabled = completionNotificationsEnabled
         self.completionSoundEnabled = completionSoundEnabled
     }
@@ -231,6 +265,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case lastSubtitleMode, lastSubtitleLangs, lastPrimarySubtitleTrackID, lastOutputFormat, lastPreferHDR
         case appLanguage, translationTargetLanguage, preferredSourceLanguage, onboardingCompleted, smartTranslationPromptsEnabled
         case localASREnabled, localASRRuntimePath, localASRModelPath, localASRModelID
+        case localASRPreciseModeEnabled, localASRSidecarRuntimePath, localASRSidecarModelPath
+        case cloudASREnabled, cloudASRConsentAccepted, cloudASRBaseURL, cloudASRModel, cloudASRAuthToken
         case completionNotificationsEnabled, completionSoundEnabled
     }
 
@@ -321,6 +357,22 @@ public struct AppSettings: Codable, Sendable, Equatable {
         localASRModelID = Self.normalizedSingleLineField(
             try c.decodeIfPresent(String.self, forKey: .localASRModelID) ?? ""
         )
+        localASRPreciseModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .localASRPreciseModeEnabled) ?? false
+        localASRSidecarRuntimePath = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRSidecarRuntimePath) ?? ""
+        )
+        localASRSidecarModelPath = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRSidecarModelPath) ?? ""
+        )
+        cloudASREnabled = try c.decodeIfPresent(Bool.self, forKey: .cloudASREnabled) ?? false
+        cloudASRConsentAccepted = try c.decodeIfPresent(Bool.self, forKey: .cloudASRConsentAccepted) ?? false
+        cloudASRBaseURL = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .cloudASRBaseURL) ?? "https://api.openai.com"
+        )
+        cloudASRModel = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .cloudASRModel) ?? "whisper-1"
+        )
+        cloudASRAuthToken = try c.decodeIfPresent(String.self, forKey: .cloudASRAuthToken) ?? ""
         completionNotificationsEnabled = try c.decodeIfPresent(
             Bool.self,
             forKey: .completionNotificationsEnabled
@@ -373,6 +425,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(Self.normalizedSingleLineField(localASRRuntimePath), forKey: .localASRRuntimePath)
         try c.encode(Self.normalizedSingleLineField(localASRModelPath), forKey: .localASRModelPath)
         try c.encode(Self.normalizedSingleLineField(localASRModelID), forKey: .localASRModelID)
+        try c.encode(localASRPreciseModeEnabled, forKey: .localASRPreciseModeEnabled)
+        try c.encode(Self.normalizedSingleLineField(localASRSidecarRuntimePath), forKey: .localASRSidecarRuntimePath)
+        try c.encode(Self.normalizedSingleLineField(localASRSidecarModelPath), forKey: .localASRSidecarModelPath)
+        try c.encode(cloudASREnabled, forKey: .cloudASREnabled)
+        try c.encode(cloudASRConsentAccepted, forKey: .cloudASRConsentAccepted)
+        try c.encode(Self.normalizedSingleLineField(cloudASRBaseURL), forKey: .cloudASRBaseURL)
+        try c.encode(Self.normalizedSingleLineField(cloudASRModel), forKey: .cloudASRModel)
+        try c.encode(cloudASRAuthToken, forKey: .cloudASRAuthToken)
         try c.encode(completionNotificationsEnabled, forKey: .completionNotificationsEnabled)
         try c.encode(completionSoundEnabled, forKey: .completionSoundEnabled)
     }
@@ -396,6 +456,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     static let translationTokenKey = "translationAuthToken"
     static let aiTokenKey = "aiAuthToken"
     static let summaryTokenKey = "summaryAuthToken"
+    static let cloudASRTokenKey = "cloudASRAuthToken"
 
     /// 加载设置。`readCredentials` 为 false 时跳过 Keychain 凭证读取与明文迁移
     /// （启动期用，避免首次启动还没真正用到 API 就弹 Keychain 授权；凭证在首次需要时由 App 显式 hydrate）。
@@ -556,14 +617,16 @@ public struct AppSettings: Codable, Sendable, Equatable {
         copy.translationAuthToken = ""
         copy.aiAuthToken = ""
         copy.summaryAuthToken = ""
+        copy.cloudASRAuthToken = ""
         return copy
     }
 
-    /// 把三个 Token 写入安全存储（空值则删除）。任一写入失败向上抛。
+    /// 把 Token 写入安全存储（空值则删除）。任一写入失败向上抛。
     func writeTokensToStore() throws {
         try Self.setOrDeleteToken(Self.translationTokenKey, translationAuthToken)
         try Self.setOrDeleteToken(Self.aiTokenKey, aiAuthToken)
         try Self.setOrDeleteToken(Self.summaryTokenKey, summaryAuthToken)
+        try Self.setOrDeleteToken(Self.cloudASRTokenKey, cloudASRAuthToken)
     }
 
     private static func setOrDeleteToken(_ key: String, _ value: String) throws {
@@ -576,6 +639,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let hasLegacyPlaintext = !parsed.translationAuthToken.isEmpty
             || !parsed.aiAuthToken.isEmpty
             || !parsed.summaryAuthToken.isEmpty
+            || !parsed.cloudASRAuthToken.isEmpty
         if hasLegacyPlaintext {
             do {
                 try parsed.writeTokensToStore()
@@ -590,6 +654,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         result.translationAuthToken = credentialStore.get(translationTokenKey) ?? parsed.translationAuthToken
         result.aiAuthToken = credentialStore.get(aiTokenKey) ?? parsed.aiAuthToken
         result.summaryAuthToken = credentialStore.get(summaryTokenKey) ?? parsed.summaryAuthToken
+        result.cloudASRAuthToken = credentialStore.get(cloudASRTokenKey) ?? parsed.cloudASRAuthToken
         return result
     }
 
@@ -631,6 +696,24 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let config = effectiveSummaryConfig
         guard config.engine.canGenerateText else { return false }
         return config.isCloudConfigurationComplete
+    }
+
+    public var isCloudASRConfigured: Bool {
+        guard cloudASREnabled, cloudASRConsentAccepted else { return false }
+        return !Self.normalizedSingleLineField(cloudASRBaseURL).isEmpty
+            && !Self.normalizedSingleLineField(cloudASRModel).isEmpty
+            && CloudASRModelCapabilities.supportsDirectSubtitleOutput(cloudASRModel)
+            && !cloudASRAuthToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public var cloudASRModelRequiresAlignment: Bool {
+        CloudASRModelCapabilities.requiresAlignment(cloudASRModel)
+    }
+
+    public var isLocalASRSidecarConfigured: Bool {
+        guard localASREnabled, localASRPreciseModeEnabled else { return false }
+        return !Self.normalizedSingleLineField(localASRSidecarRuntimePath).isEmpty
+            && !Self.normalizedSingleLineField(localASRSidecarModelPath).isEmpty
     }
 
     /// 已填好服务地址和凭证，但模型可以稍后从候选菜单里选择。

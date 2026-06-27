@@ -265,7 +265,9 @@ public class WindowsSettingsSurfaceTests
 
         Assert.Contains("AvailableSubtitleChoices(info)", viewModel);
         Assert.Contains("Queue.HasLocalAsrGenerator", viewModel);
-        Assert.Contains("Queue.SyncLocalAsrGenerator(LocalAsrGeneratorFactory.Create(value))", viewModel);
+        Assert.Contains("var localAsrGenerator = LocalAsrGeneratorFactory.Create(value);", viewModel);
+        Assert.Contains("Queue.SyncLocalAsrGenerator(localAsrGenerator)", viewModel);
+        Assert.Contains("Queue.SyncCloudAsrGenerator(CloudAsrGeneratorFactory.Create(value, localAsrGenerator))", viewModel);
         Assert.Contains("SubtitleSourceKind.LocalAsr", viewModel);
         Assert.Contains("provider: \"whisper.cpp\"", viewModel);
         Assert.Contains("variant: \"local\"", viewModel);
@@ -283,6 +285,31 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Ready.LocalASR\"", resource);
             Assert.Contains("x:Key=\"L.Ready.LocalASRHint\"", resource);
             Assert.Contains("x:Key=\"L.Ready.LocalASRAutoDetect\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsSettingsExposeLocalAsrVADStatus()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "SettingsViewModel.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+
+        Assert.Contains("L.Settings.LocalASRVADStatus", xaml);
+        Assert.Contains("LocalAsrVADStatusText", xaml);
+        Assert.Contains("LocalAsrVADStatusText", viewModel);
+        Assert.Contains("WhisperCppVADModelLocator.Locate", viewModel);
+        Assert.Contains("L.Settings.LocalASRVADReady", viewModel);
+        Assert.Contains("L.Settings.LocalASRVADMissing", viewModel);
+        Assert.Contains("RaisePropertyChanged(nameof(LocalAsrVADStatusText))", viewModel);
+
+        foreach (var resource in new[] { zh, en, zhHant })
+        {
+            Assert.Contains("x:Key=\"L.Settings.LocalASRVADStatus\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRVADReady\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRVADMissing\"", resource);
         }
     }
 
@@ -466,6 +493,10 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("L.Settings.LocalASRSection", xaml);
         Assert.Contains("IsChecked=\"{Binding LocalAsrEnabled}\"", xaml);
         Assert.Contains("Text=\"{Binding LocalAsrRuntimePath", xaml);
+        Assert.Contains("IsChecked=\"{Binding LocalAsrPreciseModeEnabled}\"", xaml);
+        Assert.Contains("Text=\"{Binding LocalAsrSidecarRuntimePath", xaml);
+        Assert.Contains("Text=\"{Binding LocalAsrSidecarModelPath", xaml);
+        Assert.Contains("Text=\"{Binding LocalAsrSidecarReadinessText}\"", xaml);
         Assert.Contains("L.Settings.LocalASRFindRuntime", xaml);
         Assert.Contains("Command=\"{Binding AdoptLocalAsrRuntimeCommand}\"", xaml);
         Assert.Contains("Text=\"{Binding LocalAsrModelPath", xaml);
@@ -497,6 +528,10 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("public string LocalAsrRuntimePath", viewModel);
         Assert.Contains("public string LocalAsrModelPath", viewModel);
         Assert.Contains("public string LocalAsrModelId", viewModel);
+        Assert.Contains("public bool LocalAsrPreciseModeEnabled", viewModel);
+        Assert.Contains("public string LocalAsrSidecarRuntimePath", viewModel);
+        Assert.Contains("public string LocalAsrSidecarModelPath", viewModel);
+        Assert.Contains("public string LocalAsrSidecarReadinessText", viewModel);
         Assert.Contains("public IReadOnlyList<AsrModelCatalogEntry> LocalAsrModelCatalogEntries", viewModel);
         Assert.Contains("public double? LocalAsrModelInstallProgress", viewModel);
         Assert.Contains("InstallLocalAsrModelCommand", viewModel);
@@ -507,6 +542,9 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("LocalAsrRuntimePath = LocalAsrRuntimePath", viewModel);
         Assert.Contains("LocalAsrModelPath = LocalAsrModelPath", viewModel);
         Assert.Contains("LocalAsrModelId = LocalAsrModelId", viewModel);
+        Assert.Contains("LocalAsrPreciseModeEnabled = LocalAsrPreciseModeEnabled", viewModel);
+        Assert.Contains("LocalAsrSidecarRuntimePath = LocalAsrSidecarRuntimePath", viewModel);
+        Assert.Contains("LocalAsrSidecarModelPath = LocalAsrSidecarModelPath", viewModel);
         Assert.DoesNotContain("HttpClient", viewModel);
 
         foreach (var resource in new[] { zh, en, zhHant })
@@ -516,11 +554,59 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Settings.LocalASRFindRuntime\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRRuntimeFound\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRRuntimeNotFound\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRPreciseModeEnabled\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRSidecarRuntimePath\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRSidecarModelPath\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRSidecarReady\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.LocalASRSidecarNeedsSetup\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRDownloadModel\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRInstallingModel\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRModelInstallComplete\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRDeleteModel\"", resource);
             Assert.Contains("x:Key=\"L.Settings.LocalASRModelSHA256\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsSettingsExposePrivacySafeCloudAsrConfiguration()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "SettingsViewModel.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("L.Settings.CloudASRSection", xaml);
+        Assert.Contains("CloudAsrEnabled", xaml);
+        Assert.Contains("CloudAsrConsentAccepted", xaml);
+        Assert.Contains("CloudAsrBaseUrl", xaml);
+        Assert.Contains("CloudAsrModel", xaml);
+        Assert.Contains("CloudAsrAuthToken", xaml);
+        Assert.Contains("CloudAsrReadinessText", xaml);
+
+        Assert.Contains("public bool CloudAsrEnabled", viewModel);
+        Assert.Contains("public bool CloudAsrConsentAccepted", viewModel);
+        Assert.Contains("public string CloudAsrBaseUrl", viewModel);
+        Assert.Contains("public string CloudAsrModel", viewModel);
+        Assert.Contains("public string CloudAsrAuthToken", viewModel);
+        Assert.Contains("public string CloudAsrReadinessText", viewModel);
+        Assert.Contains("CloudAsrModelRequiresAlignment", viewModel);
+        Assert.Contains("L.Settings.CloudASRModelNeedsAlignment", viewModel);
+        Assert.Contains("CloudAsrCanUseLocalTimingGuide", viewModel);
+        Assert.Contains("L.Settings.CloudASRUsesLocalTimingGuide", viewModel);
+        Assert.Contains("CloudAsrAuthToken = CloudAsrAuthToken", viewModel);
+
+        foreach (var resource in new[] { zh, zhHant, en })
+        {
+            Assert.Contains("x:Key=\"L.Settings.CloudASRSection\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASREnabled\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRPrivacyNotice\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRCostNotice\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRConsentAccepted\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRReady\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRNeedsSetup\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRModelNeedsAlignment\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.CloudASRUsesLocalTimingGuide\"", resource);
         }
     }
 
@@ -720,11 +806,13 @@ public class WindowsSettingsSurfaceTests
         var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
         var en = Read("windows", "MoongateApp", "Strings.en.xaml");
 
-        // 语言优先：语言选择区与字幕输出区分离的两个 section。
-        Assert.Contains("L.Ready.SubtitleLanguageSection", xaml);
+        // 输出优先：字幕输出区与来源区分离的两个 section。
         Assert.Contains("L.Ready.SubtitleOutputSection", xaml);
-        // 主区域推荐语言 + 自动定源说明，展开区其他语言。
+        Assert.Contains("L.Ready.SubtitleSourceSection", xaml);
+        // 主区域先呈现自动最佳来源，推荐语言只作为次级原声语言信息；展开区再显示其他语言。
         Assert.Contains("L.Ready.RecommendedBadge", xaml);
+        Assert.Contains("Text=\"{DynamicResource L.Ready.SubtitleSourcePolicyAutoBest}\"", xaml);
+        Assert.Contains("Text=\"{Binding DisplayLabel}\"", xaml);
         Assert.Contains("L.Ready.AutoSourceExplanation", xaml);
         Assert.Contains("L.Ready.MoreLanguages", xaml);
         Assert.Contains("SourceLanguageOptions", xaml);
@@ -734,6 +822,10 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("LanguageSectionExpanded", xaml);
         // ViewModel 语言优先 API + 仍保留主源 trackId 兼容路径。
         Assert.Contains("public string? PrimarySubtitleTrackId", viewModel);
+        Assert.Contains("SubtitleIntentFromChineseMode", viewModel);
+        Assert.Contains("SourceLanguageIntentFromCode", viewModel);
+        Assert.Contains("SubtitleIntent = SubtitleIntentFromChineseMode", viewModel);
+        Assert.Contains("SourceLanguageIntent = SourceLanguageIntentFromCode", viewModel);
         Assert.Contains("SubtitleLanguageRecommender.Recommend(", viewModel);
         Assert.Contains("preferredSourceLanguage: EffectiveSourceLanguagePreference(info)", viewModel);
         Assert.Contains("AppendLocalAsrChoice", viewModel);
@@ -745,12 +837,142 @@ public class WindowsSettingsSurfaceTests
         foreach (var resource in new[] { zh, zhHant, en })
         {
             Assert.Contains("x:Key=\"L.Ready.SubtitleLanguageSection\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceSection\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SubtitleOutputSection\"", resource);
             Assert.Contains("x:Key=\"L.Ready.NoSubtitleSource\"", resource);
             Assert.Contains("x:Key=\"L.Ready.RecommendedBadge\"", resource);
             Assert.Contains("x:Key=\"L.Ready.MoreLanguages\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SourceLanguageAuto\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SourceLanguagePickerAccessibility\"", resource);
+        }
+        Assert.Contains("识别原声语言", zh);
+        Assert.Contains("只需确认视频说什么语言；Moongate 会自动选择最可靠的字幕来源。", zh);
+        Assert.DoesNotContain("自动字幕不会优先于更可靠的源语言", zh);
+        Assert.Contains("辨識原聲語言", zhHant);
+        Assert.Contains("只需確認影片說什麼語言；Moongate 會自動選擇最可靠的字幕來源。", zhHant);
+        Assert.DoesNotContain("自動字幕不會優先於更可靠的源語言", zhHant);
+        Assert.Contains("Original audio language", en);
+        Assert.Contains("Confirm what language the video uses; Moongate will choose the most reliable subtitle source.", en);
+        Assert.DoesNotContain("auto captions do not outrank", en);
+    }
+
+    [Fact]
+    public void WindowsReadyPagePutsSubtitleOutputBeforeSourceAndHidesSourceWhenOff()
+    {
+        var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
+
+        var outputIndex = xaml.IndexOf("L.Ready.SubtitleOutputSection", StringComparison.Ordinal);
+        var sourceIndex = xaml.IndexOf("L.Ready.SubtitleSourceSection", StringComparison.Ordinal);
+        Assert.True(outputIndex >= 0, "Ready page should render a subtitle output section.");
+        Assert.True(sourceIndex >= 0, "Ready page should render a subtitle source section.");
+        Assert.True(outputIndex < sourceIndex, "Subtitle output should come before subtitle source.");
+
+        Assert.Contains("Visibility=\"{Binding SubtitleSourceControlsVisible", xaml);
+        Assert.DoesNotContain("IsEnabled=\"{Binding ChineseModeEnabled}\"", xaml);
+        Assert.DoesNotContain("IsChecked=\"{Binding PrimarySubtitleNone}\"", xaml);
+
+        Assert.Contains("public bool SubtitleSourceControlsVisible => _chineseMode != ChineseSubtitleMode.Off;", viewModel);
+        Assert.Contains("private void EnsureSubtitleSourceSelected()", viewModel);
+        Assert.Contains("if (value != ChineseSubtitleMode.Off) EnsureSubtitleSourceSelected();", viewModel);
+        Assert.Contains("RaisePropertyChanged(nameof(SubtitleSourceControlsVisible));", viewModel);
+    }
+
+    [Fact]
+    public void WindowsReadyPageExposesAdvancedSubtitleSourcePolicy()
+    {
+        var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("L.Ready.SubtitleSourceAdvanced", xaml);
+        Assert.Contains("SubtitleSourcePolicyOptions", xaml);
+        Assert.Contains("SelectedSubtitleSourcePolicyOption", xaml);
+
+        Assert.Contains("public IReadOnlyList<SubtitleSourcePolicyOptionViewModel> SubtitleSourcePolicyOptions", viewModel);
+        Assert.Contains("public SubtitleSourcePolicyOptionViewModel? SelectedSubtitleSourcePolicyOption", viewModel);
+        Assert.Contains("TrackMatchingPolicy(", viewModel);
+        Assert.Contains("var subtitleSourcePolicy = SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest", viewModel);
+        Assert.Contains("SubtitleSourcePolicy = subtitleSourcePolicy", viewModel);
+        Assert.Contains("SubtitleSourcePolicy.CompareLocalAsr", viewModel);
+        Assert.Contains("SubtitleSourcePolicy.CloudAsr", viewModel);
+        Assert.Contains("CloudAsrGeneratorFactory.Create(_settings, localAsrGenerator)", viewModel);
+        Assert.Contains("Queue.SyncCloudAsrGenerator(CloudAsrGeneratorFactory.Create(value, localAsrGenerator))", viewModel);
+        Assert.Contains("OpenCloudAsrSettings()", viewModel);
+        Assert.Contains("L.Ready.CloudASRSetupRequired", viewModel);
+
+        foreach (var resource in new[] { zh, zhHant, en })
+        {
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceAdvanced\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyAutoBest\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyCompareLocalASR\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyForceLocalASR\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyCloudASR\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.CloudASRSetupRequired\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsReadyPageExposesImportedSubtitleFileFlow()
+    {
+        var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
+        var codeBehind = Read("windows", "MoongateApp", "MainWindow.xaml.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("Click=\"OnImportSubtitleFileClick\"", xaml);
+        Assert.Contains("ImportedSubtitleSummary", xaml);
+        Assert.Contains("ClearImportedSubtitleFileCommand", xaml);
+
+        Assert.Contains("public string? ImportedSubtitleFilePath", viewModel);
+        Assert.Contains("public string? ImportedSubtitleSummary", viewModel);
+        Assert.Contains("public RelayCommand ClearImportedSubtitleFileCommand", viewModel);
+        Assert.Contains("public void ImportSubtitleFile(string path)", viewModel);
+        Assert.Contains("private SubtitleChoice? ImportedSubtitleChoice(", viewModel);
+        Assert.Contains("SubtitleSourcePolicy.ImportedFile", viewModel);
+        Assert.Contains("\"path\"", viewModel);
+
+        Assert.Contains("private void OnImportSubtitleFileClick", codeBehind);
+        Assert.Contains("OpenFileDialog", codeBehind);
+        Assert.Contains("*.srt;*.vtt", codeBehind);
+
+        foreach (var resource in new[] { zh, zhHant, en })
+        {
+            Assert.Contains("x:Key=\"L.Ready.ImportSubtitleFile\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.ImportedSubtitleSelectedFmt\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.ClearImportedSubtitle\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.ImportedSubtitleUnsupported\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsQueueRowsExposeResolvedSubtitleSourceDetails()
+    {
+        var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
+        var rowViewModel = Read("windows", "MoongateApp", "QueueItemViewModel.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("SubtitleSourceDetailText", xaml);
+        Assert.Contains("public string? SubtitleSourceDetailText", rowViewModel);
+        Assert.Contains("item.ResolvedSubtitleSource", rowViewModel);
+        Assert.Contains("CandidateReports", rowViewModel);
+        Assert.Contains("SubtitleSourceCandidateReportText", rowViewModel);
+
+        foreach (var resource in new[] { zh, zhHant, en })
+        {
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceActualFmt\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityFmt\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityExcellent\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityGood\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityUnusable\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceCandidatesFmt\"", resource);
+            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceCandidateFmt\"", resource);
         }
     }
 

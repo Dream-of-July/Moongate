@@ -76,6 +76,14 @@ public sealed class SettingsViewModel : ObservableObject
         _localAsrRuntimePath = current.LocalAsrRuntimePath;
         _localAsrModelPath = current.LocalAsrModelPath;
         _localAsrModelId = current.LocalAsrModelId;
+        _localAsrPreciseModeEnabled = current.LocalAsrPreciseModeEnabled;
+        _localAsrSidecarRuntimePath = current.LocalAsrSidecarRuntimePath;
+        _localAsrSidecarModelPath = current.LocalAsrSidecarModelPath;
+        _cloudAsrEnabled = current.CloudAsrEnabled;
+        _cloudAsrConsentAccepted = current.CloudAsrConsentAccepted;
+        _cloudAsrBaseUrl = current.CloudAsrBaseUrl;
+        _cloudAsrModel = current.CloudAsrModel;
+        _cloudAsrAuthToken = current.CloudAsrAuthToken;
         _notice = initialNotice;
 
         AIEndpoint = new APIEndpointActions(
@@ -637,16 +645,154 @@ public sealed class SettingsViewModel : ObservableObject
     // MARK: - 本地语音识别
 
     private bool _localAsrEnabled;
-    public bool LocalAsrEnabled { get => _localAsrEnabled; set => SetProperty(ref _localAsrEnabled, value); }
+    public bool LocalAsrEnabled
+    {
+        get => _localAsrEnabled;
+        set
+        {
+            if (!SetProperty(ref _localAsrEnabled, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrSidecarReadinessText));
+        }
+    }
 
     private string _localAsrRuntimePath;
-    public string LocalAsrRuntimePath { get => _localAsrRuntimePath; set => SetProperty(ref _localAsrRuntimePath, value); }
+    public string LocalAsrRuntimePath
+    {
+        get => _localAsrRuntimePath;
+        set
+        {
+            if (!SetProperty(ref _localAsrRuntimePath, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrVADStatusText));
+        }
+    }
 
     private string _localAsrModelPath;
     public string LocalAsrModelPath { get => _localAsrModelPath; set => SetProperty(ref _localAsrModelPath, value); }
 
     private string _localAsrModelId;
     public string LocalAsrModelId { get => _localAsrModelId; set => SetProperty(ref _localAsrModelId, value); }
+
+    private bool _localAsrPreciseModeEnabled;
+    public bool LocalAsrPreciseModeEnabled
+    {
+        get => _localAsrPreciseModeEnabled;
+        set
+        {
+            if (!SetProperty(ref _localAsrPreciseModeEnabled, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrSidecarReadinessText));
+        }
+    }
+
+    private string _localAsrSidecarRuntimePath;
+    public string LocalAsrSidecarRuntimePath
+    {
+        get => _localAsrSidecarRuntimePath;
+        set
+        {
+            if (!SetProperty(ref _localAsrSidecarRuntimePath, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrSidecarReadinessText));
+        }
+    }
+
+    private string _localAsrSidecarModelPath;
+    public string LocalAsrSidecarModelPath
+    {
+        get => _localAsrSidecarModelPath;
+        set
+        {
+            if (!SetProperty(ref _localAsrSidecarModelPath, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrSidecarReadinessText));
+        }
+    }
+
+    public string LocalAsrSidecarReadinessText => BuildSettings().IsLocalAsrSidecarConfigured
+        ? Loc.S("L.Settings.LocalASRSidecarReady")
+        : Loc.S("L.Settings.LocalASRSidecarNeedsSetup");
+
+    private bool _cloudAsrEnabled;
+    public bool CloudAsrEnabled
+    {
+        get => _cloudAsrEnabled;
+        set
+        {
+            if (!SetProperty(ref _cloudAsrEnabled, value)) return;
+            RaisePropertyChanged(nameof(CloudAsrReadinessText));
+        }
+    }
+
+    private bool _cloudAsrConsentAccepted;
+    public bool CloudAsrConsentAccepted
+    {
+        get => _cloudAsrConsentAccepted;
+        set
+        {
+            if (!SetProperty(ref _cloudAsrConsentAccepted, value)) return;
+            RaisePropertyChanged(nameof(CloudAsrReadinessText));
+        }
+    }
+
+    private string _cloudAsrBaseUrl;
+    public string CloudAsrBaseUrl
+    {
+        get => _cloudAsrBaseUrl;
+        set
+        {
+            if (!SetProperty(ref _cloudAsrBaseUrl, value)) return;
+            RaisePropertyChanged(nameof(CloudAsrReadinessText));
+        }
+    }
+
+    private string _cloudAsrModel;
+    public string CloudAsrModel
+    {
+        get => _cloudAsrModel;
+        set
+        {
+            if (!SetProperty(ref _cloudAsrModel, value)) return;
+            RaisePropertyChanged(nameof(CloudAsrReadinessText));
+        }
+    }
+
+    private string _cloudAsrAuthToken;
+    public string CloudAsrAuthToken
+    {
+        get => _cloudAsrAuthToken;
+        set
+        {
+            if (!SetProperty(ref _cloudAsrAuthToken, value)) return;
+            RaisePropertyChanged(nameof(CloudAsrReadinessText));
+        }
+    }
+
+    public string CloudAsrReadinessText
+    {
+        get
+        {
+            var settings = BuildSettings();
+            if (settings.IsCloudAsrConfigured) return Loc.S("L.Settings.CloudASRReady");
+            if (CloudAsrCanUseLocalTimingGuide(settings)) return Loc.S("L.Settings.CloudASRUsesLocalTimingGuide");
+            return settings.CloudAsrModelRequiresAlignment
+                ? Loc.S("L.Settings.CloudASRModelNeedsAlignment")
+                : Loc.S("L.Settings.CloudASRNeedsSetup");
+        }
+    }
+
+    private static bool CloudAsrCanUseLocalTimingGuide(AppSettings settings) =>
+        settings.CloudAsrModelRequiresAlignment
+        && CloudAsrGeneratorFactory.Create(
+            settings,
+            LocalAsrGeneratorFactory.Create(settings)) is not null;
+
+    public string LocalAsrVADStatusText
+    {
+        get
+        {
+            var path = LocalAsrVADModelPath();
+            return path is null
+                ? Loc.S("L.Settings.LocalASRVADMissing")
+                : string.Format(Loc.S("L.Settings.LocalASRVADReady"), Path.GetFileName(path));
+        }
+    }
 
     // 仅 UI 折叠状态（不持久化）：cpp runtime/模型路径默认收起，对齐 macOS「高级」折叠。
     private bool _showAdvancedLocalAsr;
@@ -690,6 +836,21 @@ public sealed class SettingsViewModel : ObservableObject
         Path.Combine(AppContext.BaseDirectory, "asr", "runtime", "bin"),
     ];
 
+    private static IReadOnlyList<string> LocalAsrVADSearchPaths =>
+    [
+        Path.Combine(AppSettings.SupportDirectory, "asr", "vad"),
+        Path.Combine(AppContext.BaseDirectory, "asr", "vad"),
+    ];
+
+    private string? LocalAsrVADModelPath()
+    {
+        var runtimePath = LocalAsrRuntimePath.Trim();
+        var runtime = runtimePath.Length > 0
+            ? new AsrRuntimeInfo { ExecutablePath = runtimePath }
+            : new AsrRuntimeLocator(extraSearchPaths: LocalAsrRuntimeSearchPaths).Locate();
+        return runtime is null ? null : WhisperCppVADModelLocator.Locate(runtime, LocalAsrVADSearchPaths);
+    }
+
     private void AdoptLocalAsrRuntime()
     {
         var runtime = new AsrRuntimeLocator(extraSearchPaths: LocalAsrRuntimeSearchPaths).Locate();
@@ -700,6 +861,7 @@ public sealed class SettingsViewModel : ObservableObject
         }
 
         LocalAsrRuntimePath = runtime.ExecutablePath;
+        RaisePropertyChanged(nameof(LocalAsrVADStatusText));
         Notice = string.Format(Loc.S("L.Settings.LocalASRRuntimeFound"), runtime.ExecutablePath);
     }
 
@@ -1184,6 +1346,14 @@ public sealed class SettingsViewModel : ObservableObject
         LocalAsrRuntimePath = LocalAsrRuntimePath,
         LocalAsrModelPath = LocalAsrModelPath,
         LocalAsrModelId = LocalAsrModelId,
+        LocalAsrPreciseModeEnabled = LocalAsrPreciseModeEnabled,
+        LocalAsrSidecarRuntimePath = LocalAsrSidecarRuntimePath,
+        LocalAsrSidecarModelPath = LocalAsrSidecarModelPath,
+        CloudAsrEnabled = CloudAsrEnabled,
+        CloudAsrConsentAccepted = CloudAsrConsentAccepted,
+        CloudAsrBaseUrl = CloudAsrBaseUrl,
+        CloudAsrModel = CloudAsrModel,
+        CloudAsrAuthToken = CloudAsrAuthToken,
     };
 
     public bool TrySave(out string? error)

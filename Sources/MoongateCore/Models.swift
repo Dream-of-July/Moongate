@@ -167,6 +167,7 @@ public enum SubtitleSourceKind: String, Codable, Hashable, Sendable {
     case platformAuto
     case hlsManifest
     case localASR
+    case cloudASR
     case importedFile
 }
 
@@ -284,14 +285,14 @@ public struct SubtitleChoice: Identifiable, Hashable, Sendable {
 }
 
 /// Upper-level language aggregation consumed by the ready page UI. A language groups all of its
-/// technical tracks (manual / platform-auto / local ASR) so users pick a language, not a source.
+/// technical tracks (manual / platform-auto / local ASR / cloud ASR) so users pick a language, not a source.
 /// Pure derived view: never persisted, never sent to yt-dlp directly.
 public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
     /// Normalized language code (lowercased, first `-` segment), e.g. "ja". Also the identity.
     public let languageCode: String
     /// Display label, taken from the best (first non-localASR) track in the group.
     public let displayLabel: String
-    /// Tracks for this language, sorted manual → platformAuto → localASR.
+    /// Tracks for this language, sorted manual → platformAuto → cloudASR → localASR.
     public let tracks: [SubtitleChoice]
 
     public var id: String { languageCode }
@@ -325,8 +326,9 @@ public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
         case .manual: return 0
         case .platformAuto: return 1
         case .hlsManifest: return 2
-        case .localASR: return 3
-        case .importedFile: return 4
+        case .cloudASR: return 3
+        case .localASR: return 4
+        case .importedFile: return 5
         }
     }
 
@@ -352,7 +354,7 @@ public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
                 if lr != rr { return lr < rr }
                 return lhs.offset < rhs.offset
             }.map(\.element)
-            let label = tracks.first { $0.sourceKind != .localASR }?.label
+            let label = tracks.first { $0.sourceKind != .localASR && $0.sourceKind != .cloudASR }?.label
                 ?? tracks.first?.label
                 ?? key
             return SubtitleLanguageChoice(languageCode: key, displayLabel: label, tracks: tracks)
@@ -414,6 +416,15 @@ public struct DownloadRequest: Sendable {
     /// post-download source resolver uses this for language matching / quality fallback.
     /// nil falls back to `primarySubtitleTrack?.languageCode`.
     public let preferredSubtitleLanguageCode: String?
+    /// Three-layer subtitle architecture: this preserves whether the user asked for automatic
+    /// source-language detection or explicitly fixed a language. Legacy language fields remain as
+    /// concrete yt-dlp / compatibility inputs.
+    public let sourceLanguageIntent: SourceLanguageIntent
+    /// Source policy selected on the Ready page. The post-download resolver uses it to honor
+    /// fixed-source choices instead of silently falling back to another source.
+    public let subtitleSourcePolicy: SubtitleSourcePolicy
+    /// Optional user-provided subtitle file selected on the Ready page.
+    public let importedSubtitleFileURL: URL?
     public let destinationDirectory: URL
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
     /// （如 "homepage_trailer"），此时用嗅探得到的页面标题命名更友好；nil 用 yt-dlp 默认标题。
@@ -429,6 +440,9 @@ public struct DownloadRequest: Sendable {
         subtitleTracks: [SubtitleChoice] = [],
         primarySubtitleTrackID: String? = nil,
         preferredSubtitleLanguageCode: String? = nil,
+        sourceLanguageIntent: SourceLanguageIntent = .automatic,
+        subtitleSourcePolicy: SubtitleSourcePolicy = .autoBest,
+        importedSubtitleFileURL: URL? = nil,
         destinationDirectory: URL, preferredTitle: String? = nil,
         preferHDR: Bool = false, outputFormat: OutputFormat = .original
     ) {
@@ -440,6 +454,9 @@ public struct DownloadRequest: Sendable {
         self.subtitleTracks = subtitleTracks
         self.primarySubtitleTrackID = primarySubtitleTrackID
         self.preferredSubtitleLanguageCode = preferredSubtitleLanguageCode
+        self.sourceLanguageIntent = sourceLanguageIntent
+        self.subtitleSourcePolicy = subtitleSourcePolicy
+        self.importedSubtitleFileURL = importedSubtitleFileURL
         self.destinationDirectory = destinationDirectory
         self.preferredTitle = preferredTitle
         self.preferHDR = preferHDR

@@ -571,6 +571,30 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Translate_RejectsSourceLanguageLeakageBeforeWritingOutput()
+    {
+        var srt = WriteSrt("koopenchan.ja.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "チョコバナナ"),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "くじ引きやろう"),
+            new SubtitleCue(3, "00:00:05,000", "00:00:06,000", "世界の銀行が崩れた"),
+        ]);
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|チョコナナナ很好吃\n2|我们去くじ引き野郎吧\n3|世界の銀行が崩れ了")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
+
+        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
+        Assert.Contains("源语言", ex.Detail);
+        Assert.False(File.Exists(Path.Combine(_tempDir, "koopenchan.ja.zh-Hans.srt")));
+    }
+
+    [Fact]
     public async Task Translate_PunctuationOnlyTranslation_FallsBackToSourceWithoutFailingWholeTranslation()
     {
         var srt = WriteSrt("punctuation.en.srt",
@@ -957,6 +981,11 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("日文→中文重排示例", prompt);
         Assert.Contains("左隣、あなたの", prompt);
         Assert.Contains("確かにほら救われたんだよ", prompt);
+        Assert.Contains("谐音梗", prompt);
+        Assert.Contains("保留原词", prompt);
+        Assert.Contains("チョコバナナ", prompt);
+        Assert.Contains("ソースせんべい", prompt);
+        Assert.Contains("くじ引きやろう", prompt);
     }
 
     [Fact]
@@ -969,6 +998,7 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("Sun's", prompt);
         Assert.DoesNotContain("日文→中文重排示例", prompt);
         Assert.DoesNotContain("左隣、あなたの", prompt);
+        Assert.DoesNotContain("チョコバナナ", prompt);
     }
 
     [Fact]

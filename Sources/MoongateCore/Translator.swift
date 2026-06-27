@@ -1924,6 +1924,14 @@ private enum TranslatorL10n {
         CoreL10n.text(en: "The model response format is invalid: missing translated lines", zhHans: "模型返回格式异常，缺失译文行", zhHant: "模型回傳格式異常，缺少譯文行")
     }
 
+    static var translationOutputSourceLanguageLeakage: String {
+        CoreL10n.text(
+            en: "The translated subtitles still contain too much source-language text. Retry translation or switch to a more reliable subtitle source.",
+            zhHans: "译文仍残留较多源语言内容，请重试翻译或换用更可靠的字幕来源。",
+            zhHant: "譯文仍殘留較多來源語言內容，請重試翻譯或改用更可靠的字幕來源。"
+        )
+    }
+
     static var outputLimitReached: String {
         CoreL10n.text(en: "The translation exceeded the model output limit. Reduce subtitle chunk size or check the model max_tokens limit.", zhHans: "译文超出模型输出上限，请减小每块字幕条数或检查模型 max_tokens 限制", zhHant: "譯文超出模型輸出上限，請減小每塊字幕條數或檢查模型 max_tokens 限制")
     }
@@ -2986,6 +2994,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             日文→中文重排示例（务必按中文语序，不要留悬空成分）：
             - 「左隣、あなたの」「横顔を月が照らした」→「你坐在我的左侧」「月光映照着你的侧脸」（领属词上移，别让某行停在「你的」）
             - 「確かにほら救われたんだよ」「あなたに」→「你看，我确实被拯救了」「是被你拯救的」（把谓语补完整，别让某行只剩「被你」）
+
+            日语谐音梗、双关和祭典/动漫专名：先理解原词，再翻成自然中文。无法做出等效中文谐音时，保留原词并给短意译，不要硬改成无关词；例如「チョコバナナ」「ソースせんべい」「くじ引きやろう」要按食物/活动语境处理。
             """
         }
         guard let advice else { return prompt }
@@ -3164,6 +3174,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
                 try await scheduleNext()
             }
         }
+        var translatedLines: [(text: String, usedSourceFallback: Bool)] = []
+        translatedLines.reserveCapacity(cues.count)
         for cueIndex in 0..<cues.count {
             let sourceText = cues[cueIndex].text
             let rawChinese = merged[cueIndex + 1] ?? ""
@@ -3173,12 +3185,27 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             guard !chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
             }
+            translatedLines.append((text: chinese, usedSourceFallback: usedSourceFallback))
+        }
+
+        let translationQuality = TranslationOutputQualityGate.assess(
+            lines: translatedLines.map { $0.text },
+            sourceLanguageCode: context.sourceLanguage,
+            targetLanguageCode: context.targetLanguage
+        )
+        guard translationQuality.usable else {
+            throw MoongateError.translateFailed(TranslatorL10n.translationOutputSourceLanguageLeakage)
+        }
+
+        for cueIndex in 0..<cues.count {
+            let sourceText = cues[cueIndex].text
+            let translated = translatedLines[cueIndex]
             switch style {
             case .bilingual:
                 // 译文在上、原文在下（烧录时原文用更小字号）
-                output[cueIndex].text = usedSourceFallback ? sourceText : chinese + "\n" + sourceText
+                output[cueIndex].text = translated.usedSourceFallback ? sourceText : translated.text + "\n" + sourceText
             case .chineseOnly:
-                output[cueIndex].text = chinese
+                output[cueIndex].text = translated.text
             }
         }
 

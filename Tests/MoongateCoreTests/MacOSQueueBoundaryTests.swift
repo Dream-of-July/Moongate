@@ -187,9 +187,14 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let source = try queueManagerSource()
         let pipelineBody = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
 
+        XCTAssertTrue(pipelineBody.contains("let shouldResolveSourceOnly = mode == .off"))
+        XCTAssertTrue(pipelineBody.contains("current.request.primarySubtitleTrack != nil"))
+        XCTAssertTrue(pipelineBody.contains("current.request.importedSubtitleFileURL != nil"))
+        XCTAssertTrue(pipelineBody.contains("guard mode != .off || shouldResolveSourceOnly else"))
+        XCTAssertTrue(pipelineBody.contains("if shouldResolveSourceOnly"))
         XCTAssertLessThan(
             try XCTUnwrap(pipelineBody.range(of: "prepareLocalASRSourceSubtitleIfNeeded")).lowerBound,
-            try XCTUnwrap(pipelineBody.range(of: "guard mode != .off else")).lowerBound
+            try XCTUnwrap(pipelineBody.range(of: "let shouldResolveSourceOnly = mode == .off")).lowerBound
         )
     }
 
@@ -307,6 +312,23 @@ final class MacOSQueueBoundaryTests: XCTestCase {
     func testQueueManagerWiresPostDownloadQualityGateFallback() throws {
         let source = try queueManagerSource()
         XCTAssertTrue(source.contains("resolveSubtitleSourceWithQualityGate"))
+        XCTAssertTrue(source.contains("appendImportedSubtitleFileIfNeeded"))
+        XCTAssertTrue(source.contains("request.importedSubtitleFileURL"))
+        XCTAssertTrue(source.contains("preferredTrack.metadata[\"path\"]"))
+        XCTAssertTrue(source.contains("isImportedSubtitle"))
+        XCTAssertTrue(source.contains("SubtitleSourceResolver.resolve"))
+        XCTAssertTrue(source.contains("request.subtitleSourcePolicy"))
+        XCTAssertTrue(source.contains("request.subtitleSourcePolicy == .compareLocalASR"))
+        XCTAssertTrue(source.contains("request.subtitleSourcePolicy == .cloudASR"))
+        XCTAssertTrue(source.contains("cloudASRGenerator"))
+        XCTAssertTrue(source.contains("CloudASRGeneratorFactory.make("))
+        XCTAssertTrue(source.contains("localASRGenerator: localASRGenerator"))
+        XCTAssertTrue(source.contains("syncCloudASRGenerator(from settings: AppSettings)"))
+        XCTAssertTrue(source.contains("generateCloudASRSourceSubtitle"))
+        XCTAssertTrue(source.contains("kind: .cloudASR"))
+        XCTAssertTrue(source.contains("provider: \"OpenAI-compatible\""))
+        XCTAssertTrue(source.contains("return primarySubtitleTrack.sourceKind == .platformAuto"))
+        XCTAssertTrue(source.contains("if verdict.usable && !shouldCompareLocalASR"))
         XCTAssertTrue(source.contains("PlatformSubtitleQualityGate.assess"))
         XCTAssertTrue(source.contains("effectivePreferredLanguageCode"))
         XCTAssertTrue(source.contains("$0.resolvedSubtitleSource = resolution.resolved"))
@@ -315,6 +337,36 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("primarySubtitleTrack.sourceKind == .platformAuto"))
         XCTAssertFalse(source.contains("pickedSource.pathExtension.lowercased() == \"vtt\"\n            || primarySubtitleTrack?.sourceKind == .platformAuto"))
         XCTAssertTrue(source.contains("subtitleSourceLowQualityEnableLocalASR"))
+        XCTAssertTrue(source.contains("subtitleSourceCompareLocalASRUnavailable"))
+    }
+
+    func testQueueItemDisplaysResolvedSubtitleSourceDetails() throws {
+        let source = try queueItemSource()
+        let body = try XCTUnwrap(functionBody(named: "body", in: source))
+        let disclosureBody = try XCTUnwrap(functionBody(named: "subtitleSourceDisclosure", in: source))
+        let keys = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MoongateMobileCore")
+            .appendingPathComponent("Localization")
+            .appendingPathComponent("LocalizationKeys.swift"))
+
+        XCTAssertTrue(body.contains("subtitleSourceDisclosure"))
+        XCTAssertTrue(disclosureBody.contains("item.resolvedSubtitleSource"))
+        XCTAssertTrue(source.contains("item.subtitleSourceNote"))
+        XCTAssertTrue(disclosureBody.contains("candidateReports"))
+        XCTAssertTrue(disclosureBody.contains("subtitleSourceSummary"))
+        XCTAssertTrue(source.contains("subtitleSourceLowConfidenceSuggestion"))
+        XCTAssertTrue(source.contains("source.sourceQualityVerdict"))
+        XCTAssertTrue(source.contains("verdict <= .lowConfidence"))
+        XCTAssertTrue(disclosureBody.contains("subtitleCandidateStatus"))
+        XCTAssertTrue(keys.contains("subtitleSourceActual"))
+        XCTAssertTrue(keys.contains("subtitleSourceQuality"))
+        XCTAssertTrue(keys.contains("subtitleSourceQualityExcellent"))
+        XCTAssertTrue(keys.contains("subtitleSourceQualityGood"))
+        XCTAssertTrue(keys.contains("subtitleSourceReason"))
+        XCTAssertTrue(keys.contains("subtitleSourceLowConfidenceSuggestion"))
+        XCTAssertTrue(keys.contains("subtitleSourceCandidates"))
+        XCTAssertTrue(keys.contains("subtitleSourceQualityUnusable"))
     }
 
     func testQueueItemUsesOverallProgressAndAddsRemainingDetails() throws {

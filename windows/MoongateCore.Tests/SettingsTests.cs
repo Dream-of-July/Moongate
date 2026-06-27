@@ -79,6 +79,85 @@ public class SettingsTests
     }
 
     [Fact]
+    public void CloudAsrSettings_DefaultOffRequireConsentAndUseCredentialStore()
+    {
+        var fresh = new AppSettings();
+        Assert.False(fresh.CloudAsrEnabled);
+        Assert.False(fresh.CloudAsrConsentAccepted);
+        Assert.Equal("https://api.openai.com", fresh.CloudAsrBaseUrl);
+        Assert.Equal("whisper-1", fresh.CloudAsrModel);
+        Assert.Equal("", fresh.CloudAsrAuthToken);
+        Assert.False(fresh.IsCloudAsrConfigured);
+        Assert.False(fresh.CloudAsrModelRequiresAlignment);
+
+        var prevStore = AppSettings.CredentialStore;
+        var prevDir = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-cloud-asr-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            var store = new InMemoryCredentialStore();
+            AppSettings.CredentialStore = store;
+
+            new AppSettings
+            {
+                CloudAsrEnabled = true,
+                CloudAsrConsentAccepted = true,
+                CloudAsrBaseUrl = " https://api.openai.com/v1\n",
+                CloudAsrModel = "\nwhisper-1 ",
+                CloudAsrAuthToken = "cloud-token",
+            }.Save();
+
+            var raw = File.ReadAllText(AppSettings.SettingsFilePath);
+            Assert.DoesNotContain("cloud-token", raw);
+            Assert.Equal("cloud-token", store.Get("cloudASRAuthToken"));
+
+            var loaded = AppSettings.Load();
+            Assert.True(loaded.CloudAsrEnabled);
+            Assert.True(loaded.CloudAsrConsentAccepted);
+            Assert.Equal("https://api.openai.com/v1", loaded.CloudAsrBaseUrl);
+            Assert.Equal("whisper-1", loaded.CloudAsrModel);
+            Assert.Equal("cloud-token", loaded.CloudAsrAuthToken);
+            Assert.True(loaded.IsCloudAsrConfigured);
+            Assert.False(loaded.CloudAsrModelRequiresAlignment);
+
+            var alignmentOnly = loaded with { CloudAsrModel = "gpt-4o-transcribe" };
+            Assert.False(alignmentOnly.IsCloudAsrConfigured);
+            Assert.True(alignmentOnly.CloudAsrModelRequiresAlignment);
+        }
+        finally
+        {
+            AppSettings.CredentialStore = prevStore;
+            AppSettings.OverrideSupportDirectory = prevDir;
+            try { Directory.Delete(dir, true); } catch { /* ignored */ }
+        }
+    }
+
+    [Fact]
+    public void CloudAsrGeneratorFactoryRequiresExplicitConfiguration()
+    {
+        Assert.Null(CloudAsrGeneratorFactory.Create(new AppSettings()));
+
+        var configured = new AppSettings
+        {
+            CloudAsrEnabled = true,
+            CloudAsrConsentAccepted = true,
+            CloudAsrBaseUrl = "https://api.openai.com",
+            CloudAsrModel = "whisper-1",
+            CloudAsrAuthToken = "sk-test",
+        };
+
+        Assert.NotNull(CloudAsrGeneratorFactory.Create(configured));
+        Assert.Null(CloudAsrGeneratorFactory.Create(configured with { CloudAsrConsentAccepted = false }));
+        Assert.Null(CloudAsrGeneratorFactory.Create(configured with { CloudAsrBaseUrl = "not a url" }));
+        Assert.Null(CloudAsrGeneratorFactory.Create(configured with { CloudAsrModel = "gpt-4o-transcribe" }));
+        Assert.NotNull(CloudAsrGeneratorFactory.Create(
+            configured with { CloudAsrModel = "gpt-4o-transcribe" },
+            new FakeLocalAsrGenerator()));
+    }
+
+    [Fact]
     public void Credentials_MigrationStoreFailure_KeepsLegacyTokenNotLost()
     {
         var prevStore = AppSettings.CredentialStore;
@@ -313,6 +392,10 @@ public class SettingsTests
         Assert.Equal("", fresh.LocalAsrRuntimePath);
         Assert.Equal("", fresh.LocalAsrModelPath);
         Assert.Equal("", fresh.LocalAsrModelId);
+        Assert.False(fresh.LocalAsrPreciseModeEnabled);
+        Assert.Equal("", fresh.LocalAsrSidecarRuntimePath);
+        Assert.Equal("", fresh.LocalAsrSidecarModelPath);
+        Assert.False(fresh.IsLocalAsrSidecarConfigured);
 
         var settings = new AppSettings
         {
@@ -320,17 +403,27 @@ public class SettingsTests
             LocalAsrRuntimePath = " C:\\Tools\\whisper-cli.exe\n",
             LocalAsrModelPath = "\nC:\\Models\\ggml-small-q5_1.bin ",
             LocalAsrModelId = " whisper.cpp:small-q5_1\n",
+            LocalAsrPreciseModeEnabled = true,
+            LocalAsrSidecarRuntimePath = " C:\\Tools\\faster-whisper-sidecar.exe\n",
+            LocalAsrSidecarModelPath = "\nC:\\Models\\faster-whisper-small ",
         };
         var back = AppSettings.FromJson(settings.ToJson());
         Assert.True(back.LocalAsrEnabled);
         Assert.Equal("C:\\Tools\\whisper-cli.exe", back.LocalAsrRuntimePath);
         Assert.Equal("C:\\Models\\ggml-small-q5_1.bin", back.LocalAsrModelPath);
         Assert.Equal("whisper.cpp:small-q5_1", back.LocalAsrModelId);
+        Assert.True(back.LocalAsrPreciseModeEnabled);
+        Assert.Equal("C:\\Tools\\faster-whisper-sidecar.exe", back.LocalAsrSidecarRuntimePath);
+        Assert.Equal("C:\\Models\\faster-whisper-small", back.LocalAsrSidecarModelPath);
+        Assert.True(back.IsLocalAsrSidecarConfigured);
         var json = settings.ToJson();
         Assert.Contains("\"localASREnabled\"", json, StringComparison.Ordinal);
         Assert.Contains("\"localASRRuntimePath\"", json, StringComparison.Ordinal);
         Assert.Contains("\"localASRModelPath\"", json, StringComparison.Ordinal);
         Assert.Contains("\"localASRModelID\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRPreciseModeEnabled\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRSidecarRuntimePath\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRSidecarModelPath\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

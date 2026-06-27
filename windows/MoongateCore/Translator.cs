@@ -2770,7 +2770,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         {
             prompt += "\n\n日文→中文重排示例（务必按中文语序，不要留悬空成分）：\n" +
                 "- 「左隣、あなたの」「横顔を月が照らした」→「你坐在我的左侧」「月光映照着你的侧脸」（领属词上移，别让某行停在「你的」）\n" +
-                "- 「確かにほら救われたんだよ」「あなたに」→「你看，我确实被拯救了」「是被你拯救的」（把谓语补完整，别让某行只剩「被你」）";
+                "- 「確かにほら救われたんだよ」「あなたに」→「你看，我确实被拯救了」「是被你拯救的」（把谓语补完整，别让某行只剩「被你」）\n\n" +
+                "日语谐音梗、双关和祭典/动漫专名：先理解原词，再翻成自然中文。无法做出等效中文谐音时，保留原词并给短意译，不要硬改成无关词；例如「チョコバナナ」「ソースせんべい」「くじ引きやろう」要按食物/活动语境处理。";
         }
         if (advice is null) return prompt;
         prompt += $"\n\n翻译前上下文：\n内容摘要：{advice.Summary}";
@@ -3135,7 +3136,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             throw;
         }
 
-        var output = cues.Select(c => new SubtitleCue(c.Index, c.Start, c.End, c.Text)).ToList();
+        var translatedLines = new List<(string Text, bool UsedSourceFallback)>(cues.Count);
         for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
         {
             var sourceText = cues[cueIndex].Text;
@@ -3149,11 +3150,31 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                     "模型返回格式異常，缺少譯文行",
                     "Malformed model reply: translation lines are missing"));
             }
+            translatedLines.Add((chinese, usedSourceFallback));
+        }
+
+        var translationQuality = TranslationOutputQualityGate.Assess(
+            translatedLines.Select(line => line.Text).ToArray(),
+            sourceLanguageCode,
+            _settings.TranslationTargetLanguage);
+        if (!translationQuality.Usable)
+        {
+            throw MoongateException.TranslateFailed(L10n.T(
+                "译文仍残留较多源语言内容，请重试翻译或换用更可靠的字幕来源。",
+                "譯文仍殘留較多源語言內容，請重試翻譯或改用更可靠的字幕來源。",
+                "The translation still contains too much source-language text. Retry translation or use a more reliable subtitle source."));
+        }
+
+        var output = cues.Select(c => new SubtitleCue(c.Index, c.Start, c.End, c.Text)).ToList();
+        for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
+        {
+            var sourceText = cues[cueIndex].Text;
+            var translated = translatedLines[cueIndex];
             output[cueIndex].Text = style switch
             {
                 // 中文在上、原文在下（烧录时原文用更小字号）
-                SubtitleStyle.Bilingual => usedSourceFallback ? sourceText : chinese + "\n" + sourceText,
-                _ => chinese,
+                SubtitleStyle.Bilingual => translated.UsedSourceFallback ? sourceText : translated.Text + "\n" + sourceText,
+                _ => translated.Text,
             };
         }
 

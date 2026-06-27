@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media.Animation;
+using Microsoft.Win32;
 
 namespace Moongate.App;
 
@@ -117,6 +118,20 @@ public partial class MainWindow : Window
     {
         var login = new LoginWindow(site, startUrl) { Owner = this };
         if (login.ShowDialog() == true) _vm.LoginCompleted();
+    }
+
+    private void OnImportSubtitleFileClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = Loc.S("L.Ready.ImportSubtitleFile"),
+            Filter = "Subtitle files (*.srt;*.vtt)|*.srt;*.vtt|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) == true)
+        {
+            _vm.ImportSubtitleFile(dialog.FileName);
+        }
     }
 
     /// <summary>关窗且有未完成任务（含已暂停）→ 确认对话框，确认则全部中止。</summary>

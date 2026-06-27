@@ -13,6 +13,9 @@ Required local inputs:
   MOONGATE_ASR_QA_MODEL=/path/to/model.bin
   MOONGATE_ASR_QA_AUDIO=/path/to/short-audio-or-video
   MOONGATE_ASR_QA_FFMPEG=/path/to/ffmpeg
+Optional:
+  MOONGATE_ASR_QA_VAD_MODEL=/path/to/local-silero-vad-model.bin
+  MOONGATE_ASR_QA_NO_GPU=1
 MSG
     exit 66
 fi
@@ -22,6 +25,8 @@ whisper_cli="${MOONGATE_ASR_QA_WHISPER_CLI:-}"
 model_path="${MOONGATE_ASR_QA_MODEL:-}"
 audio_path="${MOONGATE_ASR_QA_AUDIO:-}"
 ffmpeg_bin="${MOONGATE_ASR_QA_FFMPEG:-}"
+vad_model_path="${MOONGATE_ASR_QA_VAD_MODEL:-}"
+no_gpu="${MOONGATE_ASR_QA_NO_GPU:-1}"
 language="${MOONGATE_ASR_QA_LANGUAGE:-ja}"
 prompt="${MOONGATE_ASR_QA_PROMPT:-Moongate local ASR release smoke}"
 work_dir="${MOONGATE_ASR_QA_WORKDIR:-}"
@@ -102,6 +107,9 @@ require_file "MOONGATE_ASR_QA_WHISPER_CLI" "$whisper_cli"
 require_file "MOONGATE_ASR_QA_MODEL" "$model_path"
 require_file "MOONGATE_ASR_QA_AUDIO" "$audio_path"
 require_file "MOONGATE_ASR_QA_FFMPEG" "$ffmpeg_bin"
+if [[ -n "$vad_model_path" ]]; then
+    require_file "MOONGATE_ASR_QA_VAD_MODEL" "$vad_model_path"
+fi
 
 if [[ ! -x "$whisper_cli" ]]; then
     echo "MOONGATE_ASR_QA_WHISPER_CLI must be executable: $whisper_cli" >&2
@@ -137,11 +145,23 @@ args=(
 if [[ -n "$language" && "$language" != "auto" ]]; then
     args+=(-l "$language")
 fi
+if [[ "$no_gpu" == "1" || "$no_gpu" == "true" || "$no_gpu" == "TRUE" ]]; then
+    args+=(--no-gpu)
+fi
+if [[ -n "$vad_model_path" ]]; then
+    args+=(--vad --vad-model "$vad_model_path")
+fi
 if [[ -n "$prompt" ]]; then
     args+=(--prompt "$prompt")
 fi
 
 echo "==> Running whisper.cpp"
+if [[ -n "$vad_model_path" ]]; then
+    echo "==> VAD enabled with model: $vad_model_path"
+fi
+if [[ "$no_gpu" == "1" || "$no_gpu" == "true" || "$no_gpu" == "TRUE" ]]; then
+    echo "==> GPU disabled for deterministic local smoke"
+fi
 "${args[@]}"
 
 json_path="$output_base.json"

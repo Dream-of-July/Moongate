@@ -413,6 +413,7 @@ public sealed record ResolvedSubtitleSource
     public required string SelectedFile { get; init; }
     public required SubtitleSourceKind SelectedKind { get; init; }
     public PlatformSubtitleQualityGate.Verdict? QualityVerdict { get; init; }
+    public SubtitleQualityVerdict? SourceQualityVerdict { get; init; }
     public bool UsedLocalAsrFallback { get; init; }
     public IReadOnlyList<PlatformSubtitleQualityGate.Reason> FallbackReasons { get; init; } = [];
     public IReadOnlyList<SubtitleSourceCandidateReport> CandidateReports { get; init; } = [];
@@ -424,7 +425,8 @@ public sealed record SubtitleSourceCandidateReport(
     bool Available,
     bool Selected,
     bool Usable,
-    IReadOnlyList<string> Reasons);
+    IReadOnlyList<string> Reasons,
+    SubtitleQualityVerdict QualityVerdict = SubtitleQualityVerdict.Unusable);
 
 public sealed record SongSubtitleSourceArbitration(
     SubtitleSourceKind? SelectedKind,
@@ -436,7 +438,8 @@ public static class SongSubtitleSourceArbiter
         string languageCode,
         IReadOnlyList<SubtitleChoice> tracks,
         PlatformSubtitleQualityGate.Verdict? platformAutoVerdict,
-        bool localAsrAvailable)
+        bool localAsrAvailable,
+        bool cloudAsrAvailable = false)
     {
         var normalized = SubtitleLanguageChoice.NormalizedLanguageCode(languageCode);
         var sameLanguageTracks = tracks
@@ -450,6 +453,7 @@ public static class SongSubtitleSourceArbiter
         SubtitleSourceKind? selected = null;
         if (manualAvailable) selected = SubtitleSourceKind.Manual;
         else if (autoAvailable && autoUsable) selected = SubtitleSourceKind.PlatformAuto;
+        else if (cloudAsrAvailable) selected = SubtitleSourceKind.CloudAsr;
         else if (localAsrAvailable) selected = SubtitleSourceKind.LocalAsr;
         else if (autoAvailable) selected = SubtitleSourceKind.PlatformAuto;
 
@@ -470,6 +474,13 @@ public static class SongSubtitleSourceArbiter
                 selected == SubtitleSourceKind.PlatformAuto,
                 autoAvailable && autoUsable,
                 autoAvailable ? autoReasons : ["missing"]),
+            new SubtitleSourceCandidateReport(
+                SubtitleSourceKind.CloudAsr,
+                normalized,
+                cloudAsrAvailable,
+                selected == SubtitleSourceKind.CloudAsr,
+                cloudAsrAvailable,
+                cloudAsrAvailable ? [] : ["unavailable"]),
             new SubtitleSourceCandidateReport(
                 SubtitleSourceKind.LocalAsr,
                 normalized,

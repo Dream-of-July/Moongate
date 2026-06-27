@@ -252,6 +252,7 @@ final class QueueManager: ObservableObject {
     private var progressPhaseStarts: [UUID: (generation: Int, phase: QueueProgressPhase, startedAt: Date)] = [:]
     private var phaseDurationSamples: [QueueProgressPhase: [Double]] = [:]
     private var localASRGenerator: (any LocalASRSubtitleGenerator)?
+    private var cloudASRGenerator: (any CloudASRSubtitleGenerator)?
     private let completionNotifier: (any QueueCompletionNotifying)?
     private var notifiedTerminalIDs = Set<UUID>()
 
@@ -263,10 +264,12 @@ final class QueueManager: ObservableObject {
     init(
         engine: any DownloadEngine = makeDefaultEngine(),
         localASRGenerator: (any LocalASRSubtitleGenerator)? = nil,
+        cloudASRGenerator: (any CloudASRSubtitleGenerator)? = nil,
         completionNotifier: (any QueueCompletionNotifying)? = nil
     ) {
         self.engine = engine
         self.localASRGenerator = localASRGenerator
+        self.cloudASRGenerator = cloudASRGenerator
         self.completionNotifier = completionNotifier
         let settings = AppSettings.load()
         self.maxConcurrentDownloads = settings.maxConcurrentDownloads
@@ -275,9 +278,17 @@ final class QueueManager: ObservableObject {
     }
 
     var hasLocalASRGenerator: Bool { localASRGenerator != nil }
+    var hasCloudASRGenerator: Bool { cloudASRGenerator != nil }
 
     func syncLocalASRGenerator(from settings: AppSettings) {
         localASRGenerator = LocalASRGeneratorFactory.make(settings: settings)
+    }
+
+    func syncCloudASRGenerator(from settings: AppSettings) {
+        cloudASRGenerator = CloudASRGeneratorFactory.make(
+            settings: settings,
+            localASRGenerator: localASRGenerator
+        )
     }
 
     func canRetryWithLocalASR(_ id: UUID) -> Bool {
@@ -423,6 +434,12 @@ final class QueueManager: ObservableObject {
     }
 
     private static func shouldPrepareLocalASRSource(for request: DownloadRequest) -> Bool {
+        if request.subtitleSourcePolicy == .compareLocalASR {
+            if let primarySubtitleTrack = request.primarySubtitleTrack {
+                return primarySubtitleTrack.sourceKind == .platformAuto
+            }
+            return request.requestedSubtitleTracks.contains { $0.sourceKind == .platformAuto }
+        }
         if let primarySubtitleTrack = request.primarySubtitleTrack {
             return primarySubtitleTrack.sourceKind == .localASR
         }
@@ -630,7 +647,18 @@ final class QueueManager: ObservableObject {
         }
 
         do {
+            downloadFiles = try appendImportedSubtitleFileIfNeeded(
+                files: downloadFiles,
+                request: current.request
+            )
             downloadFiles = try await prepareLocalASRSourceSubtitleIfNeeded(
+                files: downloadFiles,
+                request: current.request,
+                id: id,
+                generation: generation,
+                control: control
+            )
+            downloadFiles = try await prepareCloudASRSourceSubtitleIfNeeded(
                 files: downloadFiles,
                 request: current.request,
                 id: id,
@@ -649,8 +677,13 @@ final class QueueManager: ObservableObject {
             return
         }
 
-        // 下载完成，只保存主字幕来源：直接完成
-        guard mode != .off else {
+        let shouldResolveSourceOnly = mode == .off
+            && (current.request.primarySubtitleTrack != nil
+                || current.request.importedSubtitleFileURL != nil
+                || current.request.subtitleSourcePolicy == .cloudASR)
+
+        // 完全不处理字幕：直接完成。下载源字幕 SRT 仍要走来源解析和任务详情披露。
+        guard mode != .off || shouldResolveSourceOnly else {
             finishDone(id, generation: generation, files: downloadFiles, statusText: nil)
             return
         }
@@ -702,6 +735,11 @@ final class QueueManager: ObservableObject {
         } catch {
             guard item(id)?.generation == generation else { return }
             // 回退过程中生成 whisper 失败：不阻塞，沿用原平台字幕继续翻译。
+        }
+
+        if shouldResolveSourceOnly {
+            finishDone(id, generation: generation, files: downloadFiles, statusText: nil)
+            return
         }
 
         // 平台字幕（非本地识别）若清洗后出现大量 ~10ms 闪现 cue（YouTube 滚动字幕常见），完成后
@@ -1298,10 +1336,20 @@ final class QueueManager: ObservableObject {
             autoSubtitleLangs: [],
             subtitleTracks: [localASRTrack],
             primarySubtitleTrackID: localASRTrack.id,
+            preferredSubtitleLanguageCode: localASRTrack.languageCode,
+            sourceLanguageIntent: localASRLanguageCode == "auto" ? .automatic : .language(localASRLanguageCode),
+            subtitleSourcePolicy: .forceLocalASR,
             destinationDirectory: request.destinationDirectory,
             preferredTitle: request.preferredTitle,
             preferHDR: request.preferHDR,
             outputFormat: request.outputFormat
+        )
+    }
+
+    private static func localASRPromptMetadata(info: VideoInfo) -> ASRPromptMetadata {
+        ASRPromptMetadata(
+            title: info.title,
+            channel: info.uploader
         )
     }
 
@@ -1400,62 +1448,126 @@ final class QueueManager: ObservableObject {
     ) async throws -> SubtitleSourceResolution {
         let language = preferredLang ?? Self.langCode(of: pickedSource) ?? ""
         let pickedIsLocalASR = Self.isLocalASRSubtitle(pickedSource.lastPathComponent)
-        let defaultLocalASRAvailable = localASRGenerator != nil
-        func arbitrationReports(
-            verdict: PlatformSubtitleQualityGate.Verdict? = nil,
-            localASRAvailable: Bool? = nil
-        ) -> [SubtitleSourceCandidateReport] {
-            SongSubtitleSourceArbiter.arbitrate(
-                languageCode: language,
-                tracks: primarySubtitleTrack.map { [$0] } ?? [],
-                platformAutoVerdict: verdict,
-                localASRAvailable: localASRAvailable ?? defaultLocalASRAvailable
-            ).candidateReports
+        let pickedIsCloudASR = Self.isCloudASRSubtitle(pickedSource.lastPathComponent)
+        let pickedIsAuto: Bool
+        if pickedIsCloudASR || pickedIsLocalASR {
+            pickedIsAuto = false
+        } else if let primarySubtitleTrack {
+            pickedIsAuto = primarySubtitleTrack.sourceKind == .platformAuto
+        } else {
+            pickedIsAuto = pickedSource.pathExtension.lowercased() == "vtt"
+        }
+        let videoDurationSeconds = PlatformSubtitleQualityGate.parseDurationSeconds(info.durationText)
+        func candidate(
+            kind: SubtitleSourceKind,
+            fileURL: URL?,
+            displayName: String? = nil,
+            provider: String? = nil
+        ) -> SubtitleSourceCandidate {
+            SubtitleSourceCandidate(
+                id: "\(kind.rawValue):\(language):\(fileURL?.path ?? "missing")",
+                kind: kind,
+                languageCode: language.isEmpty ? "auto" : language,
+                displayName: displayName ?? fileURL?.lastPathComponent ?? kind.rawValue,
+                fileURL: fileURL,
+                isGenerated: kind == .localASR || kind == .cloudASR || kind == .platformAuto,
+                provider: provider
+            )
+        }
+        func resolverResult(candidates: [SubtitleSourceCandidate]) -> ResolvedSubtitleSource? {
+            SubtitleSourceResolver.resolve(SubtitleResolutionRequest(
+                languageIntent: request.sourceLanguageIntent,
+                sourcePolicy: request.subtitleSourcePolicy,
+                candidates: candidates,
+                videoDurationSeconds: videoDurationSeconds
+            ))
+        }
+        func resolvedSource(
+            selectedFile: URL,
+            selectedKind: SubtitleSourceKind,
+            candidates: [SubtitleSourceCandidate],
+            fallbackReasons: [PlatformSubtitleQualityGate.Reason] = []
+        ) -> ResolvedSubtitleSource {
+            guard let resolved = resolverResult(candidates: candidates) else {
+                return ResolvedSubtitleSource(
+                    languageCode: language,
+                    selectedFile: selectedFile,
+                    selectedKind: selectedKind,
+                    fallbackReasons: fallbackReasons)
+            }
+            return ResolvedSubtitleSource(
+                languageCode: resolved.languageCode,
+                selectedFile: selectedFile,
+                selectedKind: selectedKind,
+                qualityVerdict: resolved.qualityVerdict,
+                sourceQualityVerdict: resolved.sourceQualityVerdict,
+                usedLocalASRFallback: selectedKind == .localASR && pickedIsAuto,
+                fallbackReasons: fallbackReasons,
+                candidateReports: resolved.candidateReports)
         }
 
         // Manual subtitle or explicit local-ASR pick → no gate.
         if pickedIsLocalASR {
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
-                resolved: ResolvedSubtitleSource(
-                    languageCode: language,
+                resolved: resolvedSource(
                     selectedFile: pickedSource,
                     selectedKind: .localASR,
-                    candidateReports: arbitrationReports()),
+                    candidates: [
+                        candidate(
+                            kind: .localASR,
+                            fileURL: pickedSource,
+                            displayName: primarySubtitleTrack?.label,
+                            provider: "whisper.cpp")
+                    ]),
                 note: nil)
         }
-        let pickedIsAuto: Bool
-        if let primarySubtitleTrack {
-            pickedIsAuto = primarySubtitleTrack.sourceKind == .platformAuto
-        } else {
-            pickedIsAuto = pickedSource.pathExtension.lowercased() == "vtt"
+        if pickedIsCloudASR {
+            return SubtitleSourceResolution(
+                selectedFile: pickedSource,
+                resolved: resolvedSource(
+                    selectedFile: pickedSource,
+                    selectedKind: .cloudASR,
+                    candidates: [
+                        candidate(
+                            kind: .cloudASR,
+                            fileURL: pickedSource,
+                            displayName: primarySubtitleTrack?.label,
+                            provider: "OpenAI-compatible")
+                    ]),
+                note: nil)
         }
         guard pickedIsAuto else {
             // Manual / official subtitle: trusted, no gate.
+            let kind = primarySubtitleTrack?.sourceKind ?? .manual
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
-                resolved: ResolvedSubtitleSource(
-                    languageCode: language,
+                resolved: resolvedSource(
                     selectedFile: pickedSource,
-                    selectedKind: .manual,
-                    candidateReports: arbitrationReports()),
+                    selectedKind: kind,
+                    candidates: [
+                        candidate(kind: kind, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
+                    ]),
                 note: nil)
         }
 
         // Platform auto-caption: assess intrinsic usability.
         let verdict = Self.assessPlatformSubtitle(
             fileURL: pickedSource, requestedLanguageCode: preferredLang, info: info)
-        if verdict.usable {
+        let shouldCompareLocalASR = request.subtitleSourcePolicy == .compareLocalASR
+        if verdict.usable && !shouldCompareLocalASR {
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
-                resolved: ResolvedSubtitleSource(
-                    languageCode: language, selectedFile: pickedSource, selectedKind: .platformAuto,
-                    qualityVerdict: verdict,
-                    candidateReports: arbitrationReports(verdict: verdict)),
+                resolved: resolvedSource(
+                    selectedFile: pickedSource,
+                    selectedKind: .platformAuto,
+                    candidates: [
+                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
+                    ]),
                 note: nil)
         }
 
-        // Not usable. Auto-fallback to Whisper when a generator is available.
+        // Not usable, or explicit local comparison requested. Generate Whisper when available.
         guard let localASRGenerator,
               let videoFile = downloadFiles.first(where: {
                   Self.videoExtensions.contains($0.pathExtension.lowercased())
@@ -1463,16 +1575,19 @@ final class QueueManager: ObservableObject {
             // Local ASR unavailable: keep the auto-caption (non-blocking), record reasons for the UI.
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
-                resolved: ResolvedSubtitleSource(
-                    languageCode: language, selectedFile: pickedSource, selectedKind: .platformAuto,
-                    qualityVerdict: verdict,
-                    usedLocalASRFallback: false,
-                    fallbackReasons: verdict.reasons,
-                    candidateReports: arbitrationReports(verdict: verdict, localASRAvailable: false)),
-                note: CoreL10n.t(L.Queue.subtitleSourceLowQualityEnableLocalASR))
+                resolved: resolvedSource(
+                    selectedFile: pickedSource,
+                    selectedKind: .platformAuto,
+                    candidates: [
+                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
+                    ],
+                    fallbackReasons: verdict.reasons),
+                note: verdict.usable
+                    ? CoreL10n.t(L.Queue.subtitleSourceCompareLocalASRUnavailable)
+                    : CoreL10n.t(L.Queue.subtitleSourceLowQualityEnableLocalASR))
         }
 
-        // Generate Whisper for this language and switch to it.
+        // Generate Whisper for this language and let the resolver compare it with the platform source.
         update(id, generation: generation) {
             $0.stage = .downloading
             $0.clearProgress()
@@ -1484,6 +1599,7 @@ final class QueueManager: ObservableObject {
         let generated = try await localASRGenerator.generateSourceSubtitle(
             videoFile: videoFile,
             languageCode: language.isEmpty ? "auto" : language,
+            promptMetadata: Self.localASRPromptMetadata(info: info),
             control: control
         ) { [weak self] progress in
             Task { @MainActor in
@@ -1504,15 +1620,26 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
         }
+        let resolved = resolverResult(candidates: [
+            candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label),
+            candidate(kind: .localASR, fileURL: sourceSRT, provider: "whisper.cpp")
+        ])
+        let selectedKind = resolved?.selectedKind ?? .localASR
+        let selectedFile = selectedKind == .localASR ? sourceSRT : pickedSource
         return SubtitleSourceResolution(
-            selectedFile: sourceSRT,
+            selectedFile: selectedFile,
             resolved: ResolvedSubtitleSource(
-                languageCode: language, selectedFile: sourceSRT, selectedKind: .localASR,
-                qualityVerdict: verdict,
-                usedLocalASRFallback: true,
+                languageCode: resolved?.languageCode ?? language,
+                selectedFile: selectedFile,
+                selectedKind: selectedKind,
+                qualityVerdict: resolved?.qualityVerdict,
+                sourceQualityVerdict: resolved?.sourceQualityVerdict,
+                usedLocalASRFallback: selectedKind == .localASR,
                 fallbackReasons: verdict.reasons,
-                candidateReports: arbitrationReports(verdict: verdict, localASRAvailable: true)),
-            note: Self.localASRSourceNote(fallbackReasons: verdict.reasons, confidence: generated.confidence))
+                candidateReports: resolved?.candidateReports ?? []),
+            note: selectedKind == .localASR
+                ? Self.localASRSourceNote(fallbackReasons: verdict.reasons, confidence: generated.confidence)
+                : nil)
     }
 
     /// Parses an auto-caption file and runs the quality gate against it.
@@ -1554,6 +1681,56 @@ final class QueueManager: ObservableObject {
         }
     }
 
+    private func appendImportedSubtitleFileIfNeeded(
+        files: [URL],
+        request: DownloadRequest
+    ) throws -> [URL] {
+        guard let sourceURL = request.importedSubtitleFileURL else { return files }
+        let ext = sourceURL.pathExtension.lowercased()
+        guard ["srt", "vtt"].contains(ext) else { return files }
+        if files.contains(where: { $0.path == sourceURL.path }) { return files }
+
+        let language = SubtitleLanguageChoice
+            .normalizedLanguageCode(request.effectivePreferredLanguageCode ?? "auto")
+        let destination = try importedSubtitleDestination(
+            in: request.destinationDirectory,
+            languageCode: language.isEmpty ? "auto" : language,
+            pathExtension: ext
+        )
+        if sourceURL.standardizedFileURL.path == destination.standardizedFileURL.path {
+            var nextFiles = files
+            nextFiles.append(sourceURL)
+            return nextFiles
+        }
+        try FileManager.default.createDirectory(
+            at: request.destinationDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        var nextFiles = files
+        nextFiles.append(destination)
+        return nextFiles
+    }
+
+    private func importedSubtitleDestination(
+        in directory: URL,
+        languageCode: String,
+        pathExtension ext: String
+    ) throws -> URL {
+        let safeLanguage = languageCode.map { character -> Character in
+            character.isLetter || character.isNumber || character == "-" ? character : "-"
+        }
+        let stem = "imported-subtitle.\(String(safeLanguage))"
+        let fm = FileManager.default
+        var candidate = directory.appendingPathComponent(stem).appendingPathExtension(ext)
+        var index = 2
+        while fm.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(stem)-\(index)").appendingPathExtension(ext)
+            index += 1
+        }
+        return candidate
+    }
+
     private func prepareLocalASRSourceSubtitleIfNeeded(
         files: [URL],
         request: DownloadRequest,
@@ -1574,6 +1751,8 @@ final class QueueManager: ObservableObject {
               let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
             return files
         }
+        let promptMetadata = item(id).map { Self.localASRPromptMetadata(info: $0.info) }
+            ?? ASRPromptMetadata(title: request.preferredTitle)
         update(id, generation: generation) {
             $0.stage = .downloading
             $0.clearProgress()
@@ -1585,6 +1764,7 @@ final class QueueManager: ObservableObject {
         let generated = try await localASRGenerator.generateSourceSubtitle(
             videoFile: videoFile,
             languageCode: languageCode,
+            promptMetadata: promptMetadata,
             control: control
         ) { [weak self] progress in
             Task { @MainActor in
@@ -1612,6 +1792,70 @@ final class QueueManager: ObservableObject {
             if let lowConfidenceNote { $0.subtitleSourceNote = lowConfidenceNote }
         }
         return nextFiles
+    }
+
+    private func prepareCloudASRSourceSubtitleIfNeeded(
+        files: [URL],
+        request: DownloadRequest,
+        id: UUID,
+        generation: Int,
+        control: TaskControlToken
+    ) async throws -> [URL] {
+        guard request.subtitleSourcePolicy == .cloudASR else { return files }
+        guard let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
+            return files
+        }
+        guard cloudASRGenerator != nil else {
+            throw MoongateError.downloadFailed(CoreL10n.t(L.Ready.cloudASRSetupRequired))
+        }
+        let languageCode = request.effectivePreferredLanguageCode
+            ?? request.primarySubtitleTrack?.languageCode
+            ?? "auto"
+        update(id, generation: generation) {
+            $0.stage = .downloading
+            $0.clearProgress()
+            $0.statusText = nil
+            $0.isPostDownloadProcessing = true
+            $0.postDownloadProcessingKind = .generic
+            self.applyProgress(&$0, id: id, generation: generation, phase: .speechRecognition, phaseProgress: nil)
+        }
+        let promptMetadata = item(id).map { Self.localASRPromptMetadata(info: $0.info) }
+            ?? ASRPromptMetadata(title: request.preferredTitle)
+        let generated = try await generateCloudASRSourceSubtitle(
+            videoFile: videoFile,
+            languageCode: languageCode,
+            promptMetadata: promptMetadata,
+            control: control
+        )
+        guard item(id)?.generation == generation else { return files }
+        completeProgressPhase(id, generation: generation, phase: .speechRecognition)
+        completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
+        var nextFiles = files
+        if !nextFiles.contains(generated.url) { nextFiles.append(generated.url) }
+        update(id, generation: generation) {
+            $0.resultFiles = nextFiles
+            $0.clearProgress()
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+        }
+        return nextFiles
+    }
+
+    private func generateCloudASRSourceSubtitle(
+        videoFile: URL,
+        languageCode: String,
+        promptMetadata: ASRPromptMetadata?,
+        control: TaskControlToken
+    ) async throws -> GeneratedCloudASRSource {
+        guard let cloudASRGenerator else {
+            throw MoongateError.downloadFailed(CoreL10n.t(L.Ready.cloudASRSetupRequired))
+        }
+        return try await cloudASRGenerator.generateSourceSubtitle(
+            videoFile: videoFile,
+            languageCode: languageCode,
+            promptMetadata: promptMetadata,
+            control: control
+        )
     }
 
     private static func existingLocalASRSubtitleIsUsable(
@@ -1716,6 +1960,19 @@ final class QueueManager: ObservableObject {
         let subtitleFiles = files
             .filter { ["srt", "vtt"].contains($0.pathExtension.lowercased()) }
             .sorted { subtitleSourceRank($0) < subtitleSourceRank($1) }
+        if let preferredTrack, preferredTrack.sourceKind == .importedFile {
+            if let importedPath = preferredTrack.metadata["path"],
+               let exact = subtitleFiles.first(where: {
+                   $0.path == importedPath
+                       || $0.resolvingSymlinksInPath().path == URL(fileURLWithPath: importedPath).resolvingSymlinksInPath().path
+                       || $0.lastPathComponent == URL(fileURLWithPath: importedPath).lastPathComponent
+               }) {
+                return exact
+            }
+            if let imported = subtitleFiles.first(where: { isImportedSubtitle($0.lastPathComponent) }) {
+                return imported
+            }
+        }
         if let lang = preferredLang?.lowercased(), !lang.isEmpty {
             let matches = subtitleFiles.filter { file in
                 guard let code = langCode(of: file) else { return false }
@@ -1740,6 +1997,8 @@ final class QueueManager: ObservableObject {
     }
 
     private static func subtitleSourceRank(_ file: URL) -> Int {
+        if isCloudASRSubtitle(file.lastPathComponent) { return -3 }
+        if isImportedSubtitle(file.lastPathComponent) { return -2 }
         if isLocalASRSubtitle(file.lastPathComponent) { return -1 }
         switch file.pathExtension.lowercased() {
         case "vtt": return 0
@@ -1750,6 +2009,14 @@ final class QueueManager: ObservableObject {
 
     private static func isLocalASRSubtitle(_ fileName: String) -> Bool {
         fileName.lowercased().contains(".local-asr.")
+    }
+
+    private static func isCloudASRSubtitle(_ fileName: String) -> Bool {
+        fileName.lowercased().contains(".cloud-asr.")
+    }
+
+    private static func isImportedSubtitle(_ fileName: String) -> Bool {
+        fileName.lowercased().hasPrefix("imported-subtitle.")
     }
 
     private static func ensureSRTSubtitle(_ file: URL) throws -> URL {

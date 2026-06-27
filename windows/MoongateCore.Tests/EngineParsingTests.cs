@@ -148,16 +148,25 @@ public class HlsSubtitleParsingTests
             SubtitleSourceKind.LocalAsr,
             provider: "whisper.cpp",
             variant: "ggml-small");
+        var cloudAsr = SubtitleChoice.Create(
+            "ja",
+            "Japanese cloud ASR",
+            SubtitleSourceKind.CloudAsr,
+            provider: "cloud",
+            variant: "precise");
 
         Assert.Equal("ja", manual.LanguageCode);
         Assert.Equal("ja", auto.LanguageCode);
         Assert.Equal("ja", localAsr.LanguageCode);
-        Assert.Equal(3, new HashSet<string> { manual.Id, auto.Id, localAsr.Id }.Count);
+        Assert.Equal("ja", cloudAsr.LanguageCode);
+        Assert.Equal(4, new HashSet<string> { manual.Id, auto.Id, localAsr.Id, cloudAsr.Id }.Count);
         Assert.False(manual.IsAuto);
         Assert.True(auto.IsAuto);
         Assert.False(localAsr.IsAuto);
+        Assert.False(cloudAsr.IsAuto);
         Assert.Equal(SubtitleSourceKind.Manual, SubtitleTrackId.Parse(manual.Id).SourceKind);
         Assert.Equal(SubtitleSourceKind.PlatformAuto, SubtitleTrackId.Parse(auto.Id).SourceKind);
+        Assert.Equal(SubtitleSourceKind.CloudAsr, SubtitleTrackId.Parse(cloudAsr.Id).SourceKind);
         Assert.Equal("ja", SubtitleTrackId.Parse("ja").LanguageCode);
         Assert.Equal(SubtitleSourceKind.Manual, SubtitleTrackId.Parse("ja").SourceKind);
     }

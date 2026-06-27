@@ -19,6 +19,7 @@ MOONGATE_ASR_QA_RUNTIME_DIR=/absolute/path/to/app-or-publish/asr/runtime \
 MOONGATE_ASR_QA_MODEL=/absolute/path/to/model.bin \
 MOONGATE_ASR_QA_AUDIO=/absolute/path/to/short-sample.mp4 \
 MOONGATE_ASR_QA_FFMPEG=/absolute/path/to/ffmpeg \
+MOONGATE_ASR_QA_VAD_MODEL=/absolute/path/to/local-silero-vad-model.bin \
 MOONGATE_ASR_QA_LANGUAGE=ja \
 zsh tools/local_asr_smoke/run-local-asr-smoke.sh
 ```
@@ -30,6 +31,10 @@ Optional inputs:
   set, the script reads `asr-runtime-manifest.json`, verifies the packaged
   executable SHA-256, and uses the manifest's `executableRelativePath` instead.
 - `MOONGATE_ASR_QA_PROMPT`: prompt passed to `whisper-cli --prompt`.
+- `MOONGATE_ASR_QA_VAD_MODEL`: optional local Silero VAD model. When set, the
+  smoke passes `--vad --vad-model` to `whisper-cli`.
+- `MOONGATE_ASR_QA_NO_GPU`: defaults to `1` so the smoke uses whisper.cpp's
+  deterministic CPU path. Set to `0` when GPU behavior is the thing being tested.
 - `MOONGATE_ASR_QA_WORKDIR`: output directory. If omitted, the script creates a temp directory.
 
 ## What It Proves
@@ -37,7 +42,7 @@ Optional inputs:
 - A packaged runtime manifest can be read, stays inside the runtime directory,
   and its SHA-256 matches the packaged executable.
 - ffmpeg can extract a 16 kHz mono PCM WAV from the supplied local media.
-- whisper.cpp accepts Moongate's v0.8 command shape: `-m`, `-f`, `-ojf`, `-of`, `-pp`, optional `-l`, and optional `--prompt`.
+- whisper.cpp accepts Moongate's v0.8 command shape: `-m`, `-f`, `-ojf`, `-of`, `-pp`, optional `-l`, optional `--no-gpu`, optional `--vad --vad-model`, and optional `--prompt`.
 - whisper.cpp writes a non-empty JSON transcript.
 - The JSON contains timed text that can be converted into `*.local-asr.<lang>.srt`.
 - The generated SRT is non-empty and has monotonic cue starts.

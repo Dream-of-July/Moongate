@@ -30,6 +30,18 @@ enum ChineseSubtitleMode: String, CaseIterable, Codable {
     }
 }
 
+struct ReadySubtitleState {
+    let intent: SubtitleIntent
+    let sourcePolicy: SubtitleSourcePolicy
+    let selectedTrack: SubtitleChoice?
+    let translationRequired: Bool
+    let translationReady: Bool
+    let localASRRequiredButUnavailable: Bool
+    let cloudASRRequiredButUnavailable: Bool
+
+    var needsSubtitleSource: Bool { intent.needsSubtitleSource }
+}
+
 struct SourceLanguagePreferenceOption: Identifiable, Hashable {
     let code: String
     var id: String { code }
@@ -82,10 +94,17 @@ final class ViewModel: ObservableObject {
     @Published var chineseMode: ChineseSubtitleMode = .off {
         didSet { persistCurrentDownloadOptions() }
     }
+    /// Ready 页默认只让用户选字幕结果；来源策略保留为高级控制，当前作为旧字段的兼容层。
+    @Published var subtitleSourcePolicy: SubtitleSourcePolicy = .autoBest
+    @Published var importedSubtitleFileURL: URL?
     /// Ready 页语言区是否展开（默认折叠：只显示推荐语言，展开后才显示其他语言与来源细节）。
     @Published var languageSectionExpanded: Bool = false
     /// Ready 页单视频原声语言偏好。默认跟随全局设置；只影响当前选档页。
     @Published var readySourceLanguagePreference: String = "auto"
+    var readySourceLanguageIntent: SourceLanguageIntent {
+        get { Self.sourceLanguageIntent(from: readySourceLanguagePreference) }
+        set { readySourceLanguagePreference = Self.sourceLanguagePreference(from: newValue) }
+    }
     /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
     /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
     static var persistedAppLanguage: String { AppSettings.load(readCredentials: false).appLanguage }
@@ -95,6 +114,17 @@ final class ViewModel: ObservableObject {
             || old.localASRRuntimePath != new.localASRRuntimePath
             || old.localASRModelPath != new.localASRModelPath
             || old.localASRModelID != new.localASRModelID
+            || old.localASRPreciseModeEnabled != new.localASRPreciseModeEnabled
+            || old.localASRSidecarRuntimePath != new.localASRSidecarRuntimePath
+            || old.localASRSidecarModelPath != new.localASRSidecarModelPath
+    }
+
+    private static func cloudASRGeneratorSettingsChanged(_ old: AppSettings, _ new: AppSettings) -> Bool {
+        old.cloudASREnabled != new.cloudASREnabled
+            || old.cloudASRConsentAccepted != new.cloudASRConsentAccepted
+            || old.cloudASRBaseURL != new.cloudASRBaseURL
+            || old.cloudASRModel != new.cloudASRModel
+            || old.cloudASRAuthToken != new.cloudASRAuthToken
     }
 
     /// 启动时不读 Keychain 凭证（避免首次启动弹授权）；首次真正需要凭证时由 hydrateCredentials() 补齐。
@@ -105,6 +135,10 @@ final class ViewModel: ObservableObject {
             queue.syncConcurrency(from: settings)
             if Self.localASRGeneratorSettingsChanged(oldValue, settings) {
                 queue.syncLocalASRGenerator(from: settings)
+                queue.syncCloudASRGenerator(from: settings)
+            }
+            if Self.cloudASRGeneratorSettingsChanged(oldValue, settings) {
+                queue.syncCloudASRGenerator(from: settings)
             }
             refreshTranslationRuntimeReadiness()
             refreshSummaryRuntimeReadiness()
@@ -188,9 +222,14 @@ final class ViewModel: ObservableObject {
         self.primarySubtitleTrackID = nil
         self.readySourceLanguagePreference = initialSettings.preferredSourceLanguage
         self.engine = engine
+        let initialLocalASRGenerator = LocalASRGeneratorFactory.make(settings: initialSettings)
         self.queue = queue ?? QueueManager(
             engine: engine,
-            localASRGenerator: LocalASRGeneratorFactory.make(settings: initialSettings),
+            localASRGenerator: initialLocalASRGenerator,
+            cloudASRGenerator: CloudASRGeneratorFactory.make(
+                settings: initialSettings,
+                localASRGenerator: initialLocalASRGenerator
+            ),
             completionNotifier: SystemQueueCompletionNotifier(settingsProvider: { AppSettings.load(readCredentials: false) })
         )
         self.updater = updater ?? UpdateService()
@@ -478,6 +517,8 @@ final class ViewModel: ObservableObject {
                         subtitleTracks: subtitleTracks,
                         primarySubtitleTrackID: primarySubtitleTrackID,
                         preferredSubtitleLanguageCode: primarySubtitleTrackID.map(normalizedLang),
+                        sourceLanguageIntent: readySourceLanguageIntent,
+                        subtitleSourcePolicy: .autoBest,
                         destinationDirectory: Self.destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
@@ -501,6 +542,7 @@ final class ViewModel: ObservableObject {
             self.urlText = ""
             self.selectedFormatID = nil
             self.primarySubtitleTrackID = nil
+            self.importedSubtitleFileURL = nil
             self.chineseMode = .off
             self.stage = .idle
             var parts: [String] = [CoreL10n.t(L.Main.batchAdded, added)]
@@ -578,6 +620,8 @@ final class ViewModel: ObservableObject {
         let selectedFormatIDSnapshot = selectedFormatID
         let selectedSubtitleIDsSnapshot = selectedSubtitleIDs
         let primarySubtitleTrackIDSnapshot = primarySubtitleTrackID
+        let subtitleSourcePolicySnapshot = subtitleSourcePolicy
+        let importedSubtitleFileURLSnapshot = importedSubtitleFileURL
         let preferHDRSnapshot = preferHDR
         let outputFormatSnapshot = selectedOutputFormat
         let currentSettings = settings
@@ -587,6 +631,11 @@ final class ViewModel: ObservableObject {
            primaryTrack.sourceKind == .localASR,
            !localASRReadyForDownload {
             openLocalASRSettings()
+            return
+        }
+        if subtitleSourcePolicySnapshot == .cloudASR,
+           !queue.hasCloudASRGenerator {
+            openCloudASRSettings()
             return
         }
         guard dependenciesReady(for: mode) else { return }
@@ -624,6 +673,9 @@ final class ViewModel: ObservableObject {
             subtitleTracks: chosen,
             primarySubtitleTrackID: primarySubtitleTrackIDSnapshot,
             preferredSubtitleLanguageCode: primarySubtitleTrackIDSnapshot.map(normalizedLang),
+            sourceLanguageIntent: readySourceLanguageIntent,
+            subtitleSourcePolicy: subtitleSourcePolicySnapshot,
+            importedSubtitleFileURL: importedSubtitleFileURLSnapshot,
             destinationDirectory: Self.destinationDirectory(forTitle: info.title, multiFile: multiFile),
             preferredTitle: {
                 guard let kind = selectedCandidate?.kind, kind == .pageMain || kind == .directFile else { return nil }
@@ -643,6 +695,7 @@ final class ViewModel: ObservableObject {
         urlText = ""
         selectedFormatID = nil
         self.primarySubtitleTrackID = nil
+        importedSubtitleFileURL = nil
         chineseMode = .off
         candidates = []
         chosenCandidate = nil
@@ -698,6 +751,7 @@ final class ViewModel: ObservableObject {
                 to: &choices,
                 seenIDs: &seenIDs
             )
+            appendImportedSubtitleChoice(for: info, to: &choices, seenIDs: &seenIDs)
             return choices
         }
 
@@ -721,7 +775,19 @@ final class ViewModel: ObservableObject {
                 seenIDs: &seenIDs
             )
         }
+        appendImportedSubtitleChoice(for: info, to: &choices, seenIDs: &seenIDs)
         return choices
+    }
+
+    private func appendImportedSubtitleChoice(
+        for info: VideoInfo,
+        to choices: inout [SubtitleChoice],
+        seenIDs: inout Set<String>
+    ) {
+        guard let imported = importedSubtitleChoice(for: info) else { return }
+        if seenIDs.insert(imported.id).inserted {
+            choices.append(imported)
+        }
     }
 
     private func appendLocalASRChoice(
@@ -744,6 +810,53 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    private func importedSubtitleChoice(for info: VideoInfo) -> SubtitleChoice? {
+        guard let url = importedSubtitleFileURL else { return nil }
+        let languageCode = importedSubtitleLanguageCode(for: info)
+        return SubtitleChoice(
+            languageCode: languageCode,
+            label: CoreL10n.t(L.Ready.importedSubtitleFileLabel, url.lastPathComponent),
+            sourceKind: .importedFile,
+            provider: "local-file",
+            variant: url.lastPathComponent,
+            qualityHint: url.lastPathComponent,
+            metadata: ["path": url.path]
+        )
+    }
+
+    private func importedSubtitleLanguageCode(for info: VideoInfo) -> String {
+        let preferred = effectiveSourceLanguagePreference(for: info)
+        if preferred != "auto" { return preferred }
+        return SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: info.title) ?? "auto"
+    }
+
+    func importSubtitleFile(_ url: URL, for info: VideoInfo) {
+        let supportedExtensions: Set<String> = ["srt", "vtt"]
+        guard supportedExtensions.contains(url.pathExtension.lowercased()) else {
+            enqueueNotice = CoreL10n.t(L.Ready.importedSubtitleUnsupported)
+            return
+        }
+        importedSubtitleFileURL = url
+        subtitleSourcePolicy = .importedFile
+        ensureSubtitleSourceSelected(for: info)
+        if let imported = importedSubtitleChoice(for: info) {
+            primarySubtitleTrackID = imported.id
+        }
+        if subtitleIntent == .none {
+            setSubtitleIntent(.sourceSRT, for: info)
+        }
+    }
+
+    func clearImportedSubtitleFile(for info: VideoInfo) {
+        let selectedImported = primarySubtitleTrack(in: info)?.sourceKind == .importedFile
+        importedSubtitleFileURL = nil
+        if selectedImported {
+            subtitleSourcePolicy = .autoBest
+            primarySubtitleTrackID = nil
+            ensureSubtitleSourceSelected(for: info)
+        }
+    }
+
     func effectiveSourceLanguagePreference(for info: VideoInfo) -> String {
         let preferred = AppSettings.normalizedPreferredSourceLanguage(readySourceLanguagePreference)
         if preferred != "auto" {
@@ -758,6 +871,112 @@ final class ViewModel: ObservableObject {
 
     // MARK: - Language-first ready page
 
+    var subtitleIntent: SubtitleIntent {
+        if primarySubtitleTrackID == nil && chineseMode == .off {
+            return .none
+        }
+        switch chineseMode {
+        case .off:
+            return .sourceSRT
+        case .srtOnly:
+            return .translatedSRT
+        case .burnIn:
+            return .burnTranslated
+        case .burnOriginal:
+            return .burnSource
+        }
+    }
+
+    func setSubtitleIntent(_ intent: SubtitleIntent, for info: VideoInfo) {
+        switch intent {
+        case .none:
+            primarySubtitleTrackID = nil
+            chineseMode = .off
+        case .sourceSRT:
+            ensureSubtitleSourceSelected(for: info)
+            chineseMode = .off
+        case .translatedSRT:
+            ensureSubtitleSourceSelected(for: info)
+            chineseMode = .srtOnly
+        case .burnTranslated:
+            ensureSubtitleSourceSelected(for: info)
+            chineseMode = .burnIn
+        case .burnSource:
+            ensureSubtitleSourceSelected(for: info)
+            chineseMode = .burnOriginal
+        }
+    }
+
+    func readySubtitleState(for info: VideoInfo) -> ReadySubtitleState {
+        let intent = subtitleIntent
+        let selectedTrack = primarySubtitleTrack(in: info)
+        let translationRequired = intent.requiresTranslation && !translationSourceMatchesTarget(in: info)
+        let translationReady = !translationRequired || translationReadinessForCurrentSettings().isReady
+        let localASRRequiredButUnavailable = selectedTrack?.sourceKind == .localASR && !localASRReadyForDownload
+        let cloudASRRequiredButUnavailable = subtitleSourcePolicy == .cloudASR && !queue.hasCloudASRGenerator
+        return ReadySubtitleState(
+            intent: intent,
+            sourcePolicy: subtitleSourcePolicy,
+            selectedTrack: selectedTrack,
+            translationRequired: translationRequired,
+            translationReady: translationReady,
+            localASRRequiredButUnavailable: localASRRequiredButUnavailable,
+            cloudASRRequiredButUnavailable: cloudASRRequiredButUnavailable
+        )
+    }
+
+    func setSubtitleSourcePolicy(_ policy: SubtitleSourcePolicy, for info: VideoInfo) {
+        subtitleSourcePolicy = policy
+        guard subtitleIntent.needsSubtitleSource else { return }
+        if let track = trackMatching(policy: policy, for: info) {
+            primarySubtitleTrackID = track.id
+        }
+    }
+
+    private func ensureSubtitleSourceSelected(for info: VideoInfo) {
+        if primarySubtitleTrack(in: info) != nil { return }
+        if let policyTrack = trackMatching(policy: subtitleSourcePolicy, for: info) {
+            primarySubtitleTrackID = policyTrack.id
+            return
+        }
+        if let recommended = recommendedLanguage(for: info) {
+            selectLanguage(recommended)
+        }
+    }
+
+    private func trackMatching(policy: SubtitleSourcePolicy, for info: VideoInfo) -> SubtitleChoice? {
+        let languages = availableLanguageChoices(for: info)
+        let selectedLanguage = primarySubtitleTrack(in: info)
+            .map { SubtitleLanguageChoice.normalizedLanguageCode($0.languageCode) }
+        let currentGroup = selectedLanguage.flatMap { selected in
+            languages.first { $0.languageCode == selected }
+        } ?? recommendedLanguage(for: info)
+        guard let currentGroup else { return nil }
+
+        switch policy {
+        case .autoBest:
+            return currentGroup.preferredTrack
+        case .preferPlatform:
+            return currentGroup.tracks.first(where: isPlatformTrack) ?? currentGroup.preferredTrack
+        case .forcePlatform:
+            return currentGroup.tracks.first(where: isPlatformTrack)
+        case .preferLocalASR:
+            return currentGroup.tracks.first { $0.sourceKind == .localASR } ?? currentGroup.preferredTrack
+        case .forceLocalASR:
+            return currentGroup.tracks.first { $0.sourceKind == .localASR }
+        case .compareLocalASR:
+            return currentGroup.tracks.first(where: isPlatformTrack) ?? currentGroup.tracks.first { $0.sourceKind == .localASR }
+        case .cloudASR:
+            return nil
+        case .importedFile:
+            return currentGroup.tracks.first { $0.sourceKind == .importedFile }
+        }
+    }
+
+    private func isPlatformTrack(_ track: SubtitleChoice) -> Bool {
+        track.sourceKind == .manual || track.sourceKind == .platformAuto || track.sourceKind == .hlsManifest
+    }
+
     static let sourceLanguagePreferenceOptions: [SourceLanguagePreferenceOption] = [
         SourceLanguagePreferenceOption(code: "auto"),
         SourceLanguagePreferenceOption(code: "ja"),
@@ -766,6 +985,20 @@ final class ViewModel: ObservableObject {
         SourceLanguagePreferenceOption(code: "zh-Hans"),
         SourceLanguagePreferenceOption(code: "yue"),
     ]
+
+    static func sourceLanguageIntent(from preference: String) -> SourceLanguageIntent {
+        let normalized = AppSettings.normalizedPreferredSourceLanguage(preference)
+        return normalized == "auto" ? .automatic : .language(normalized)
+    }
+
+    static func sourceLanguagePreference(from intent: SourceLanguageIntent) -> String {
+        switch intent {
+        case .automatic:
+            return "auto"
+        case .language(let code):
+            return AppSettings.normalizedPreferredSourceLanguage(code)
+        }
+    }
 
     /// Language groups for the ready page (manual / auto / localASR collapsed per language).
     func availableLanguageChoices(for info: VideoInfo) -> [SubtitleLanguageChoice] {
@@ -813,6 +1046,11 @@ final class ViewModel: ObservableObject {
 
     func openLocalASRSettings() {
         settingsNotice = CoreL10n.t(L.Ready.localASRSetupRequired)
+        openSettings(paneID: "localSpeech")
+    }
+
+    func openCloudASRSettings() {
+        settingsNotice = CoreL10n.t(L.Ready.cloudASRSetupRequired)
         openSettings(paneID: "localSpeech")
     }
 
@@ -939,6 +1177,7 @@ final class ViewModel: ObservableObject {
         queueExpanded = true
         selectedFormatID = nil
         primarySubtitleTrackID = nil
+        importedSubtitleFileURL = nil
         chineseMode = .off
         candidates = []
         chosenCandidate = nil

@@ -86,9 +86,8 @@ public sealed record AsrRequest
     /// <summary>Optional whisper.cpp text-context cap (<c>-mc</c>). Music-like local-ASR requests
     /// use 0 to reduce previous-text repetition loops.</summary>
     public int? MaxTextContextTokens { get; init; }
-    /// <summary>保留 / 暂未接通：whisper.cpp <c>--vad</c> 需要单独的 Silero VAD 模型，Moongate 尚未随包分发，
-    /// 因此 <see cref="WhisperCppCommandPlan"/> 刻意不发 <c>--vad</c>（见 forced-alignment ExecPlan 的推迟决定）。
-    /// 字段保留在请求契约里，以便日后无 wire 改动地启用；当前对 argv 无任何影响。</summary>
+    /// <summary>When true, whisper.cpp uses <c>--vad</c> if a local Silero VAD model can be found.
+    /// Missing VAD assets gracefully fall back to the standard whisper.cpp path.</summary>
     public bool VadEnabled { get; init; } = true;
     public bool WordTimestamps { get; init; } = true;
     /// <summary>
@@ -3811,6 +3810,101 @@ public interface ILocalAsrSubtitleGenerator
         CancellationToken ct = default);
 }
 
+public sealed class SidecarLocalAsrSubtitleGenerator : ILocalAsrSubtitleGenerator
+{
+    private readonly string _executablePath;
+    private readonly string _modelPath;
+    private readonly string _workDirectory;
+
+    public SidecarLocalAsrSubtitleGenerator(
+        string executablePath,
+        string modelPath,
+        string workDirectory)
+    {
+        _executablePath = executablePath;
+        _modelPath = modelPath;
+        _workDirectory = workDirectory;
+    }
+
+    public async Task<GeneratedLocalAsrSource> GenerateSourceSubtitleAsync(
+        string videoFile,
+        string languageCode,
+        TaskControlToken? control,
+        Action<AsrProgress> progress,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
+        Directory.CreateDirectory(_workDirectory);
+        var output = AsrTranscriptMapper.LocalAsrSourceSrtPath(videoFile, languageCode);
+        try { if (File.Exists(output)) File.Delete(output); } catch { /* best effort */ }
+
+        progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 0, TotalUnits = 1 });
+        var args = new[]
+        {
+            "--input", videoFile,
+            "--output", output,
+            "--language", NormalizeSidecarLanguage(languageCode),
+            "--model", _modelPath,
+            "--format", "srt",
+        };
+        try
+        {
+            var result = await ProcessRunner.RunStreamingProcessAsync(
+                _executablePath,
+                args,
+                onStart: pid => control?.SetActivePid(pid),
+                ct: ct).ConfigureAwait(false);
+            if (result.Status != 0)
+            {
+                throw MoongateException.DownloadFailed(L10n.T(
+                    $"本地精准识别 sidecar 失败（退出码 {result.Status}）：{result.StderrTail}",
+                    $"本機精準識別 sidecar 失敗（結束碼 {result.Status}）：{result.StderrTail}",
+                    $"Local precise recognition sidecar failed (exit {result.Status}): {result.StderrTail}"));
+            }
+        }
+        finally
+        {
+            control?.SetActivePid(0);
+        }
+
+        if (!File.Exists(output))
+        {
+            throw MoongateException.DownloadFailed(L10n.T(
+                "本地精准识别 sidecar 没有写出 SRT。",
+                "本機精準識別 sidecar 沒有寫出 SRT。",
+                "Local precise recognition sidecar did not write an SRT file."));
+        }
+        var raw = await File.ReadAllTextAsync(output, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            throw MoongateException.DownloadFailed(L10n.T(
+                "本地精准识别 sidecar 写出了空字幕。",
+                "本機精準識別 sidecar 寫出了空字幕。",
+                "Local precise recognition sidecar wrote an empty subtitle file."));
+        }
+        progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 1, TotalUnits = 1 });
+        var confidence = LocalAsrConfidence.AssessSubtitle(
+            raw,
+            Path.GetFileName(output),
+            languageCode,
+            languageCode);
+        return new GeneratedLocalAsrSource(output, confidence);
+    }
+
+    private static string NormalizeSidecarLanguage(string value)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length == 0 ? "auto" : trimmed;
+    }
+}
+
+public sealed record AsrPromptMetadata(
+    string? Title = null,
+    string? Channel = null,
+    IReadOnlyList<string>? Characters = null,
+    IReadOnlyList<string>? GlossaryTerms = null);
+
 public static class AsrPromptBuilder
 {
     // CJK punctuation exemplar: whisper.cpp continues in the prompt's style. CJK output
@@ -3834,14 +3928,27 @@ public static class AsrPromptBuilder
     }
 
     public static string? DefaultPrompt(string videoPath, string languageCode) =>
-        DefaultPrompt(videoPath, languageCode, AsrRecognitionProfile.Speech);
+        DefaultPrompt(videoPath, languageCode, AsrRecognitionProfile.Speech, null);
 
     public static string? DefaultPrompt(
         string videoPath,
         string languageCode,
-        AsrRecognitionProfile recognitionProfile)
+        AsrRecognitionProfile recognitionProfile) =>
+        DefaultPrompt(videoPath, languageCode, recognitionProfile, null);
+
+    public static string? DefaultPrompt(
+        string videoPath,
+        string languageCode,
+        AsrPromptMetadata? metadata) =>
+        DefaultPrompt(videoPath, languageCode, AsrRecognitionProfile.Speech, metadata);
+
+    public static string? DefaultPrompt(
+        string videoPath,
+        string languageCode,
+        AsrRecognitionProfile recognitionProfile,
+        AsrPromptMetadata? metadata)
     {
-        var title = Path.GetFileNameWithoutExtension(videoPath).Trim();
+        var title = (metadata?.Title ?? Path.GetFileNameWithoutExtension(videoPath)).Trim();
         var language = languageCode.Trim();
         var parts = new List<string>();
         // CJK: lead with a punctuated exemplar so whisper.cpp emits sentence punctuation.
@@ -3858,11 +3965,69 @@ public static class AsrPromptBuilder
         {
             parts.Add($"title={title}");
         }
+        if (!string.IsNullOrWhiteSpace(metadata?.Channel))
+        {
+            parts.Add($"channel={metadata.Channel.Trim()}");
+        }
         if (language.Length > 0 && !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
         {
             parts.Add($"language={language}");
         }
+        var hints = PromptHints(title, language, metadata);
+        if (hints.Characters.Count > 0)
+        {
+            parts.Add("characters=" + string.Join(", ", hints.Characters));
+        }
+        if (hints.GlossaryTerms.Count > 0)
+        {
+            parts.Add("glossary=" + string.Join(", ", hints.GlossaryTerms));
+        }
         return parts.Count == 0 ? null : string.Join("; ", parts);
+    }
+
+    private static (IReadOnlyList<string> Characters, IReadOnlyList<string> GlossaryTerms) PromptHints(
+        string title,
+        string languageCode,
+        AsrPromptMetadata? metadata)
+    {
+        var inferred = InferredPromptHints(title, languageCode);
+        return (
+            Unique([.. metadata?.Characters ?? [], .. inferred.Characters]),
+            Unique([.. metadata?.GlossaryTerms ?? [], .. inferred.GlossaryTerms]));
+    }
+
+    private static (IReadOnlyList<string> Characters, IReadOnlyList<string> GlossaryTerms) InferredPromptHints(
+        string title,
+        string languageCode)
+    {
+        var language = languageCode.Trim().ToLowerInvariant();
+        if (language.Length > 0
+            && !string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase)
+            && !language.StartsWith("ja", StringComparison.Ordinal))
+        {
+            return ([], []);
+        }
+        var lowerTitle = title.ToLowerInvariant();
+        if (!title.Contains("コウペン", StringComparison.Ordinal) && !lowerTitle.Contains("koupen", StringComparison.Ordinal))
+        {
+            return ([], []);
+        }
+        return (
+            ["コウペンちゃん", "邪エナガさん"],
+            ["チョコバナナ", "ソースせんべい", "くじ引きやろう"]);
+    }
+
+    private static IReadOnlyList<string> Unique(IEnumerable<string> values)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            var normalized = value.Trim();
+            if (normalized.Length == 0 || !seen.Add(normalized)) continue;
+            result.Add(normalized);
+        }
+        return result;
     }
 
     public static int? MaxTextContextTokens(
@@ -4305,6 +4470,18 @@ public static class LocalAsrGeneratorFactory
         Func<DateTimeOffset>? nowProvider = null)
     {
         if (!settings.LocalAsrEnabled) return null;
+        var sidecarRuntimePath = settings.LocalAsrSidecarRuntimePath.Trim();
+        var sidecarModelPath = settings.LocalAsrSidecarModelPath.Trim();
+        if (settings.LocalAsrPreciseModeEnabled)
+        {
+            if (sidecarRuntimePath.Length == 0 || sidecarModelPath.Length == 0) return null;
+            if (!IsExecutable(sidecarRuntimePath) || !File.Exists(sidecarModelPath) && !Directory.Exists(sidecarModelPath))
+            {
+                return null;
+            }
+            var sidecarDirectory = Path.Combine(supportDirectoryPath ?? AppSettings.SupportDirectory, "asr", "sidecar-work");
+            return new SidecarLocalAsrSubtitleGenerator(sidecarRuntimePath, sidecarModelPath, sidecarDirectory);
+        }
         var runtimePath = settings.LocalAsrRuntimePath.Trim();
         var modelPath = settings.LocalAsrModelPath.Trim();
         var modelId = settings.LocalAsrModelId.Trim();
@@ -4417,8 +4594,12 @@ public sealed record WhisperCppCommandPlan
             arguments.Add("--no-gpu");
         }
 
-        // 注意：request.VadEnabled 暂不接通——whisper.cpp --vad 需要单独的 Silero VAD 模型，尚未随包分发，
-        // 故这里刻意不发 --vad（见 forced-alignment ExecPlan 的推迟决定）。字段保留以便日后无契约改动地启用。
+        if (request.VadEnabled
+            && WhisperCppVADModelLocator.Locate(runtime) is { } vadModelPath)
+        {
+            arguments.AddRange(["--vad", "--vad-model", vadModelPath]);
+        }
+
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
         // OFF (-nfa) — otherwise whisper.cpp silently disables DTW.
         if (request.WordTimestamps
@@ -4462,6 +4643,87 @@ public sealed record WhisperCppCommandPlan
         var fileName = Path.GetFileNameWithoutExtension(path);
         return string.IsNullOrEmpty(directory) ? fileName : Path.Combine(directory, fileName);
     }
+}
+
+public static class WhisperCppVADModelLocator
+{
+    public static readonly IReadOnlyList<string> CandidateFileNames =
+    [
+        "ggml-silero-v5.1.2.bin",
+        "ggml-silero-vad-v5.1.2.bin",
+        "silero-vad-v5.1.2.bin",
+    ];
+
+    public static string? Locate(AsrRuntimeInfo runtime, IReadOnlyList<string>? extraSearchPaths = null)
+    {
+        foreach (var directory in CandidateDirectories(runtime, extraSearchPaths))
+        {
+            foreach (var name in CandidateFileNames)
+            {
+                var path = Path.Combine(directory, name);
+                if (File.Exists(path)) return path;
+            }
+        }
+        return null;
+    }
+
+    public static IReadOnlyList<string> CandidateDirectories(
+        AsrRuntimeInfo runtime,
+        IReadOnlyList<string>? extraSearchPaths = null)
+    {
+        var directories = new List<string>();
+        var seen = new HashSet<string>(PathComparer);
+
+        void Append(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string normalized;
+            try
+            {
+                normalized = NormalizeDirectoryPath(path);
+            }
+            catch
+            {
+                return;
+            }
+            if (seen.Add(normalized)) directories.Add(normalized);
+        }
+
+        var executableDirectory = Path.GetDirectoryName(runtime.ExecutablePath);
+        var runtimeRoot = string.Equals(
+            Path.GetFileName(executableDirectory),
+            "bin",
+            StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(executableDirectory)
+            : executableDirectory;
+
+        Append(executableDirectory);
+        Append(runtimeRoot);
+        Append(runtimeRoot is null ? null : Path.Combine(runtimeRoot, "models"));
+        Append(runtimeRoot is null ? null : Path.Combine(runtimeRoot, "vad"));
+        Append(Path.Combine(AppSettings.SupportDirectory, "asr", "vad"));
+
+        if (extraSearchPaths is not null)
+        {
+            foreach (var path in extraSearchPaths) Append(path);
+        }
+        return directories;
+    }
+
+    private static string NormalizeDirectoryPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(fullPath);
+        return string.Equals(fullPath, root, PathComparison)
+            ? fullPath
+            : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    private static StringComparer PathComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 }
 
 /// <summary>

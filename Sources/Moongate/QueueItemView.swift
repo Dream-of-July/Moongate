@@ -34,6 +34,7 @@ struct QueueItemView: View {
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                subtitleSourceDisclosure
                 if showsProgressBar {
                     progressBar
                 }
@@ -192,6 +193,130 @@ struct QueueItemView: View {
     /// and which can be re-run with local Whisper — surface the gentle suggestion.
     private var showsTimingSuggestion: Bool {
         item.timingWarning && canRetryWithLocalASR
+    }
+
+    @ViewBuilder
+    private var subtitleSourceDisclosure: some View {
+        if let source = item.resolvedSubtitleSource {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(localizer.t(L.Queue.subtitleSourceQuality, subtitleQualityLabel(source)))
+                    if let reason = subtitleSourceReason(source) {
+                        Text(localizer.t(L.Queue.subtitleSourceReason, reason))
+                    }
+                    if !source.candidateReports.isEmpty {
+                        Text(localizer.t(L.Queue.subtitleSourceCandidates))
+                            .font(.caption.weight(.semibold))
+                            .padding(.top, 2)
+                        ForEach(Array(source.candidateReports.enumerated()), id: \.offset) { _, report in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(localizer.t(
+                                    L.Queue.subtitleSourceCandidate,
+                                    subtitleSourceKindLabel(report.sourceKind),
+                                    report.languageCode,
+                                    subtitleCandidateStatus(report)
+                                ))
+                                if !report.reasons.isEmpty {
+                                    Text(report.reasons.joined(separator: ", "))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            } label: {
+                Text(subtitleSourceSummary(source))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .disclosureGroupStyle(.automatic)
+        }
+    }
+
+    private func subtitleSourceSummary(_ source: ResolvedSubtitleSource) -> String {
+        localizer.t(
+            L.Queue.subtitleSourceActual,
+            subtitleSourceKindLabel(source.selectedKind),
+            source.languageCode.isEmpty ? "auto" : source.languageCode
+        )
+    }
+
+    private func subtitleQualityLabel(_ source: ResolvedSubtitleSource) -> String {
+        if let verdict = source.sourceQualityVerdict {
+            switch verdict {
+            case .excellent:
+                return localizer.t(L.Queue.subtitleSourceQualityExcellent)
+            case .good:
+                return localizer.t(L.Queue.subtitleSourceQualityGood)
+            case .usable:
+                return localizer.t(L.Queue.subtitleSourceQualityUsable)
+            case .lowConfidence:
+                return localizer.t(L.Queue.subtitleSourceQualityLowConfidence)
+            case .unusable:
+                return localizer.t(L.Queue.subtitleSourceQualityUnusable)
+            }
+        }
+        guard let verdict = source.qualityVerdict else {
+            return localizer.t(L.Queue.subtitleSourceQualityTrusted)
+        }
+        return verdict.usable
+            ? localizer.t(L.Queue.subtitleSourceQualityUsable)
+            : localizer.t(L.Queue.subtitleSourceQualityLowConfidence)
+    }
+
+    private func subtitleSourceReason(_ source: ResolvedSubtitleSource) -> String? {
+        if let note = item.subtitleSourceNote, !note.isEmpty { return note }
+        let reasons = source.fallbackReasons.map(subtitleFallbackReasonLabel)
+        if !reasons.isEmpty { return reasons.joined(separator: " / ") }
+        if let verdict = source.sourceQualityVerdict, verdict <= .lowConfidence {
+            return localizer.t(L.Queue.subtitleSourceLowConfidenceSuggestion)
+        }
+        if let verdict = source.qualityVerdict, !verdict.usable {
+            return localizer.t(L.Queue.subtitleSourceLowConfidenceSuggestion)
+        }
+        return nil
+    }
+
+    private func subtitleFallbackReasonLabel(_ reason: PlatformSubtitleQualityGate.Reason) -> String {
+        switch reason {
+        case .languageMismatch:
+            return localizer.t(L.Queue.subtitleSourceFallbackLanguageMismatch)
+        case .lowCoverage:
+            return localizer.t(L.Queue.subtitleSourceFallbackCoverage)
+        case .garbledOrRepetitive:
+            return localizer.t(L.Queue.subtitleSourceFallbackGarbled)
+        case .tooFewCues:
+            return localizer.t(L.Queue.subtitleSourceFallbackFewCues)
+        }
+    }
+
+    private func subtitleCandidateStatus(_ report: SubtitleSourceCandidateReport) -> String {
+        if !report.available { return localizer.t(L.Queue.subtitleSourceCandidateUnavailable) }
+        if report.selected { return localizer.t(L.Queue.subtitleSourceCandidateSelected) }
+        return report.usable
+            ? localizer.t(L.Queue.subtitleSourceCandidateUsable)
+            : localizer.t(L.Queue.subtitleSourceCandidateLowConfidence)
+    }
+
+    private func subtitleSourceKindLabel(_ kind: SubtitleSourceKind) -> String {
+        switch kind {
+        case .manual:
+            return localizer.t(L.Ready.manualSubtitle)
+        case .platformAuto:
+            return localizer.t(L.Ready.autoGenerated)
+        case .hlsManifest:
+            return localizer.t(L.Ready.platformSubtitle)
+        case .localASR:
+            return localizer.t(L.Ready.localASR)
+        case .cloudASR:
+            return localizer.t(L.Ready.cloudASR)
+        case .importedFile:
+            return localizer.t(L.Ready.importedSubtitle)
+        }
     }
 
     private var progressBar: some View {

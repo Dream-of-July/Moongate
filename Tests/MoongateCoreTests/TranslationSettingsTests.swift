@@ -108,12 +108,19 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(fresh.localASRRuntimePath, "")
         XCTAssertEqual(fresh.localASRModelPath, "")
         XCTAssertEqual(fresh.localASRModelID, "")
+        XCTAssertFalse(fresh.localASRPreciseModeEnabled)
+        XCTAssertEqual(fresh.localASRSidecarRuntimePath, "")
+        XCTAssertEqual(fresh.localASRSidecarModelPath, "")
+        XCTAssertFalse(fresh.isLocalASRSidecarConfigured)
 
         let settings = AppSettings(
             localASREnabled: true,
             localASRRuntimePath: " /opt/moongate/bin/whisper-cli\n",
             localASRModelPath: "\n/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin ",
-            localASRModelID: " whisper.cpp:small-q5_1\n"
+            localASRModelID: " whisper.cpp:small-q5_1\n",
+            localASRPreciseModeEnabled: true,
+            localASRSidecarRuntimePath: " /opt/moongate/bin/faster-whisper-sidecar\n",
+            localASRSidecarModelPath: "\n/Users/me/Models/faster-whisper-small "
         )
         let encoded = try JSONEncoder().encode(settings)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -121,12 +128,66 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(object["localASRRuntimePath"] as? String, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(object["localASRModelPath"] as? String, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
         XCTAssertEqual(object["localASRModelID"] as? String, "whisper.cpp:small-q5_1")
+        XCTAssertEqual(object["localASRPreciseModeEnabled"] as? Bool, true)
+        XCTAssertEqual(object["localASRSidecarRuntimePath"] as? String, "/opt/moongate/bin/faster-whisper-sidecar")
+        XCTAssertEqual(object["localASRSidecarModelPath"] as? String, "/Users/me/Models/faster-whisper-small")
 
         let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
         XCTAssertTrue(decoded.localASREnabled)
         XCTAssertEqual(decoded.localASRRuntimePath, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(decoded.localASRModelPath, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
         XCTAssertEqual(decoded.localASRModelID, "whisper.cpp:small-q5_1")
+        XCTAssertTrue(decoded.localASRPreciseModeEnabled)
+        XCTAssertEqual(decoded.localASRSidecarRuntimePath, "/opt/moongate/bin/faster-whisper-sidecar")
+        XCTAssertEqual(decoded.localASRSidecarModelPath, "/Users/me/Models/faster-whisper-small")
+        XCTAssertTrue(decoded.isLocalASRSidecarConfigured)
+    }
+
+    func testCloudASRSettingsDefaultOffRequireConsentAndRoundTrip() throws {
+        let fresh = AppSettings()
+        XCTAssertFalse(fresh.cloudASREnabled)
+        XCTAssertFalse(fresh.cloudASRConsentAccepted)
+        XCTAssertEqual(fresh.cloudASRBaseURL, "https://api.openai.com")
+        XCTAssertEqual(fresh.cloudASRModel, "whisper-1")
+        XCTAssertEqual(fresh.cloudASRAuthToken, "")
+        XCTAssertFalse(fresh.isCloudASRConfigured)
+        XCTAssertFalse(fresh.cloudASRModelRequiresAlignment)
+
+        let settings = AppSettings(
+            cloudASREnabled: true,
+            cloudASRConsentAccepted: true,
+            cloudASRBaseURL: " https://api.openai.com/v1\n",
+            cloudASRModel: "\nwhisper-1 ",
+            cloudASRAuthToken: "token"
+        )
+        XCTAssertTrue(settings.isCloudASRConfigured)
+        XCTAssertFalse(settings.cloudASRModelRequiresAlignment)
+
+        let alignmentOnly = AppSettings(
+            cloudASREnabled: true,
+            cloudASRConsentAccepted: true,
+            cloudASRBaseURL: "https://api.openai.com",
+            cloudASRModel: "gpt-4o-transcribe",
+            cloudASRAuthToken: "token"
+        )
+        XCTAssertFalse(alignmentOnly.isCloudASRConfigured)
+        XCTAssertTrue(alignmentOnly.cloudASRModelRequiresAlignment)
+        XCTAssertNil(CloudASRGeneratorFactory.make(settings: alignmentOnly))
+
+        let encoded = try JSONEncoder().encode(settings)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["cloudASREnabled"] as? Bool, true)
+        XCTAssertEqual(object["cloudASRConsentAccepted"] as? Bool, true)
+        XCTAssertEqual(object["cloudASRBaseURL"] as? String, "https://api.openai.com/v1")
+        XCTAssertEqual(object["cloudASRModel"] as? String, "whisper-1")
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertTrue(decoded.cloudASREnabled)
+        XCTAssertTrue(decoded.cloudASRConsentAccepted)
+        XCTAssertEqual(decoded.cloudASRBaseURL, "https://api.openai.com/v1")
+        XCTAssertEqual(decoded.cloudASRModel, "whisper-1")
+        XCTAssertEqual(decoded.cloudASRAuthToken, "token")
+        XCTAssertTrue(decoded.isCloudASRConfigured)
     }
 
     func testBurnInPreservesSourceResolutionByDefault() throws {
@@ -240,6 +301,11 @@ final class TranslationSettingsTests: XCTestCase {
         // 日语源语言：含少样本重排范例。
         XCTAssertTrue(prompt.contains("日文→中文重排示例"))
         XCTAssertTrue(prompt.contains("别让某行停在「你的」"))
+        XCTAssertTrue(prompt.contains("谐音梗"))
+        XCTAssertTrue(prompt.contains("保留原词"))
+        XCTAssertTrue(prompt.contains("チョコバナナ"))
+        XCTAssertTrue(prompt.contains("ソースせんべい"))
+        XCTAssertTrue(prompt.contains("くじ引きやろう"))
         // 歌曲：文学化改写 + 放宽不增不减（带护栏）。
         XCTAssertTrue(prompt.contains("文学性"))
         XCTAssertTrue(prompt.contains("放宽前面第 4 条"))
@@ -253,6 +319,9 @@ final class TranslationSettingsTests: XCTestCase {
         )
         XCTAssertTrue(ja.contains("正在把日语字幕翻译成简体中文"))
         XCTAssertTrue(ja.contains("日文→中文重排示例"))
+        XCTAssertTrue(ja.contains("谐音梗"))
+        XCTAssertTrue(ja.contains("保留原词"))
+        XCTAssertTrue(ja.contains("チョコバナナ"))
 
         let unknown = ConfiguredTranslator.systemPrompt(
             targetLanguageDisplayName: "简体中文",
@@ -262,6 +331,7 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(unknown.contains("正在把"))
         XCTAssertTrue(unknown.contains("把用户给出的字幕翻译成简体中文"))
         XCTAssertFalse(unknown.contains("日文→中文重排示例"))
+        XCTAssertFalse(unknown.contains("チョコバナナ"))
         XCTAssertTrue(unknown.contains("自然语序"))
 
         // 非日语源语言（英语）：点名但不加日语范例。
@@ -273,6 +343,7 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(en.contains("99."))
         XCTAssertTrue(en.contains("Sun's"))
         XCTAssertFalse(en.contains("日文→中文重排示例"))
+        XCTAssertFalse(en.contains("チョコバナナ"))
     }
 
     func testSmartTranslationAdviceKeepsLegacySummaryOnlyJSONCompatible() throws {
@@ -462,6 +533,47 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(prompt.contains("japaneseLyrics"))
         XCTAssertTrue(prompt.contains("不能直接写时间轴"))
         XCTAssertTrue(prompt.contains("不能覆盖 local-ASR 源字幕"))
+    }
+
+    func testTranslationOutputDetectsSourceLanguageLeakage() {
+        let leakedJapanese = TranslationOutputQualityGate.assess(
+            lines: [
+                "チョコナナナ很好吃",
+                "我们去くじ引き野郎吧",
+                "世界の銀行が崩れ了"
+            ],
+            sourceLanguageCode: "ja",
+            targetLanguageCode: "zh-Hans"
+        )
+
+        XCTAssertFalse(leakedJapanese.usable)
+        XCTAssertTrue(leakedJapanese.reasons.contains(.sourceLanguageLeakage))
+        XCTAssertGreaterThanOrEqual(leakedJapanese.report.affectedLineCount, 2)
+
+        let cleanChinese = TranslationOutputQualityGate.assess(
+            lines: [
+                "巧克力香蕉很好吃",
+                "我们去抽签吧",
+                "世界银行倒闭了"
+            ],
+            sourceLanguageCode: "ja",
+            targetLanguageCode: "zh-Hans"
+        )
+
+        XCTAssertTrue(cleanChinese.usable)
+        XCTAssertFalse(cleanChinese.reasons.contains(.sourceLanguageLeakage))
+
+        let leakedEnglish = TranslationOutputQualityGate.assess(
+            lines: [
+                "This subtitle is still mostly English",
+                "It should have been translated into Chinese"
+            ],
+            sourceLanguageCode: "en",
+            targetLanguageCode: "zh-Hans"
+        )
+
+        XCTAssertFalse(leakedEnglish.usable)
+        XCTAssertTrue(leakedEnglish.reasons.contains(.sourceLanguageLeakage))
     }
 
     func testSmartTranslationAdviceNormalizesSourceLanguageAndCapsLists() throws {
@@ -1183,17 +1295,27 @@ final class TranslationSettingsTests: XCTestCase {
             provider: "whisper.cpp",
             variant: "ggml-small"
         )
+        let cloudASR = SubtitleChoice(
+            languageCode: "ja",
+            label: "Japanese cloud ASR",
+            sourceKind: .cloudASR,
+            provider: "cloud",
+            variant: "precise"
+        )
 
         XCTAssertEqual(manual.languageCode, "ja")
         XCTAssertEqual(auto.languageCode, "ja")
         XCTAssertEqual(localASR.languageCode, "ja")
-        XCTAssertEqual(Set([manual.id, auto.id, localASR.id]).count, 3)
+        XCTAssertEqual(cloudASR.languageCode, "ja")
+        XCTAssertEqual(Set([manual.id, auto.id, localASR.id, cloudASR.id]).count, 4)
         XCTAssertFalse(manual.isAuto)
         XCTAssertTrue(auto.isAuto)
         XCTAssertFalse(localASR.isAuto)
+        XCTAssertFalse(cloudASR.isAuto)
 
         XCTAssertEqual(SubtitleTrackID(rawValue: manual.id).sourceKind, .manual)
         XCTAssertEqual(SubtitleTrackID(rawValue: auto.id).sourceKind, .platformAuto)
+        XCTAssertEqual(SubtitleTrackID(rawValue: cloudASR.id).sourceKind, .cloudASR)
         XCTAssertEqual(SubtitleTrackID(rawValue: "ja").languageCode, "ja")
         XCTAssertEqual(SubtitleTrackID(rawValue: "ja").sourceKind, .manual)
     }

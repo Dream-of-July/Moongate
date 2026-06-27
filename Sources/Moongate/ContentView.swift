@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 #if canImport(MoongateCore)
 import MoongateCore
 #endif
@@ -324,13 +327,14 @@ struct ContentView: View {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
-                    section(localizer.t(L.Ready.subtitleLanguageSection)) {
-                        sourceLanguagePreferencePicker(info)
-                        Divider().padding(.leading, 12)
-                        subtitleLanguageRows(info)
-                    }
+                    let subtitleState = model.readySubtitleState(for: info)
                     section(localizer.t(L.Ready.subtitleOutputSection)) {
-                        subtitleOutputRows(info)
+                        subtitleOutputRows(info, state: subtitleState)
+                    }
+                    if subtitleState.needsSubtitleSource {
+                        section(localizer.t(L.Ready.subtitleSourceSection)) {
+                            subtitleSourceRows(info, state: subtitleState)
+                        }
                     }
                 }
                 .frame(maxWidth: 500)
@@ -377,7 +381,7 @@ struct ContentView: View {
     }
 
     private func readyFooterUsesVideoFolder(for info: VideoInfo) -> Bool {
-        return model.primarySubtitleTrackID != nil || model.chineseMode != .off
+        return model.subtitleIntent.needsSubtitleSource
     }
 
     private func formatRow(_ format: FormatChoice) -> some View {
@@ -529,6 +533,20 @@ struct ContentView: View {
         .accessibilityLabel(localizer.t(L.Ready.sourceLanguagePickerAccessibility))
     }
 
+    private func subtitleSourcePolicyBinding(for info: VideoInfo) -> Binding<SubtitleSourcePolicy> {
+        Binding(
+            get: { model.subtitleSourcePolicy },
+            set: { model.setSubtitleSourcePolicy($0, for: info) }
+        )
+    }
+
+    private func subtitleIntentBinding(for info: VideoInfo) -> Binding<SubtitleIntent> {
+        Binding(
+            get: { model.subtitleIntent },
+            set: { model.setSubtitleIntent($0, for: info) }
+        )
+    }
+
     private func sourceLanguagePreferenceLabel(_ code: String) -> String {
         if code == "auto" {
             return localizer.t(L.Ready.sourceLanguageAuto)
@@ -536,9 +554,8 @@ struct ContentView: View {
         return TranslationLanguage.sourceDisplayName(for: code) ?? code
     }
 
-    /// Main area: the single recommended language + an explanation that the source is auto-chosen,
-    /// a "no subtitles" option, and a disclosure for other languages. Technical source details
-    /// (official / auto / local recognition badges) only appear once expanded.
+    /// Main area: the single recommended language plus an explanation that the source is
+    /// auto-chosen. Technical source details only appear once expanded.
     @ViewBuilder
     private func subtitleLanguageRows(_ info: VideoInfo) -> some View {
         let recommended = model.recommendedLanguage(for: info)
@@ -551,14 +568,6 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 2)
         }
-        Divider().padding(.leading, 12)
-        primarySubtitleSourceRow(
-            title: localizer.t(L.Ready.noSubtitleSource),
-            detail: recommended == nil ? localizer.t(L.Ready.noSubtitles) : nil,
-            badge: nil,
-            isSelected: model.primarySubtitleTrackID == nil,
-            action: { model.primarySubtitleTrackID = nil }
-        )
         if !others.isEmpty {
             DisclosureGroup(isExpanded: $model.languageSectionExpanded) {
                 ForEach(Array(others.enumerated()), id: \.element.id) { index, language in
@@ -666,51 +675,213 @@ struct ContentView: View {
         .accessibilityValue(isSelected ? localizer.t(L.Ready.selected) : localizer.t(L.Ready.notSelected))
     }
 
+    private func subtitleSourceRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            primarySubtitleSourceRow(
+                title: localizer.t(L.Ready.autoBestSubtitleSource),
+                detail: localizer.t(L.Ready.autoBestSubtitleSourceDetail),
+                badge: localizer.t(L.Ready.recommendedBadge),
+                isSelected: state.sourcePolicy == .autoBest,
+                action: { model.setSubtitleSourcePolicy(.autoBest, for: info) }
+            )
+            Divider().padding(.leading, 12)
+            sourceLanguagePreferencePicker(info)
+            DisclosureGroup(localizer.t(L.Ready.subtitleSourceAdvanced)) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker(localizer.t(L.Ready.subtitleSourcePolicyAccessibility),
+                           selection: subtitleSourcePolicyBinding(for: info)) {
+                        ForEach(SubtitleSourcePolicy.allCases, id: \.rawValue) { policy in
+                            Text(subtitleSourcePolicyLabel(policy)).tag(policy)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    importedSubtitleFileRow(info)
+                    subtitleLanguageRows(info)
+                    if state.cloudASRRequiredButUnavailable {
+                        Text(localizer.t(L.Ready.cloudASRSetupRequired))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if let sourceSummary = subtitleSourceSummary(for: state) {
+                        Text(sourceSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func importedSubtitleFileRow(_ info: VideoInfo) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(localizer.t(L.Ready.importSubtitleFile)) {
+                    importSubtitleFile(for: info)
+                }
+                .buttonStyle(.bordered)
+                if let url = model.importedSubtitleFileURL {
+                    Text(localizer.t(L.Ready.importedSubtitleSelected, url.lastPathComponent))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button(localizer.t(L.Ready.clearImportedSubtitle)) {
+                        model.clearImportedSubtitleFile(for: info)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
+        }
+    }
+
+    private func importSubtitleFile(for info: VideoInfo) {
+        let panel = NSOpenPanel()
+        panel.title = localizer.t(L.Ready.importSubtitleFile)
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        #if canImport(UniformTypeIdentifiers)
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "srt") ?? .plainText,
+            UTType(filenameExtension: "vtt") ?? .plainText
+        ]
+        #else
+        panel.allowedFileTypes = ["srt", "vtt"]
+        #endif
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.importSubtitleFile(url, for: info)
+    }
+
+    private func subtitleSourceSummary(for state: ReadySubtitleState) -> String? {
+        guard let track = state.selectedTrack else { return nil }
+        return localizer.t(
+            L.Ready.subtitleSourceCurrent,
+            track.label,
+            subtitleLanguageSourceBadge(for: track.sourceKind)
+        )
+    }
+
+    private func subtitleLanguageSourceBadge(for kind: SubtitleSourceKind) -> String {
+        switch kind {
+        case .manual:
+            return localizer.t(L.Ready.manualSubtitle)
+        case .platformAuto:
+            return localizer.t(L.Ready.autoGenerated)
+        case .hlsManifest:
+            return localizer.t(L.Ready.platformSubtitle)
+        case .localASR:
+            return localizer.t(L.Ready.localASR)
+        case .cloudASR:
+            return localizer.t(L.Ready.cloudASR)
+        case .importedFile:
+            return localizer.t(L.Ready.importedSubtitle)
+        }
+    }
+
+    private func subtitleSourcePolicyLabel(_ policy: SubtitleSourcePolicy) -> String {
+        switch policy {
+        case .autoBest:
+            return localizer.t(L.Ready.subtitleSourcePolicyAutoBest)
+        case .preferPlatform:
+            return localizer.t(L.Ready.subtitleSourcePolicyPreferPlatform)
+        case .forcePlatform:
+            return localizer.t(L.Ready.subtitleSourcePolicyForcePlatform)
+        case .preferLocalASR:
+            return localizer.t(L.Ready.subtitleSourcePolicyPreferLocalASR)
+        case .forceLocalASR:
+            return localizer.t(L.Ready.subtitleSourcePolicyForceLocalASR)
+        case .compareLocalASR:
+            return localizer.t(L.Ready.subtitleSourcePolicyCompareLocalASR)
+        case .cloudASR:
+            return localizer.t(L.Ready.subtitleSourcePolicyCloudASR)
+        case .importedFile:
+            return localizer.t(L.Ready.subtitleSourcePolicyImportedFile)
+        }
+    }
+
     /// 「字幕输出」分组：依赖上方选择一个主字幕来源；只有翻译类模式需要翻译服务。
-    private func subtitleOutputRows(_ info: VideoInfo) -> some View {
-        let hasSubtitleSelected = model.primarySubtitleTrackID != nil
+    private func subtitleOutputRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
+        let hasSubtitleSelected = state.selectedTrack != nil
         let readiness = model.translationReadinessForCurrentSettings()
         return VStack(alignment: .leading, spacing: 8) {
-            Picker(localizer.t(L.Ready.subtitleOutputSection), selection: $model.chineseMode) {
-                ForEach(ChineseSubtitleMode.allCases, id: \.self) { mode in
-                    Text(localizer.t(mode.localizationKey)).tag(mode)
+            Picker(localizer.t(L.Ready.subtitleOutputSection), selection: subtitleIntentBinding(for: info)) {
+                ForEach(SubtitleIntent.allCases, id: \.rawValue) { intent in
+                    Text(subtitleIntentLabel(intent)).tag(intent)
                 }
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
-            .disabled(!hasSubtitleSelected)
             .accessibilityLabel(localizer.t(L.Ready.subtitleProcessingAccessibility))
-            .accessibilityHint(hasSubtitleSelected
+            .accessibilityHint(state.needsSubtitleSource
                                ? localizer.t(L.Ready.subtitleProcessingHint)
-                               : localizer.t(L.Ready.subtitleProcessingHintSelectFirst))
-            .accessibilityValue(localizer.t(model.chineseMode.localizationKey))
-            if !hasSubtitleSelected {
+                               : localizer.t(L.Ready.noSubtitleProcessingHint))
+            .accessibilityValue(subtitleIntentLabel(state.intent))
+            if !state.needsSubtitleSource {
+                Text(localizer.t(L.Ready.noSubtitleProcessingHint))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !hasSubtitleSelected {
                 Text(localizer.t(L.Ready.noSubtitleSelected))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if model.chineseMode.requiresTranslation, model.translationSourceMatchesTarget(in: info) {
-                Text(model.chineseMode == .burnIn
+            } else if state.intent.requiresTranslation, model.translationSourceMatchesTarget(in: info) {
+                Text(state.intent == .burnTranslated
                      ? localizer.t(L.Ready.sourceAlreadyTargetBurn)
                      : localizer.t(L.Ready.sourceAlreadyTargetUse))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if model.chineseMode.requiresTranslation, !readiness.isReady {
+            } else if state.intent.requiresTranslation, !readiness.isReady {
                 if shouldShowAppleTranslationSetupGuidance {
                     appleTranslationSetupGuidanceView(readiness)
                 } else {
                     compactTranslationReadinessView()
                 }
-            } else if model.chineseMode != .off,
+            } else if state.intent != .none,
                       let source = model.translationSourceSubtitle(in: info) {
-                Text(model.chineseMode == .burnOriginal
+                Text(state.intent == .burnSource
                      ? localizer.t(L.Ready.willBurnSubtitle, source.label)
-                     : localizer.t(L.Ready.willTranslateSubtitle, source.label))
+                     : subtitleOutputSummary(for: state.intent, source: source))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func subtitleOutputSummary(for intent: SubtitleIntent, source: SubtitleChoice) -> String {
+        switch intent {
+        case .sourceSRT:
+            return localizer.t(L.Ready.willSaveSourceSubtitle, source.label)
+        case .translatedSRT, .burnTranslated:
+            return localizer.t(L.Ready.willTranslateSubtitle, source.label)
+        case .burnSource:
+            return localizer.t(L.Ready.willBurnSubtitle, source.label)
+        case .none:
+            return localizer.t(L.Ready.noSubtitleProcessingHint)
+        }
+    }
+
+    private func subtitleIntentLabel(_ intent: SubtitleIntent) -> String {
+        switch intent {
+        case .none:
+            return localizer.t(L.Ready.subtitleIntentNone)
+        case .sourceSRT:
+            return localizer.t(L.Ready.subtitleIntentSourceSRT)
+        case .translatedSRT:
+            return localizer.t(L.Ready.subtitleIntentTranslatedSRT)
+        case .burnTranslated:
+            return localizer.t(L.Ready.subtitleIntentBurnTranslated)
+        case .burnSource:
+            return localizer.t(L.Ready.subtitleIntentBurnSource)
+        }
     }
 
     private var shouldShowAppleTranslationSetupGuidance: Bool {
