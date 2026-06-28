@@ -34,6 +34,7 @@ struct ReadySubtitleState {
     let intent: SubtitleIntent
     let sourcePolicy: SubtitleSourcePolicy
     let selectedTrack: SubtitleChoice?
+    let sourceDecision: SubtitleSourceDecisionReport?
     let translationRequired: Bool
     let translationReady: Bool
     let localASRRequiredButUnavailable: Bool
@@ -458,7 +459,8 @@ final class ViewModel: ObservableObject {
                         info = VideoInfo(
                             sourceURL: info.sourceURL, videoID: info.videoID, title: candidate.title,
                             durationText: info.durationText, thumbnailURL: info.thumbnailURL,
-                            uploader: info.uploader, description: info.description,
+                            uploader: info.uploader, detectedLanguageCode: info.detectedLanguageCode,
+                            description: info.description,
                             formats: info.formats, subtitles: info.subtitles
                         )
                     }
@@ -476,15 +478,15 @@ final class ViewModel: ObservableObject {
                     var autoSubtitleLangs: [String] = []
                     var subtitleTracks: [SubtitleChoice] = []
                     var primarySubtitleTrackID: String?
-                    let recommendation = SubtitleLanguageRecommender.recommend(
-                        title: info.title,
-                        languages: SubtitleLanguageRecommender.aggregate(availableSubtitleChoices(for: info)),
-                        targetLanguage: currentSettings.translationTargetLanguage
+                    let sourceDecision = self.subtitleSourceDecision(
+                        for: info,
+                        targetLanguage: currentSettings.translationTargetLanguage,
+                        sourcePolicy: self.subtitleSourcePolicy,
+                        preferredSourceLanguageCode: currentSettings.preferredSourceLanguage
                     )
                     if mode != .off,
-                       let recommended = recommendation.recommended,
-                       let sub = recommended.preferredTrack,
-                       sub.sourceKind != .localASR || localASRReadyForDownload {
+                       let sub = sourceDecision.selectedTrack,
+                       sub.sourceKind != .localASR || self.localASRReadyForDownload {
                         subtitleTracks = [sub]
                         primarySubtitleTrackID = sub.id
                         if sub.sourceKind == .platformAuto {
@@ -522,8 +524,8 @@ final class ViewModel: ObservableObject {
                         subtitleTracks: subtitleTracks,
                         primarySubtitleTrackID: primarySubtitleTrackID,
                         preferredSubtitleLanguageCode: primarySubtitleTrackID.map(normalizedLang),
-                        sourceLanguageIntent: readySourceLanguageIntent,
-                        subtitleSourcePolicy: .autoBest,
+                        sourceLanguageIntent: self.readySourceLanguageIntent,
+                        subtitleSourcePolicy: self.subtitleSourcePolicy,
                         destinationDirectory: Self.destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
@@ -600,7 +602,8 @@ final class ViewModel: ObservableObject {
                     info = VideoInfo(
                         sourceURL: info.sourceURL, videoID: info.videoID, title: candidate.title,
                         durationText: info.durationText, thumbnailURL: info.thumbnailURL,
-                        uploader: info.uploader, description: info.description,
+                        uploader: info.uploader, detectedLanguageCode: info.detectedLanguageCode,
+                        description: info.description,
                         formats: info.formats, subtitles: info.subtitles
                     )
                 }
@@ -869,7 +872,29 @@ final class ViewModel: ObservableObject {
         if preferred != "auto" {
             return preferred
         }
+        if let detectedLanguageCode = info.detectedLanguageCode,
+           !detectedLanguageCode.isEmpty {
+            return detectedLanguageCode
+        }
         return SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: info.title) ?? "auto"
+    }
+
+    func subtitleSourceDecision(
+        for info: VideoInfo,
+        targetLanguage: String? = nil,
+        sourcePolicy: SubtitleSourcePolicy? = nil,
+        preferredSourceLanguageCode: String? = nil
+    ) -> SubtitleSourceDecisionReport {
+        SubtitleSourceDecision.decide(
+            videoTitle: info.title,
+            detectedLanguageCode: info.detectedLanguageCode,
+            targetLanguageCode: targetLanguage ?? settings.translationTargetLanguage,
+            preferredSourceLanguageCode: preferredSourceLanguageCode ?? readySourceLanguagePreference,
+            sourcePolicy: sourcePolicy ?? subtitleSourcePolicy,
+            choices: availableSubtitleChoices(for: info),
+            localASRAvailable: localASRReadyForDownload,
+            cloudASRAvailable: queue.hasCloudASRGenerator
+        )
     }
 
     var localASRReadyForDownload: Bool {
@@ -916,7 +941,8 @@ final class ViewModel: ObservableObject {
 
     func readySubtitleState(for info: VideoInfo) -> ReadySubtitleState {
         let intent = subtitleIntent
-        let selectedTrack = primarySubtitleTrack(in: info)
+        let sourceDecision = intent.needsSubtitleSource ? subtitleSourceDecision(for: info) : nil
+        let selectedTrack = primarySubtitleTrack(in: info) ?? sourceDecision?.selectedTrack
         let translationRequired = intent.requiresTranslation && !translationSourceMatchesTarget(in: info)
         let translationReady = !translationRequired || translationReadinessForCurrentSettings().isReady
         let localASRRequiredButUnavailable = selectedTrack?.sourceKind == .localASR && !localASRReadyForDownload
@@ -925,6 +951,7 @@ final class ViewModel: ObservableObject {
             intent: intent,
             sourcePolicy: subtitleSourcePolicy,
             selectedTrack: selectedTrack,
+            sourceDecision: sourceDecision,
             translationRequired: translationRequired,
             translationReady: translationReady,
             localASRRequiredButUnavailable: localASRRequiredButUnavailable,
@@ -965,32 +992,12 @@ final class ViewModel: ObservableObject {
     }
 
     private func trackMatching(policy: SubtitleSourcePolicy, for info: VideoInfo) -> SubtitleChoice? {
-        let languages = availableLanguageChoices(for: info)
-        let selectedLanguage = primarySubtitleTrack(in: info)
-            .map { SubtitleLanguageChoice.normalizedLanguageCode($0.languageCode) }
-        let currentGroup = selectedLanguage.flatMap { selected in
-            languages.first { $0.languageCode == selected }
-        } ?? recommendedLanguage(for: info)
-        guard let currentGroup else { return nil }
-
-        switch policy {
-        case .autoBest:
-            return currentGroup.preferredTrack
-        case .preferPlatform:
-            return currentGroup.tracks.first(where: isPlatformTrack) ?? currentGroup.preferredTrack
-        case .forcePlatform:
-            return currentGroup.tracks.first(where: isPlatformTrack)
-        case .preferLocalASR:
-            return currentGroup.tracks.first { $0.sourceKind == .localASR } ?? currentGroup.preferredTrack
-        case .forceLocalASR:
-            return currentGroup.tracks.first { $0.sourceKind == .localASR }
-        case .compareLocalASR:
-            return currentGroup.tracks.first(where: isPlatformTrack) ?? currentGroup.tracks.first { $0.sourceKind == .localASR }
-        case .cloudASR:
-            return nil
-        case .importedFile:
-            return currentGroup.tracks.first { $0.sourceKind == .importedFile }
-        }
+        let currentLanguage = primarySubtitleTrack(in: info)?.languageCode
+        return subtitleSourceDecision(
+            for: info,
+            sourcePolicy: policy,
+            preferredSourceLanguageCode: currentLanguage ?? readySourceLanguagePreference
+        ).selectedTrack
     }
 
     private func isPlatformTrack(_ track: SubtitleChoice) -> Bool {
@@ -1048,7 +1055,14 @@ final class ViewModel: ObservableObject {
 
     /// The single language shown by default in the ready page main area.
     func recommendedLanguage(for info: VideoInfo) -> SubtitleLanguageChoice? {
-        languageRecommendation(for: info).recommended
+        let languages = availableLanguageChoices(for: info)
+        if let selected = subtitleSourceDecision(for: info).selectedTrack,
+           let match = languages.first(where: { language in
+            language.tracks.contains { $0.id == selected.id }
+           }) {
+            return match
+        }
+        return languageRecommendation(for: info).recommended
     }
 
     /// Other languages for the disclosure area (everything except the recommended one).

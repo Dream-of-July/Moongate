@@ -416,6 +416,8 @@ public sealed record VideoInfo
     public string? DurationText { get; init; }
     public string? ThumbnailUrl { get; init; }
     public string? Uploader { get; init; }
+    /// <summary>yt-dlp language field, normalized by LanguageCatalog; null when unknown.</summary>
+    public string? DetectedLanguageCode { get; init; }
     /// <summary>视频简介（yt-dlp description）；无简介为 null。用于 AI 总结的回退数据源。</summary>
     public string? Description { get; init; }
     /// <summary>按推荐顺序排列（第一个为推荐档），保证至少一个元素。</summary>

@@ -807,18 +807,23 @@ public class WindowsSettingsSurfaceTests
         var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
         var en = Read("windows", "MoongateApp", "Strings.en.xaml");
 
-        // 输出优先：字幕输出区与来源区分离的两个 section。
-        Assert.Contains("L.Ready.SubtitleOutputSection", xaml);
-        Assert.Contains("L.Ready.SubtitleSourceSection", xaml);
-        // 主区域先呈现自动最佳来源，推荐语言只作为次级原声语言信息；展开区再显示其他语言。
-        Assert.Contains("L.Ready.RecommendedBadge", xaml);
-        Assert.Contains("Text=\"{DynamicResource L.Ready.SubtitleSourcePolicyAutoBest}\"", xaml);
-        Assert.Contains("Text=\"{Binding DisplayLabel}\"", xaml);
-        Assert.Contains("L.Ready.AutoSourceExplanation", xaml);
+        // 字幕区合并输出结果与来源决策；来源细节渐进披露。
+        Assert.Contains("L.Ready.SubtitleSection", xaml);
+        Assert.DoesNotContain("L.Ready.SubtitleOutputSection", xaml);
+        Assert.Contains("L.Ready.SubtitleSourceModeAccessibility", xaml);
+        // 主区域展示用户语义来源模式；语言和导入字幕在更多选项里。
+        Assert.Contains("SubtitleSourceModeOptions", xaml);
+        Assert.Contains("SelectedSubtitleSourceModeOption", xaml);
+        Assert.DoesNotContain("SubtitleSourcePolicyOptions", xaml);
+        Assert.DoesNotContain("SelectedSubtitleSourcePolicyOption", xaml);
+        Assert.Contains("SubtitleSourceSummary", xaml);
+        Assert.Contains("SubtitleSourceReasonText", xaml);
+        Assert.DoesNotContain("SubtitleSourceCandidateSummary", xaml);
+        Assert.Contains("L.Ready.SubtitleSourceMoreOptions", xaml);
         Assert.Contains("L.Ready.MoreLanguages", xaml);
         Assert.Contains("SourceLanguageOptions", xaml);
         Assert.Contains("SelectedSourceLanguageOption", xaml);
-        Assert.Contains("RecommendedLanguageOption", xaml);
+        Assert.Contains("RecommendedLanguageOption", viewModel);
         Assert.Contains("OtherLanguageOptions", xaml);
         Assert.Contains("LanguageSectionExpanded", xaml);
         // ViewModel 语言优先 API + 仍保留主源 trackId 兼容路径。
@@ -833,7 +838,8 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("public void SelectLanguage(SubtitleLanguageChoice language)", viewModel);
         Assert.Contains("PrimarySubtitleTrackId = primary?.Id", viewModel);
         Assert.Contains("AvailableSubtitleChoices(info)", viewModel);
-        Assert.Contains("recommended.PreferredTrack", viewModel);
+        Assert.Contains("SubtitleSourceDecision.Decide(", viewModel);
+        Assert.Contains("sourceDecision.SelectedTrack", viewModel);
         Assert.DoesNotContain("info.Subtitles.FirstOrDefault(s => !s.IsAuto) ?? info.Subtitles.FirstOrDefault()", viewModel);
         foreach (var resource in new[] { zh, zhHant, en })
         {
@@ -845,6 +851,12 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Ready.MoreLanguages\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SourceLanguageAuto\"", resource);
             Assert.Contains("x:Key=\"L.Ready.SourceLanguagePickerAccessibility\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeAuto\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeOriginal\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeEnhanced\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceMoreOptions\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceCurrentFmt\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleReasonManualVideoLanguage\"", resource);
         }
         Assert.Contains("识别原声语言", zh);
         Assert.Contains("只需确认视频说什么语言；Moongate 会自动选择最可靠的字幕来源。", zh);
@@ -863,11 +875,11 @@ public class WindowsSettingsSurfaceTests
         var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
         var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
 
-        var outputIndex = xaml.IndexOf("L.Ready.SubtitleOutputSection", StringComparison.Ordinal);
-        var sourceIndex = xaml.IndexOf("L.Ready.SubtitleSourceSection", StringComparison.Ordinal);
-        Assert.True(outputIndex >= 0, "Ready page should render a subtitle output section.");
-        Assert.True(sourceIndex >= 0, "Ready page should render a subtitle source section.");
-        Assert.True(outputIndex < sourceIndex, "Subtitle output should come before subtitle source.");
+        var outputIndex = xaml.IndexOf("L.Ready.SubtitleSection", StringComparison.Ordinal);
+        var sourceIndex = xaml.IndexOf("L.Ready.SubtitleSourceModeAccessibility", StringComparison.Ordinal);
+        Assert.True(outputIndex >= 0, "Ready page should render one subtitle section.");
+        Assert.True(sourceIndex >= 0, "Ready page should render user-facing subtitle source mode.");
+        Assert.True(outputIndex < sourceIndex, "Main subtitle section should come before subtitle source mode.");
 
         Assert.Contains("Visibility=\"{Binding SubtitleSourceControlsVisible", xaml);
         Assert.DoesNotContain("IsEnabled=\"{Binding ChineseModeEnabled}\"", xaml);
@@ -880,7 +892,7 @@ public class WindowsSettingsSurfaceTests
     }
 
     [Fact]
-    public void WindowsReadyPageExposesAdvancedSubtitleSourcePolicy()
+    public void WindowsReadyPageExposesOnlyUserFacingSubtitleSourceModes()
     {
         var xaml = Read("windows", "MoongateApp", "MainWindow.xaml");
         var viewModel = Read("windows", "MoongateApp", "MainViewModel.cs");
@@ -888,17 +900,17 @@ public class WindowsSettingsSurfaceTests
         var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
         var en = Read("windows", "MoongateApp", "Strings.en.xaml");
 
-        Assert.Contains("L.Ready.SubtitleSourceAdvanced", xaml);
-        Assert.Contains("SubtitleSourcePolicyOptions", xaml);
-        Assert.Contains("SelectedSubtitleSourcePolicyOption", xaml);
+        Assert.Contains("SubtitleSourceModeOptions", xaml);
+        Assert.Contains("SelectedSubtitleSourceModeOption", xaml);
+        Assert.DoesNotContain("SubtitleSourcePolicyOptions", xaml);
+        Assert.DoesNotContain("SelectedSubtitleSourcePolicyOption", xaml);
 
-        Assert.Contains("public IReadOnlyList<SubtitleSourcePolicyOptionViewModel> SubtitleSourcePolicyOptions", viewModel);
+        Assert.Contains("public IReadOnlyList<SubtitleSourcePolicyOptionViewModel> SubtitleSourceModeOptions", viewModel);
+        Assert.Contains("public SubtitleSourcePolicyOptionViewModel? SelectedSubtitleSourceModeOption", viewModel);
         Assert.Contains("public SubtitleSourcePolicyOptionViewModel? SelectedSubtitleSourcePolicyOption", viewModel);
         Assert.Contains("TrackMatchingPolicy(", viewModel);
         Assert.Contains("var subtitleSourcePolicy = SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest", viewModel);
         Assert.Contains("SubtitleSourcePolicy = subtitleSourcePolicy", viewModel);
-        Assert.Contains("SubtitleSourcePolicy.CompareLocalAsr", viewModel);
-        Assert.Contains("SubtitleSourcePolicy.CloudAsr", viewModel);
         Assert.Contains("CloudAsrGeneratorFactory.Create(_settings, localAsrGenerator)", viewModel);
         Assert.Contains("Queue.SyncCloudAsrGenerator(CloudAsrGeneratorFactory.Create(value, localAsrGenerator))", viewModel);
         Assert.Contains("OpenCloudAsrSettings()", viewModel);
@@ -906,11 +918,9 @@ public class WindowsSettingsSurfaceTests
 
         foreach (var resource in new[] { zh, zhHant, en })
         {
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceAdvanced\"", resource);
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyAutoBest\"", resource);
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyCompareLocalASR\"", resource);
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyForceLocalASR\"", resource);
-            Assert.Contains("x:Key=\"L.Ready.SubtitleSourcePolicyCloudASR\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeAuto\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeOriginal\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SubtitleSourceModeEnhanced\"", resource);
             Assert.Contains("x:Key=\"L.Ready.CloudASRSetupRequired\"", resource);
         }
     }
@@ -962,18 +972,14 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("SubtitleSourceDetailText", xaml);
         Assert.Contains("public string? SubtitleSourceDetailText", rowViewModel);
         Assert.Contains("item.ResolvedSubtitleSource", rowViewModel);
-        Assert.Contains("CandidateReports", rowViewModel);
-        Assert.Contains("SubtitleSourceCandidateReportText", rowViewModel);
+        Assert.DoesNotContain("SubtitleSourceCandidateReportText", rowViewModel);
 
         foreach (var resource in new[] { zh, zhHant, en })
         {
             Assert.Contains("x:Key=\"L.Queue.SubtitleSourceActualFmt\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityFmt\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityExcellent\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityGood\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceQualityUnusable\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceCandidatesFmt\"", resource);
-            Assert.Contains("x:Key=\"L.Queue.SubtitleSourceCandidateFmt\"", resource);
+            Assert.DoesNotContain("x:Key=\"L.Queue.SubtitleSourceQualityFmt\"", resource);
+            Assert.DoesNotContain("x:Key=\"L.Queue.SubtitleSourceCandidatesFmt\"", resource);
+            Assert.DoesNotContain("x:Key=\"L.Queue.SubtitleSourceCandidateFmt\"", resource);
         }
     }
 

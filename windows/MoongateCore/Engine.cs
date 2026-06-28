@@ -855,6 +855,7 @@ public class YtDlpEngine : IDownloadEngine
             }
         }
 
+        var detectedLanguage = LanguageCatalog.Normalize(StringField(json, "language"));
         return new VideoInfo
         {
             SourceUrl = sourceUrl,
@@ -863,6 +864,7 @@ public class YtDlpEngine : IDownloadEngine
             DurationText = durationText,
             ThumbnailUrl = thumbnailUrl,
             Uploader = uploader,
+            DetectedLanguageCode = detectedLanguage.Length == 0 ? null : detectedLanguage,
             Description = description,
             Formats = formats,
             Subtitles = subtitles,
@@ -1164,19 +1166,28 @@ public class YtDlpEngine : IDownloadEngine
             : null;
 
         var realCodes = new List<string>();
+        var realEntries = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (json.TryGetProperty("subtitles", out var realDict) && realDict.ValueKind == JsonValueKind.Object)
         {
-            realCodes.AddRange(realDict.EnumerateObject()
-                .Select(p => p.Name)
-                .Where(name => name != "live_chat" && name != "rechat"));
+            foreach (var property in realDict.EnumerateObject())
+            {
+                if (property.Name is "live_chat" or "rechat") continue;
+                realCodes.Add(property.Name);
+                realEntries[property.Name] = property.Value.Clone();
+            }
         }
         var real = realCodes
-            .Select(code => SubtitleChoice.Create(code, SubtitleLabel(code), SubtitleSourceKind.Manual))
+            .Select(code => SubtitleChoice.Create(
+                code,
+                SubtitleLabel(code),
+                SubtitleSourceKind.Manual,
+                metadata: SubtitleMetadata("manual", code, realEntries.TryGetValue(code, out var entries) ? entries : null)))
             .OrderBy(c => SubtitleSortKey(c.LanguageCode).Rank)
             .ThenBy(c => SubtitleSortKey(c.LanguageCode).Lower, StringComparer.Ordinal)
             .ToList();
 
         var autoCodes = new List<string>();
+        var autoEntries = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (json.TryGetProperty("automatic_captions", out var autoDict) && autoDict.ValueKind == JsonValueKind.Object)
         {
             foreach (var property in autoDict.EnumerateObject())
@@ -1185,12 +1196,14 @@ public class YtDlpEngine : IDownloadEngine
                 if (AutoCaptionAllowList.Contains(code))
                 {
                     autoCodes.Add(code);
+                    autoEntries[code] = property.Value.Clone();
                     continue;
                 }
                 if (videoLangPrefix is not null
                     && code.Split('-')[0].ToLowerInvariant() == videoLangPrefix)
                 {
                     autoCodes.Add(code);
+                    autoEntries[code] = property.Value.Clone();
                 }
             }
         }
@@ -1198,8 +1211,55 @@ public class YtDlpEngine : IDownloadEngine
             .OrderBy(c => SubtitleSortKey(c).Rank)
             .ThenBy(c => SubtitleSortKey(c).Lower, StringComparer.Ordinal)
             .Take(8)
-            .Select(code => SubtitleChoice.Create(code, SubtitleLabel(code), SubtitleSourceKind.PlatformAuto));
+            .Select(code => SubtitleChoice.Create(
+                code,
+                SubtitleLabel(code),
+                SubtitleSourceKind.PlatformAuto,
+                variant: code.Contains("-orig", StringComparison.OrdinalIgnoreCase) ? "orig" : null,
+                metadata: SubtitleMetadata("automatic", code, autoEntries.TryGetValue(code, out var entries) ? entries : null)));
         return [.. real, .. auto];
+    }
+
+    private static IReadOnlyDictionary<string, string> SubtitleMetadata(
+        string kind,
+        string code,
+        JsonElement? entries)
+    {
+        var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ytDlpKind"] = kind,
+            ["ytDlpLanguageCode"] = code,
+        };
+        var exts = new SortedSet<string>(StringComparer.Ordinal);
+        var firstName = "";
+        if (entries is { ValueKind: JsonValueKind.Array } array)
+        {
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (firstName.Length == 0 && StringField(item, "name") is { Length: > 0 } name)
+                {
+                    firstName = name;
+                    metadata["ytDlp.name"] = name;
+                }
+                if (StringField(item, "ext") is { Length: > 0 } ext)
+                {
+                    exts.Add(ext);
+                    metadata.TryAdd("ytDlp.ext", ext);
+                }
+                if (StringField(item, "protocol") is { Length: > 0 } protocol)
+                {
+                    metadata.TryAdd("ytDlp.protocol", protocol);
+                }
+            }
+        }
+        if (exts.Count > 0) metadata["ytDlpExts"] = string.Join(",", exts);
+        if (code.Contains("-orig", StringComparison.OrdinalIgnoreCase)
+            || firstName.Contains("orig", StringComparison.OrdinalIgnoreCase))
+        {
+            metadata["isOrig"] = "true";
+        }
+        return metadata;
     }
 
     /// <summary>

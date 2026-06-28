@@ -109,16 +109,16 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Queue.remainingEstimating, language: .en), "Estimating time...")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.remainingEstimating, language: .zhHans), "正在估算时间")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.remainingEstimating, language: .zhHant), "正在估算時間")
-        XCTAssertEqual(LocalizedStrings.string(L.Queue.localASRGeneratedSubtitleReady, language: .zhHans), "已生成本地识别字幕")
-        XCTAssertEqual(LocalizedStrings.string(L.Queue.retryWithLocalASRConfigureHint, language: .en), "Configure local Whisper first. The downloaded video will be reused after setup.")
-        XCTAssertEqual(LocalizedStrings.format(L.Queue.subtitleSourceActual, language: .zhHans, ["本地识别", "ja"]), "实际使用：本地识别（ja）")
+        XCTAssertEqual(LocalizedStrings.string(L.Queue.localASRGeneratedSubtitleReady, language: .zhHans), "已生成 AI 增强字幕")
+        XCTAssertEqual(LocalizedStrings.string(L.Queue.retryWithLocalASRConfigureHint, language: .en), "Configure AI-enhanced subtitles first. The downloaded video will be reused after setup.")
+        XCTAssertEqual(LocalizedStrings.format(L.Queue.subtitleSourceActual, language: .zhHans, ["AI 增强字幕", "ja"]), "字幕：AI 增强字幕（ja）")
         XCTAssertEqual(LocalizedStrings.format(L.Queue.subtitleSourceQuality, language: .en, ["usable"]), "Quality: usable")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.subtitleSourceQualityExcellent, language: .zhHans), "优秀")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.subtitleSourceQualityGood, language: .en), "good")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.subtitleSourceQualityUnusable, language: .zhHant), "不可用")
         XCTAssertEqual(
             LocalizedStrings.string(L.Queue.subtitleSourceLowConfidenceSuggestion, language: .zhHans),
-            "字幕质量偏低，当前已选择最可用来源；如结果不理想，可换用本地识别或导入字幕重试。"
+            "字幕可信度偏低；如结果不理想，可用 AI 增强或导入字幕重试。"
         )
         XCTAssertEqual(LocalizedStrings.format(L.Queue.subtitleSourceReason, language: .zhHant, ["平台字幕覆蓋不全"]), "原因：平台字幕覆蓋不全")
         XCTAssertEqual(LocalizedStrings.string(L.Queue.subtitleSourceCandidates, language: .en), "Candidates")

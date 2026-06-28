@@ -334,15 +334,13 @@ struct ContentView: View {
                     }
                     outputOptionsSection(info)
                     let subtitleState = model.readySubtitleState(for: info)
-                    section(localizer.t(L.Ready.subtitleOutputSection)) {
-                        subtitleOutputRows(info, state: subtitleState)
-                    }
-                    if subtitleState.needsSubtitleSource {
-                        section(localizer.t(L.Ready.sourceLanguageSection)) {
-                            sourceLanguageRows(info)
-                        }
-                        section(localizer.t(L.Ready.subtitleSourceSection)) {
-                            subtitleSourceRows(info, state: subtitleState)
+                    section(localizer.t(L.Ready.subtitlesSection)) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            subtitleOutputRows(info, state: subtitleState)
+                            if subtitleState.needsSubtitleSource {
+                                Divider().padding(.horizontal, 12)
+                                subtitleSourceRows(info, state: subtitleState)
+                            }
                         }
                     }
                 }
@@ -518,11 +516,26 @@ struct ContentView: View {
 
     // MARK: - Language-first subtitle selection
 
-    private func subtitleSourcePolicyBinding(for info: VideoInfo) -> Binding<SubtitleSourcePolicy> {
+    private var userSubtitleSourcePolicies: [SubtitleSourcePolicy] {
+        [.autoBest, .forcePlatform, .forceLocalASR]
+    }
+
+    private func subtitleSourceModeBinding(for info: VideoInfo) -> Binding<SubtitleSourcePolicy> {
         Binding(
-            get: { model.subtitleSourcePolicy },
+            get: { userFacingSubtitleSourcePolicy(model.subtitleSourcePolicy) },
             set: { model.setSubtitleSourcePolicy($0, for: info) }
         )
+    }
+
+    private func userFacingSubtitleSourcePolicy(_ policy: SubtitleSourcePolicy) -> SubtitleSourcePolicy {
+        switch policy {
+        case .forcePlatform, .preferPlatform:
+            return .forcePlatform
+        case .forceLocalASR, .preferLocalASR:
+            return .forceLocalASR
+        case .autoBest, .compareLocalASR, .cloudASR, .importedFile:
+            return .autoBest
+        }
     }
 
     private func subtitleIntentBinding(for info: VideoInfo) -> Binding<SubtitleIntent> {
@@ -659,35 +672,49 @@ struct ContentView: View {
 
     private func subtitleSourceRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            primarySubtitleSourceRow(
-                title: localizer.t(L.Ready.autoBestSubtitleSource),
-                detail: localizer.t(L.Ready.autoBestSubtitleSourceDetail),
-                badge: localizer.t(L.Ready.recommendedBadge),
-                isSelected: state.sourcePolicy == .autoBest,
-                action: { model.setSubtitleSourcePolicy(.autoBest, for: info) }
-            )
-            Divider().padding(.leading, 12)
-            DisclosureGroup(localizer.t(L.Ready.subtitleSourceAdvanced)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker(localizer.t(L.Ready.subtitleSourcePolicyAccessibility),
-                           selection: subtitleSourcePolicyBinding(for: info)) {
-                        ForEach(SubtitleSourcePolicy.allCases, id: \.rawValue) { policy in
-                            Text(subtitleSourcePolicyLabel(policy)).tag(policy)
+            VStack(spacing: 0) {
+                ForEach(Array(userSubtitleSourcePolicies.enumerated()), id: \.element.rawValue) { index, policy in
+                    primarySubtitleSourceRow(
+                        title: subtitleSourceModeTitle(policy),
+                        detail: subtitleSourceModeDetail(for: policy),
+                        badge: policy == .autoBest ? localizer.t(L.Ready.recommendedBadge) : nil,
+                        isSelected: userFacingSubtitleSourcePolicy(model.subtitleSourcePolicy) == policy,
+                        action: {
+                            subtitleSourceModeBinding(for: info).wrappedValue = policy
                         }
+                    )
+                    if index < userSubtitleSourcePolicies.count - 1 {
+                        Divider().padding(.leading, 44)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(localizer.t(L.Ready.subtitleSourceModeAccessibility))
+
+            if let sourceSummary = subtitleSourceSummary(for: state) {
+                Text(sourceSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            } else {
+                Text(localizer.t(L.Ready.subtitleReasonNoUsableSource))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            }
+
+            if let reason = state.sourceDecision.map({ subtitleDecisionReasonLabel($0.userFacingReason) }) {
+                Text(localizer.t(L.Ready.subtitleSourceReason, reason))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            }
+
+            Divider().padding(.leading, 12)
+            DisclosureGroup(localizer.t(L.Ready.subtitleSourceMoreOptions)) {
+                VStack(alignment: .leading, spacing: 10) {
+                    sourceLanguageRows(info)
                     importedSubtitleFileRow(info)
-                    if state.cloudASRRequiredButUnavailable {
-                        Text(localizer.t(L.Ready.cloudASRSetupRequired))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    if let sourceSummary = subtitleSourceSummary(for: state) {
-                        Text(sourceSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 .padding(.top, 6)
             }
@@ -739,13 +766,63 @@ struct ContentView: View {
         model.importSubtitleFile(url, for: info)
     }
 
+    private func subtitleSourceModeTitle(_ policy: SubtitleSourcePolicy) -> String {
+        switch policy {
+        case .autoBest:
+            return localizer.t(L.Ready.subtitleSourceModeAuto)
+        case .forcePlatform:
+            return localizer.t(L.Ready.subtitleSourceModeOriginal)
+        case .forceLocalASR:
+            return localizer.t(L.Ready.subtitleSourceModeEnhanced)
+        case .preferPlatform, .preferLocalASR, .compareLocalASR, .cloudASR, .importedFile:
+            return subtitleSourceModeTitle(userFacingSubtitleSourcePolicy(policy))
+        }
+    }
+
+    private func subtitleSourceModeDetail(for policy: SubtitleSourcePolicy) -> String {
+        switch policy {
+        case .autoBest:
+            return localizer.t(L.Ready.subtitleSourceModeAutoDetail)
+        case .forcePlatform:
+            return localizer.t(L.Ready.subtitleSourceModeOriginalDetail)
+        case .forceLocalASR:
+            return localizer.t(L.Ready.subtitleSourceModeEnhancedDetail)
+        case .preferPlatform, .preferLocalASR, .compareLocalASR, .cloudASR, .importedFile:
+            return subtitleSourceModeDetail(for: userFacingSubtitleSourcePolicy(policy))
+        }
+    }
+
     private func subtitleSourceSummary(for state: ReadySubtitleState) -> String? {
         guard let track = state.selectedTrack else { return nil }
         return localizer.t(
             L.Ready.subtitleSourceCurrent,
-            track.label,
+            subtitleSourceReadableName(for: track),
             subtitleLanguageSourceBadge(for: track.sourceKind)
         )
+    }
+
+    private func subtitleSourceReadableName(for track: SubtitleChoice) -> String {
+        let language = subtitleDisplayLanguage(track.languageCode)
+        switch track.sourceKind {
+        case .manual:
+            return localizer.t(L.Ready.subtitleSourceReadableManual, language)
+        case .platformAuto, .hlsManifest:
+            return localizer.t(L.Ready.subtitleSourceReadablePlatform, language)
+        case .localASR:
+            return localizer.t(L.Ready.subtitleSourceReadableEnhanced, language)
+        case .cloudASR:
+            return localizer.t(L.Ready.subtitleSourceReadableEnhanced, language)
+        case .importedFile:
+            return localizer.t(L.Ready.subtitleSourceReadableImported, language)
+        }
+    }
+
+    private func subtitleDisplayLanguage(_ code: String) -> String {
+        let normalized = LanguageCatalog.normalize(code)
+        if normalized.isEmpty || normalized == "auto" {
+            return localizer.t(L.Ready.sourceLanguageAutoAfterDownload)
+        }
+        return TranslationLanguage.sourceDisplayName(for: normalized) ?? normalized
     }
 
     private func subtitleLanguageSourceBadge(for kind: SubtitleSourceKind) -> String {
@@ -753,36 +830,52 @@ struct ContentView: View {
         case .manual:
             return localizer.t(L.Ready.manualSubtitle)
         case .platformAuto:
-            return localizer.t(L.Ready.autoGenerated)
+            return localizer.t(L.Ready.platformSubtitle)
         case .hlsManifest:
             return localizer.t(L.Ready.platformSubtitle)
         case .localASR:
             return localizer.t(L.Ready.localASR)
         case .cloudASR:
-            return localizer.t(L.Ready.cloudASR)
+            return localizer.t(L.Ready.localASR)
         case .importedFile:
             return localizer.t(L.Ready.importedSubtitle)
         }
     }
 
-    private func subtitleSourcePolicyLabel(_ policy: SubtitleSourcePolicy) -> String {
-        switch policy {
-        case .autoBest:
-            return localizer.t(L.Ready.subtitleSourcePolicyAutoBest)
-        case .preferPlatform:
-            return localizer.t(L.Ready.subtitleSourcePolicyPreferPlatform)
-        case .forcePlatform:
-            return localizer.t(L.Ready.subtitleSourcePolicyForcePlatform)
-        case .preferLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyPreferLocalASR)
-        case .forceLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyForceLocalASR)
-        case .compareLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyCompareLocalASR)
-        case .cloudASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyCloudASR)
-        case .importedFile:
-            return localizer.t(L.Ready.subtitleSourcePolicyImportedFile)
+    private func subtitleDecisionReasonLabel(_ reason: SubtitleSourceDecisionReason) -> String {
+        switch reason {
+        case .importedSubtitleExplicit:
+            return localizer.t(L.Ready.subtitleReasonImported)
+        case .manualMatchesVideoLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualVideoLanguage)
+        case .manualMatchesUserLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualUserLanguage)
+        case .manualMatchesInferredLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualInferredLanguage)
+        case .platformSubtitleMatchesVideoLanguage, .platformAutoMatchesVideoLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformVideoLanguage)
+        case .platformSubtitleMatchesUserLanguage, .platformAutoMatchesUserLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformUserLanguage)
+        case .platformSubtitleMatchesInferredLanguage, .platformAutoMatchesInferredLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformInferredLanguage)
+        case .targetLanguageSubtitleNotSource:
+            return localizer.t(L.Ready.subtitleReasonTargetLanguageNotSource)
+        case .manualLanguageMismatch, .platformLanguageMismatch:
+            return localizer.t(L.Ready.subtitleReasonLanguageMismatch)
+        case .localRecognitionFallbackOnly:
+            return localizer.t(L.Ready.subtitleReasonLocalFallback)
+        case .localRecognitionForced:
+            return localizer.t(L.Ready.subtitleReasonLocalForced)
+        case .compareRequested:
+            return localizer.t(L.Ready.subtitleReasonCompareRequested)
+        case .cloudRecognitionForced:
+            return localizer.t(L.Ready.subtitleReasonCloudForced)
+        case .cloudRecognitionUnavailable:
+            return localizer.t(L.Ready.subtitleReasonCloudUnavailable)
+        case .noTrustedPlatformSubtitle:
+            return localizer.t(L.Ready.subtitleReasonNoTrustedSource)
+        case .noUsableSubtitleSource:
+            return localizer.t(L.Ready.subtitleReasonNoUsableSource)
         }
     }
 

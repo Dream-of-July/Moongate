@@ -231,6 +231,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
             RaisePropertyChanged(nameof(ReadyMeta));
             RaisePropertyChanged(nameof(ThumbnailUrl));
             RaisePropertyChanged(nameof(HasNoSubtitles));
+            RaiseSubtitleSourceDecisionDerived();
         }
     }
 
@@ -241,6 +242,30 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         : "";
     public string? ThumbnailUrl => _currentInfo?.ThumbnailUrl;
     public bool HasNoSubtitles => SubtitleOptions.Count == 0;
+    public string? SubtitleSourceSummary
+    {
+        get
+        {
+            if (!SubtitleSourceControlsVisible) return null;
+            var decision = CurrentSubtitleSourceDecision();
+            var track = decision?.SelectedTrack;
+            return track is null
+                ? Loc.S("L.Ready.SubtitleReasonNoUsableSource")
+                : Loc.F("L.Ready.SubtitleSourceCurrentFmt", SubtitleSourceReadableName(track), SubtitleSourceKindLabel(track.SourceKind));
+        }
+    }
+
+    public string? SubtitleSourceReasonText
+    {
+        get
+        {
+            if (!SubtitleSourceControlsVisible) return null;
+            var decision = CurrentSubtitleSourceDecision();
+            return decision is null
+                ? null
+                : Loc.F("L.Ready.SubtitleSourceReasonFmt", SubtitleDecisionReasonText(decision.UserFacingReason));
+        }
+    }
 
     private FormatChoice? _selectedFormat;
     public FormatChoice? SelectedFormat
@@ -278,6 +303,13 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         new(SubtitleSourcePolicy.ImportedFile, "L.Ready.SubtitleSourcePolicyImportedFile"),
     ];
 
+    public IReadOnlyList<SubtitleSourcePolicyOptionViewModel> SubtitleSourceModeOptions { get; } =
+    [
+        new(SubtitleSourcePolicy.AutoBest, "L.Ready.SubtitleSourceModeAuto"),
+        new(SubtitleSourcePolicy.ForcePlatform, "L.Ready.SubtitleSourceModeOriginal"),
+        new(SubtitleSourcePolicy.ForceLocalAsr, "L.Ready.SubtitleSourceModeEnhanced"),
+    ];
+
     private SubtitleSourcePolicyOptionViewModel? _selectedSubtitleSourcePolicyOption;
     public SubtitleSourcePolicyOptionViewModel? SelectedSubtitleSourcePolicyOption
     {
@@ -285,12 +317,36 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         set
         {
             if (!SetProperty(ref _selectedSubtitleSourcePolicyOption, value)) return;
+            SyncSelectedSubtitleSourceMode(value?.Policy ?? SubtitleSourcePolicy.AutoBest);
             if (_currentInfo is { } info && SubtitleSourceControlsVisible)
             {
                 ApplySubtitleSourcePolicy(info);
             }
+            RaiseSubtitleSourceDecisionDerived();
         }
     }
+
+    private SubtitleSourcePolicyOptionViewModel? _selectedSubtitleSourceModeOption;
+    public SubtitleSourcePolicyOptionViewModel? SelectedSubtitleSourceModeOption
+    {
+        get => _selectedSubtitleSourceModeOption ??= SubtitleSourceModeOptions[0];
+        set
+        {
+            if (!SetProperty(ref _selectedSubtitleSourceModeOption, value)) return;
+            var policy = value?.Policy ?? SubtitleSourcePolicy.AutoBest;
+            SelectedSubtitleSourcePolicyOption = SubtitleSourcePolicyOptions
+                .FirstOrDefault(option => option.Policy == policy)
+                ?? SubtitleSourcePolicyOptions[0];
+            RaisePropertyChanged(nameof(SubtitleSourceModeDetail));
+        }
+    }
+
+    public string SubtitleSourceModeDetail => UserFacingSubtitleSourceMode(SelectedSubtitleSourceModeOption?.Policy ?? SubtitleSourcePolicy.AutoBest) switch
+    {
+        SubtitleSourcePolicy.ForcePlatform => Loc.S("L.Ready.SubtitleSourceModeOriginalDetail"),
+        SubtitleSourcePolicy.ForceLocalAsr => Loc.S("L.Ready.SubtitleSourceModeEnhancedDetail"),
+        _ => Loc.S("L.Ready.SubtitleSourceModeAutoDetail"),
+    };
 
     private SourceLanguageOptionViewModel? _selectedSourceLanguageOption;
     public SourceLanguageOptionViewModel? SelectedSourceLanguageOption
@@ -306,6 +362,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
             {
                 SelectLanguage(recommended);
             }
+            RaiseSubtitleSourceDecisionDerived();
         }
     }
 
@@ -357,16 +414,30 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     /// <summary>从可用字幕轨道聚合 + 推荐，刷新推荐语言与其他语言两个集合。</summary>
     private void RefreshLanguageOptions(VideoInfo info)
     {
+        var choices = SubtitleOptions.Select(o => o.Choice).ToList();
+        var languages = SubtitleLanguageRecommender.Aggregate(choices);
         var result = SubtitleLanguageRecommender.Recommend(
             info.Title,
-            SubtitleLanguageRecommender.Aggregate([.. SubtitleOptions.Select(o => o.Choice)]),
+            languages,
             Settings.TranslationTargetLanguage,
             preferredSourceLanguage: EffectiveSourceLanguagePreference(info));
-        RecommendedLanguageOption = result.Recommended is { } recommended
+        var decision = SubtitleSourceDecision.Decide(
+            info.Title,
+            info.DetectedLanguageCode,
+            Settings.TranslationTargetLanguage,
+            SelectedSourceLanguageOption?.Code ?? "auto",
+            SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest,
+            choices,
+            Queue.HasLocalAsrGenerator,
+            Queue.HasCloudAsrGenerator);
+        var recommendedLanguage = decision.SelectedTrack is { } selectedTrack
+            ? languages.FirstOrDefault(language => language.Tracks.Any(track => track.Id == selectedTrack.Id))
+            : result.Recommended;
+        RecommendedLanguageOption = recommendedLanguage is { } recommended
             ? new SubtitleLanguageOptionViewModel(this, recommended, isRecommended: true)
             : null;
         OtherLanguageOptions.Clear();
-        foreach (var language in result.Others)
+        foreach (var language in languages.Where(language => language.LanguageCode != recommendedLanguage?.LanguageCode))
         {
             OtherLanguageOptions.Add(new SubtitleLanguageOptionViewModel(this, language, isRecommended: false));
         }
@@ -398,6 +469,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
                 return;
             }
             RaiseChineseDerived();
+            RaiseSubtitleSourceDecisionDerived();
         }
     }
 
@@ -681,6 +753,14 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         RaisePropertyChanged(nameof(ChineseHintText));
         RaisePropertyChanged(nameof(ShowTranslationUnconfigured));
         RaisePropertyChanged(nameof(ChineseSourceNote));
+        RaiseSubtitleSourceDecisionDerived();
+    }
+
+    private void RaiseSubtitleSourceDecisionDerived()
+    {
+        RaisePropertyChanged(nameof(SubtitleSourceSummary));
+        RaisePropertyChanged(nameof(SubtitleSourceReasonText));
+        RaisePropertyChanged(nameof(SubtitleSourceModeDetail));
     }
 
     private void EnsureSubtitleSourceSelected()
@@ -700,11 +780,109 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     private void ApplySubtitleSourcePolicy(VideoInfo info)
     {
         var policy = SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest;
-        if (TrackMatchingPolicy(policy, info) is { } track)
+        var preferred = SelectedPrimarySubtitleOption?.LanguageCode ?? SelectedSourceLanguageOption?.Code ?? "auto";
+        var decision = SubtitleSourceDecision.Decide(
+            info.Title,
+            info.DetectedLanguageCode,
+            Settings.TranslationTargetLanguage,
+            preferred,
+            policy,
+            AvailableSubtitleChoices(info),
+            Queue.HasLocalAsrGenerator,
+            Queue.HasCloudAsrGenerator);
+        if (decision.SelectedTrack is { } track)
         {
             PrimarySubtitleTrackId = track.Id;
         }
     }
+
+    private SubtitleSourceDecisionReport? CurrentSubtitleSourceDecision()
+    {
+        if (_currentInfo is not { } info) return null;
+        return SubtitleSourceDecision.Decide(
+            info.Title,
+            info.DetectedLanguageCode,
+            Settings.TranslationTargetLanguage,
+            SelectedSourceLanguageOption?.Code ?? "auto",
+            SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest,
+            AvailableSubtitleChoices(info),
+            Queue.HasLocalAsrGenerator,
+            Queue.HasCloudAsrGenerator);
+    }
+
+    private static string SubtitleSourceKindLabel(SubtitleSourceKind kind) => kind switch
+    {
+        SubtitleSourceKind.PlatformAuto => Loc.S("L.Queue.SubtitleSourceKindPlatform"),
+        SubtitleSourceKind.HlsManifest => Loc.S("L.Queue.SubtitleSourceKindPlatform"),
+        SubtitleSourceKind.LocalAsr => Loc.S("L.Queue.SubtitleSourceKindLocalASR"),
+        SubtitleSourceKind.CloudAsr => Loc.S("L.Queue.SubtitleSourceKindLocalASR"),
+        SubtitleSourceKind.ImportedFile => Loc.S("L.Queue.SubtitleSourceKindImportedFile"),
+        _ => Loc.S("L.Queue.SubtitleSourceKindManual"),
+    };
+
+    private static string SubtitleSourceReadableName(SubtitleChoice track)
+    {
+        var language = SubtitleDisplayLanguage(track.LanguageCode);
+        return track.SourceKind switch
+        {
+            SubtitleSourceKind.Manual => Loc.F("L.Ready.SubtitleSourceReadableManual", language),
+            SubtitleSourceKind.PlatformAuto or SubtitleSourceKind.HlsManifest => Loc.F("L.Ready.SubtitleSourceReadablePlatform", language),
+            SubtitleSourceKind.LocalAsr or SubtitleSourceKind.CloudAsr => Loc.F("L.Ready.SubtitleSourceReadableEnhanced", language),
+            SubtitleSourceKind.ImportedFile => Loc.F("L.Ready.SubtitleSourceReadableImported", language),
+            _ => track.Label,
+        };
+    }
+
+    private static string SubtitleDisplayLanguage(string? code)
+    {
+        var normalized = TranslationLanguage.NormalizedScript(code ?? "");
+        if (string.IsNullOrWhiteSpace(normalized) || normalized == "auto") return Loc.S("L.Ready.SourceLanguageAuto");
+        return TranslationLanguage.SourceDisplayName(normalized) ?? normalized;
+    }
+
+    private static SubtitleSourcePolicy UserFacingSubtitleSourceMode(SubtitleSourcePolicy policy) => policy switch
+    {
+        SubtitleSourcePolicy.ForcePlatform or SubtitleSourcePolicy.PreferPlatform => SubtitleSourcePolicy.ForcePlatform,
+        SubtitleSourcePolicy.ForceLocalAsr or SubtitleSourcePolicy.PreferLocalAsr => SubtitleSourcePolicy.ForceLocalAsr,
+        _ => SubtitleSourcePolicy.AutoBest,
+    };
+
+    private void SyncSelectedSubtitleSourceMode(SubtitleSourcePolicy policy)
+    {
+        var mode = UserFacingSubtitleSourceMode(policy);
+        var option = SubtitleSourceModeOptions.FirstOrDefault(item => item.Policy == mode) ?? SubtitleSourceModeOptions[0];
+        if (!ReferenceEquals(_selectedSubtitleSourceModeOption, option))
+        {
+            _selectedSubtitleSourceModeOption = option;
+            RaisePropertyChanged(nameof(SelectedSubtitleSourceModeOption));
+        }
+        RaisePropertyChanged(nameof(SubtitleSourceModeDetail));
+    }
+
+    private static string SubtitleDecisionReasonText(SubtitleSourceDecisionReason reason) => reason switch
+    {
+        SubtitleSourceDecisionReason.ImportedSubtitleExplicit => Loc.S("L.Ready.SubtitleReasonImported"),
+        SubtitleSourceDecisionReason.ManualMatchesVideoLanguage => Loc.S("L.Ready.SubtitleReasonManualVideoLanguage"),
+        SubtitleSourceDecisionReason.ManualMatchesUserLanguage => Loc.S("L.Ready.SubtitleReasonManualUserLanguage"),
+        SubtitleSourceDecisionReason.ManualMatchesInferredLanguage => Loc.S("L.Ready.SubtitleReasonManualInferredLanguage"),
+        SubtitleSourceDecisionReason.PlatformSubtitleMatchesVideoLanguage
+            or SubtitleSourceDecisionReason.PlatformAutoMatchesVideoLanguage => Loc.S("L.Ready.SubtitleReasonPlatformVideoLanguage"),
+        SubtitleSourceDecisionReason.PlatformSubtitleMatchesUserLanguage
+            or SubtitleSourceDecisionReason.PlatformAutoMatchesUserLanguage => Loc.S("L.Ready.SubtitleReasonPlatformUserLanguage"),
+        SubtitleSourceDecisionReason.PlatformSubtitleMatchesInferredLanguage
+            or SubtitleSourceDecisionReason.PlatformAutoMatchesInferredLanguage => Loc.S("L.Ready.SubtitleReasonPlatformInferredLanguage"),
+        SubtitleSourceDecisionReason.TargetLanguageSubtitleNotSource => Loc.S("L.Ready.SubtitleReasonTargetLanguageNotSource"),
+        SubtitleSourceDecisionReason.ManualLanguageMismatch
+            or SubtitleSourceDecisionReason.PlatformLanguageMismatch => Loc.S("L.Ready.SubtitleReasonLanguageMismatch"),
+        SubtitleSourceDecisionReason.LocalRecognitionFallbackOnly => Loc.S("L.Ready.SubtitleReasonLocalFallback"),
+        SubtitleSourceDecisionReason.LocalRecognitionForced => Loc.S("L.Ready.SubtitleReasonLocalForced"),
+        SubtitleSourceDecisionReason.CompareRequested => Loc.S("L.Ready.SubtitleReasonCompareRequested"),
+        SubtitleSourceDecisionReason.CloudRecognitionForced => Loc.S("L.Ready.SubtitleReasonCloudForced"),
+        SubtitleSourceDecisionReason.CloudRecognitionUnavailable => Loc.S("L.Ready.SubtitleReasonCloudUnavailable"),
+        SubtitleSourceDecisionReason.NoTrustedPlatformSubtitle => Loc.S("L.Ready.SubtitleReasonNoTrustedSource"),
+        SubtitleSourceDecisionReason.NoUsableSubtitleSource => Loc.S("L.Ready.SubtitleReasonNoUsableSource"),
+        _ => Loc.S("L.Ready.SubtitleReasonNoUsableSource"),
+    };
 
     private SubtitleChoice? TrackMatchingPolicy(SubtitleSourcePolicy policy, VideoInfo info)
     {
@@ -1166,6 +1344,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     {
         var selected = AppSettings.NormalizePreferredSourceLanguage(SelectedSourceLanguageOption?.Code ?? "auto");
         if (selected != "auto") return selected;
+        if (!string.IsNullOrWhiteSpace(info.DetectedLanguageCode)) return info.DetectedLanguageCode;
         return SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(info.Title) ?? "auto";
     }
 
@@ -1174,7 +1353,9 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         var selected = AppSettings.NormalizePreferredSourceLanguage(settings.PreferredSourceLanguage);
         return selected != "auto"
             ? selected
-            : SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(info.Title) ?? "auto";
+            : !string.IsNullOrWhiteSpace(info.DetectedLanguageCode)
+                ? info.DetectedLanguageCode
+                : SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(info.Title) ?? "auto";
     }
 
     private static SourceLanguageIntent SourceLanguageIntentFromCode(string code)
@@ -1387,14 +1568,19 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
                 var subtitleTracks = new List<SubtitleChoice>();
                 string? primarySubtitleTrackId = null;
                 string? preferredSubtitleLanguageCode = null;
-                var recommendation = SubtitleLanguageRecommender.Recommend(
+                var subtitleSourcePolicy = SelectedSubtitleSourcePolicyOption?.Policy ?? SubtitleSourcePolicy.AutoBest;
+                var sourceDecision = SubtitleSourceDecision.Decide(
                     info.Title,
-                    SubtitleLanguageRecommender.Aggregate(AvailableSubtitleChoices(info)),
-                    settings.TranslationTargetLanguage);
+                    info.DetectedLanguageCode,
+                    settings.TranslationTargetLanguage,
+                    settings.PreferredSourceLanguage,
+                    subtitleSourcePolicy,
+                    AvailableSubtitleChoices(info),
+                    Queue.HasLocalAsrGenerator,
+                    Queue.HasCloudAsrGenerator);
                 if (mode != ChineseSubtitleMode.Off)
                 {
-                    if (recommendation.Recommended is { } recommended
-                        && recommended.PreferredTrack is { } sub
+                    if (sourceDecision.SelectedTrack is { } sub
                         && (sub.SourceKind != SubtitleSourceKind.LocalAsr || Queue.HasLocalAsrGenerator))
                     {
                         subtitleTracks.Add(sub);
@@ -1420,6 +1606,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
                     PreferredSubtitleLanguageCode = preferredSubtitleLanguageCode,
                     SubtitleIntent = SubtitleIntentFromChineseMode(mode),
                     SourceLanguageIntent = SourceLanguageIntentFromCode(BatchSourceLanguagePreference(info, settings)),
+                    SubtitleSourcePolicy = subtitleSourcePolicy,
                     DestinationDirectory = DownloadPaths.DestinationDirectory(info.Title, multiFile),
                     PreferredTitle = isPage ? info.Title : null,
                 };

@@ -1442,6 +1442,61 @@ public class QueueManagerTests
         }
     }
 
+    /// 强制平台字幕时，即使质量门判平台字幕不可用，也不能偷偷运行本地识别。
+    [Fact]
+    public async Task ForcePlatformLowQualityCaptionDoesNotRunLocalAsr()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-force-platform-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 20; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n［音楽］\n\n");
+            }
+            File.WriteAllText(autoVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("ja", "Japanese auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request(
+                    "a",
+                    subtitleTracks: [auto],
+                    primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "ja",
+                    destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.ForcePlatform),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(0, asr.CallCount);
+            Assert.False(item.ResolvedSubtitleSource?.UsedLocalAsrFallback ?? false);
+            Assert.Equal(SubtitleSourceKind.PlatformAuto, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.Equal(autoVtt, translator.LastInput);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     /// 明确选择“比较平台字幕和本地识别”时，即使平台自动字幕本身可用，也要生成本地识别候选。
     [Fact]
     public async Task CompareLocalAsrPolicyGeneratesLocalAsrEvenWhenAutoCaptionIsUsable()

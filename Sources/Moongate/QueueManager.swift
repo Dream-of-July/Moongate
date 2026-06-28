@@ -1565,13 +1565,17 @@ final class QueueManager: ObservableObject {
             requestedSourceLanguageCode: preferredLang,
             videoDurationSeconds: videoDurationSeconds
         )
-        let shouldCompareLocalASR = request.subtitleSourcePolicy == .compareLocalASR
         let shouldGenerateLocalASR: Bool
-        if shouldCompareLocalASR {
+        switch request.subtitleSourcePolicy {
+        case .compareLocalASR:
             shouldGenerateLocalASR = true
-        } else if request.subtitleSourcePolicy == .autoBest {
-            shouldGenerateLocalASR = platformScore.verdict < .good
-        } else {
+        case .autoBest:
+            shouldGenerateLocalASR = !verdict.usable || platformScore.verdict <= .lowConfidence
+        case .forcePlatform, .preferPlatform, .cloudASR, .importedFile:
+            shouldGenerateLocalASR = false
+        case .forceLocalASR:
+            shouldGenerateLocalASR = true
+        case .preferLocalASR:
             shouldGenerateLocalASR = !verdict.usable
         }
         if !shouldGenerateLocalASR {

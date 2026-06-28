@@ -1752,11 +1752,16 @@ public sealed class QueueManager
             request.SubtitleSourcePolicy,
             [platformCandidate],
             videoDurationSeconds));
-        var shouldCompareLocalAsr = request.SubtitleSourcePolicy == SubtitleSourcePolicy.CompareLocalAsr;
-        var shouldGenerateLocalAsr = shouldCompareLocalAsr
-            || (request.SubtitleSourcePolicy == SubtitleSourcePolicy.AutoBest
-                ? platformScore.Verdict < SubtitleQualityVerdict.Good
-                : !verdict.Usable);
+        var shouldGenerateLocalAsr = request.SubtitleSourcePolicy switch
+        {
+            SubtitleSourcePolicy.CompareLocalAsr => true,
+            SubtitleSourcePolicy.AutoBest => !verdict.Usable || platformScore.Verdict <= SubtitleQualityVerdict.LowConfidence,
+            SubtitleSourcePolicy.ForcePlatform or SubtitleSourcePolicy.PreferPlatform
+                or SubtitleSourcePolicy.CloudAsr or SubtitleSourcePolicy.ImportedFile => false,
+            SubtitleSourcePolicy.ForceLocalAsr => true,
+            SubtitleSourcePolicy.PreferLocalAsr => !verdict.Usable,
+            _ => !verdict.Usable,
+        };
         if (!shouldGenerateLocalAsr)
         {
             return new SubtitleSourceResolution(pickedSource, downloadFiles,

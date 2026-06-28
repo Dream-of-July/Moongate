@@ -454,7 +454,7 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="{DynamicResource L.Ready.SubtitleOutputSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
+	                        <TextBlock Text="{DynamicResource L.Ready.SubtitleSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"/>
                         <Border Style="{StaticResource Card}" Padding="12">
                             <StackPanel>
                                 <StackPanel>
@@ -482,53 +482,37 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceSection}" Style="{StaticResource SectionHeader}" Margin="0,16,0,8"
-                                   Visibility="{Binding SubtitleSourceControlsVisible, Converter={StaticResource BoolToVis}}"/>
-                        <Border Style="{StaticResource Card}" Padding="12,8"
-                                Visibility="{Binding SubtitleSourceControlsVisible, Converter={StaticResource BoolToVis}}">
-                            <StackPanel>
-                                <DockPanel Margin="0,4,0,8">
-                                    <TextBlock Text="{DynamicResource L.Ready.SourceLanguagePickerAccessibility}" VerticalAlignment="Center"/>
-                                    <ComboBox ItemsSource="{Binding SourceLanguageOptions}"
-                                              SelectedItem="{Binding SelectedSourceLanguageOption}"
-                                              DisplayMemberPath="Label"
-                                              HorizontalAlignment="Right"
-                                              MinWidth="128"
-                                              AutomationProperties.Name="{DynamicResource L.Ready.SourceLanguagePickerAccessibility}"/>
-                                </DockPanel>
-                                <!-- 主区域：推荐语言（点击即选）+ 自动定源说明 -->
-                                <StackPanel Visibility="{Binding HasRecommendedLanguage, Converter={StaticResource BoolToVis}}">
-                                    <RadioButton GroupName="SubtitleSource" Margin="0,5" VerticalContentAlignment="Center"
-                                                 IsChecked="{Binding RecommendedLanguageOption.IsSelected}"
-                                                 DataContext="{Binding RecommendedLanguageOption}">
-                                        <StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{DynamicResource L.Ready.SubtitleSourcePolicyAutoBest}"/>
-                                                <Border Background="{DynamicResource SubtleSurfaceBrush}" CornerRadius="8" Padding="6,1" Margin="6,0,0,0">
-                                                    <TextBlock Text="{DynamicResource L.Ready.RecommendedBadge}" FontSize="10.5"
-                                                               Foreground="{DynamicResource SecondaryTextBrush}"/>
-                                                </Border>
-                                            </StackPanel>
-                                            <TextBlock Text="{Binding DisplayLabel}"
-                                                       Style="{StaticResource Caption}"
-                                                       TextWrapping="Wrap"
-                                                       Margin="0,2,0,0"/>
-                                        </StackPanel>
-                                    </RadioButton>
-                                    <TextBlock Text="{DynamicResource L.Ready.AutoSourceExplanation}" Style="{StaticResource Caption}"
-                                               TextWrapping="Wrap" Margin="0,2,0,4"/>
-                                </StackPanel>
-                                <Expander Header="{DynamicResource L.Ready.SubtitleSourceAdvanced}" Margin="0,6,0,0">
-                                    <StackPanel Margin="0,6,0,0">
-                                        <DockPanel>
-                                            <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceSection}" VerticalAlignment="Center"/>
-                                            <ComboBox DockPanel.Dock="Right"
-                                                      ItemsSource="{Binding SubtitleSourcePolicyOptions}"
-                                                      SelectedItem="{Binding SelectedSubtitleSourcePolicyOption}"
-                                                      DisplayMemberPath="Label"
-                                                      MinWidth="220"
-                                                      AutomationProperties.Name="{DynamicResource L.Ready.SubtitleSourceAdvanced}"/>
-                                        </DockPanel>
+	                        <Border Style="{StaticResource Card}" Padding="12,8"
+	                                Margin="0,8,0,0"
+	                                Visibility="{Binding SubtitleSourceControlsVisible, Converter={StaticResource BoolToVis}}">
+	                            <StackPanel>
+	                                <DockPanel Margin="0,2,0,6">
+	                                    <TextBlock Text="{DynamicResource L.Ready.SubtitleSourceModeAccessibility}" VerticalAlignment="Center"/>
+	                                    <ComboBox DockPanel.Dock="Right"
+	                                              ItemsSource="{Binding SubtitleSourceModeOptions}"
+	                                              SelectedItem="{Binding SelectedSubtitleSourceModeOption}"
+	                                              DisplayMemberPath="Label"
+	                                              MinWidth="180"
+	                                              AutomationProperties.Name="{DynamicResource L.Ready.SubtitleSourceModeAccessibility}"/>
+	                                </DockPanel>
+	                                <TextBlock Text="{Binding SubtitleSourceModeDetail}" Style="{StaticResource Caption}"
+	                                           TextWrapping="Wrap" Margin="0,0,0,6"/>
+	                                <TextBlock Text="{Binding SubtitleSourceSummary}" TextWrapping="Wrap" Margin="0,4,0,0"
+	                                           Visibility="{Binding SubtitleSourceSummary, Converter={StaticResource TextToVis}}"/>
+	                                <TextBlock Text="{Binding SubtitleSourceReasonText}" Style="{StaticResource Caption}"
+	                                           TextWrapping="Wrap" Margin="0,4,0,0"
+	                                           Visibility="{Binding SubtitleSourceReasonText, Converter={StaticResource TextToVis}}"/>
+	                                <Expander Header="{DynamicResource L.Ready.SubtitleSourceMoreOptions}" Margin="0,6,0,0">
+	                                    <StackPanel Margin="0,6,0,0">
+	                                        <DockPanel Margin="0,4,0,8">
+	                                            <TextBlock Text="{DynamicResource L.Ready.SourceLanguagePickerAccessibility}" VerticalAlignment="Center"/>
+	                                            <ComboBox ItemsSource="{Binding SourceLanguageOptions}"
+	                                                      SelectedItem="{Binding SelectedSourceLanguageOption}"
+	                                                      DisplayMemberPath="Label"
+	                                                      HorizontalAlignment="Right"
+	                                                      MinWidth="128"
+	                                                      AutomationProperties.Name="{DynamicResource L.Ready.SourceLanguagePickerAccessibility}"/>
+	                                        </DockPanel>
                                         <DockPanel Margin="0,8,0,0">
                                             <Button Content="{DynamicResource L.Ready.ImportSubtitleFile}"
                                                     Click="OnImportSubtitleFileClick"

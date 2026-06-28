@@ -184,65 +184,31 @@ public sealed class QueueItemViewModel : ObservableObject
         var language = string.IsNullOrWhiteSpace(source.LanguageCode) ? "auto" : source.LanguageCode;
         var parts = new List<string>
         {
-            Loc.F("L.Queue.SubtitleSourceActualFmt", SubtitleSourceKindLabel(source.SelectedKind), language),
-            Loc.F("L.Queue.SubtitleSourceQualityFmt", SubtitleSourceQualityLabel(source)),
+            Loc.F("L.Queue.SubtitleSourceActualFmt", SubtitleSourceKindLabel(source.SelectedKind), SubtitleDisplayLanguage(language)),
         };
         if (!string.IsNullOrWhiteSpace(item.SubtitleSourceNote))
         {
             parts.Add(item.SubtitleSourceNote);
         }
-        if (source.CandidateReports.Count > 0)
-        {
-            parts.Add(Loc.F(
-                "L.Queue.SubtitleSourceCandidatesFmt",
-                string.Join("; ", source.CandidateReports.Select(SubtitleSourceCandidateReportText))));
-        }
         return string.Join(Loc.S("L.Queue.SummarySep"), parts);
     }
 
-    private static string SubtitleSourceCandidateReportText(SubtitleSourceCandidateReport report)
-    {
-        var status = !report.Available
-            ? Loc.S("L.Queue.SubtitleSourceCandidateUnavailable")
-            : report.Selected
-                ? Loc.S("L.Queue.SubtitleSourceCandidateSelected")
-                : report.Usable
-                    ? SubtitleQualityVerdictLabel(report.QualityVerdict)
-                    : Loc.S("L.Queue.SubtitleSourceCandidateLowConfidence");
-        return Loc.F(
-            "L.Queue.SubtitleSourceCandidateFmt",
-            SubtitleSourceKindLabel(report.SourceKind),
-            string.IsNullOrWhiteSpace(report.LanguageCode) ? "auto" : report.LanguageCode,
-            status);
-    }
-
-    private static string SubtitleSourceQualityLabel(ResolvedSubtitleSource source)
-    {
-        if (source.QualityVerdict is null) return Loc.S("L.Queue.SubtitleSourceQualityTrusted");
-        if (source.SourceQualityVerdict is { } sourceVerdict) return SubtitleQualityVerdictLabel(sourceVerdict);
-        return source.QualityVerdict.Usable
-            ? Loc.S("L.Queue.SubtitleSourceQualityUsable")
-            : Loc.S("L.Queue.SubtitleSourceQualityLowConfidence");
-    }
-
-    private static string SubtitleQualityVerdictLabel(SubtitleQualityVerdict verdict) => verdict switch
-    {
-        SubtitleQualityVerdict.Excellent => Loc.S("L.Queue.SubtitleSourceQualityExcellent"),
-        SubtitleQualityVerdict.Good => Loc.S("L.Queue.SubtitleSourceQualityGood"),
-        SubtitleQualityVerdict.Usable => Loc.S("L.Queue.SubtitleSourceQualityUsable"),
-        SubtitleQualityVerdict.LowConfidence => Loc.S("L.Queue.SubtitleSourceQualityLowConfidence"),
-        _ => Loc.S("L.Queue.SubtitleSourceQualityUnusable"),
-    };
-
     private static string SubtitleSourceKindLabel(SubtitleSourceKind kind) => kind switch
     {
-        SubtitleSourceKind.PlatformAuto => Loc.S("L.Queue.SubtitleSourceKindPlatformAuto"),
+        SubtitleSourceKind.PlatformAuto => Loc.S("L.Queue.SubtitleSourceKindPlatform"),
         SubtitleSourceKind.HlsManifest => Loc.S("L.Queue.SubtitleSourceKindPlatform"),
         SubtitleSourceKind.LocalAsr => Loc.S("L.Queue.SubtitleSourceKindLocalASR"),
-        SubtitleSourceKind.CloudAsr => Loc.S("L.Queue.SubtitleSourceKindCloudASR"),
+        SubtitleSourceKind.CloudAsr => Loc.S("L.Queue.SubtitleSourceKindLocalASR"),
         SubtitleSourceKind.ImportedFile => Loc.S("L.Queue.SubtitleSourceKindImportedFile"),
         _ => Loc.S("L.Queue.SubtitleSourceKindManual"),
     };
+
+    private static string SubtitleDisplayLanguage(string code)
+    {
+        var normalized = TranslationLanguage.NormalizedScript(code);
+        if (string.IsNullOrWhiteSpace(normalized) || normalized == "auto") return "auto";
+        return TranslationLanguage.SourceDisplayName(normalized) ?? normalized;
+    }
 
     private static string WithProgressDetails(string baseText, QueueManager.QueueItem item, bool includeSpeed = true)
     {

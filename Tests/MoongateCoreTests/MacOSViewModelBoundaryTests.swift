@@ -120,13 +120,13 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("evaluator: runtimeReadinessEvaluator"))
     }
 
-    func testBatchSubtitleSourceUsesLanguageRecommendation() throws {
+    func testBatchSubtitleSourceUsesSubtitleSourceDecision() throws {
         let source = try viewModelSource()
         let processBatchBody = try XCTUnwrap(functionBody(prefix: "private func processBatch", in: source))
 
-        XCTAssertTrue(processBatchBody.contains("SubtitleLanguageRecommender.recommend("))
-        XCTAssertTrue(processBatchBody.contains("availableSubtitleChoices(for: info)"))
-        XCTAssertTrue(processBatchBody.contains("recommended.preferredTrack"))
+        XCTAssertTrue(source.contains("self.subtitleSourceDecision("))
+        XCTAssertTrue(source.contains("availableSubtitleChoices(for: info)"))
+        XCTAssertTrue(source.contains("sourceDecision.selectedTrack"))
         XCTAssertFalse(processBatchBody.contains("info.subtitles.first(where: { !$0.isAuto }) ?? info.subtitles.first"))
     }
 
@@ -305,9 +305,11 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
     func testReadyPageUsesLanguageFirstRecommendationAndThreadsPreferredLanguage() throws {
         let source = try viewModelSource()
 
-        // 语言优先 API：聚合 + 推荐 + 选择，全部委托给共享 SubtitleLanguageRecommender。
+        // 语言优先 UI 仍保留，但默认字幕来源由 SubtitleSourceDecision 统一决定。
         XCTAssertTrue(source.contains("func recommendedLanguage(for info: VideoInfo) -> SubtitleLanguageChoice?"))
         XCTAssertTrue(source.contains("func otherLanguages(for info: VideoInfo) -> [SubtitleLanguageChoice]"))
+        XCTAssertTrue(source.contains("func subtitleSourceDecision("))
+        XCTAssertTrue(source.contains("SubtitleSourceDecision.decide("))
         XCTAssertTrue(source.contains("SubtitleLanguageRecommender.recommend("))
         XCTAssertTrue(source.contains("func selectLanguage(_ language: SubtitleLanguageChoice)"))
         XCTAssertTrue(source.contains("primarySubtitleTrackID = track.id"))
@@ -353,13 +355,9 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(stateBody.contains("cloudASRRequiredButUnavailable"))
         XCTAssertTrue(stateBody.contains("subtitleSourcePolicy == .cloudASR && !queue.hasCloudASRGenerator"))
         XCTAssertTrue(policyBody.contains("trackMatching(policy: policy, for: info)"))
-        XCTAssertTrue(trackPolicyBody.contains("case .forceLocalASR"))
-        XCTAssertTrue(trackPolicyBody.contains("case .compareLocalASR"))
-        XCTAssertTrue(trackPolicyBody.contains("currentGroup.tracks.first(where: isPlatformTrack) ?? currentGroup.tracks.first { $0.sourceKind == .localASR }"))
-        XCTAssertTrue(trackPolicyBody.contains("case .cloudASR"))
-        XCTAssertTrue(trackPolicyBody.contains("return nil"))
-        XCTAssertTrue(trackPolicyBody.contains("case .forcePlatform"))
-        XCTAssertTrue(trackPolicyBody.contains("case .importedFile"))
+        XCTAssertTrue(trackPolicyBody.contains("subtitleSourceDecision("))
+        XCTAssertTrue(trackPolicyBody.contains("sourcePolicy: policy"))
+        XCTAssertTrue(trackPolicyBody.contains("preferredSourceLanguageCode: currentLanguage ?? readySourceLanguagePreference"))
         XCTAssertTrue(source.contains("func importSubtitleFile(_ url: URL, for info: VideoInfo)"))
         XCTAssertTrue(source.contains("func clearImportedSubtitleFile(for info: VideoInfo)"))
         XCTAssertTrue(source.contains("sourceKind: .importedFile"))
