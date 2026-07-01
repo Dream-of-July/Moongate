@@ -3041,6 +3041,35 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerKeepsSpacesBetweenSpacedNonLatinScripts()
+    {
+        // Arabic (RTL), Cyrillic, and Bengali are all space-separated word scripts like Devanagari.
+        static string Joined(string language, (string Text, double Start, double End)[] words)
+        {
+            var transcript = new AsrTranscript
+            {
+                Id = $"spaced-{language}",
+                LanguageCode = language,
+                Words = words.Select(w => new AsrWord { Text = w.Text, StartSeconds = w.Start, EndSeconds = w.End }).ToList(),
+                SourceModelId = "whisper.cpp:test",
+            };
+            return string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+        }
+
+        var ru = Joined("ru", [("Привет", 0.0, 0.4), ("мир", 0.4, 0.8), ("как", 0.8, 1.1), ("дела", 1.1, 1.5)]);
+        Assert.Contains("Привет мир как дела", ru, StringComparison.Ordinal);
+        Assert.DoesNotContain("Приветмир", ru, StringComparison.Ordinal);
+
+        var ar = Joined("ar", [("مرحبا", 0.0, 0.4), ("بالعالم", 0.4, 0.9), ("كيف", 0.9, 1.2), ("حالك", 1.2, 1.6)]);
+        Assert.Contains("مرحبا بالعالم كيف حالك", ar, StringComparison.Ordinal);
+        Assert.DoesNotContain("مرحبابالعالم", ar, StringComparison.Ordinal);
+
+        var bn = Joined("bn", [("নমস্কার", 0.0, 0.5), ("বিশ্ব", 0.5, 0.9), ("কেমন", 0.9, 1.3), ("আছেন", 1.3, 1.7)]);
+        Assert.Contains("নমস্কার বিশ্ব কেমন আছেন", bn, StringComparison.Ordinal);
+        Assert.DoesNotContain("নমস্কারবিশ্ব", bn, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerRejoinsMainstreamLatinSubwordFragments()
     {
         var transcript = new AsrTranscript

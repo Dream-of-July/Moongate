@@ -2660,6 +2660,32 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(text.contains("कीजाएगी"))
     }
 
+    func testLocalASRTimingPlannerKeepsSpacesBetweenSpacedNonLatinScripts() {
+        // Arabic (RTL), Cyrillic, and Bengali are all space-separated word scripts like Devanagari.
+        // Reconstructed word units must render with spaces, not run-on strings.
+        func joined(_ language: String, _ words: [(String, Double, Double)]) -> String {
+            let transcript = ASRTranscript(
+                id: "spaced-\(language)",
+                languageCode: language,
+                words: words.map { ASRWord(text: $0.0, startSeconds: $0.1, endSeconds: $0.2) },
+                sourceModelID: "whisper.cpp:test"
+            )
+            return ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+        }
+
+        let ru = joined("ru", [("Привет", 0.0, 0.4), ("мир", 0.4, 0.8), ("как", 0.8, 1.1), ("дела", 1.1, 1.5)])
+        XCTAssertTrue(ru.contains("Привет мир как дела"))
+        XCTAssertFalse(ru.contains("Приветмир"))
+
+        let ar = joined("ar", [("مرحبا", 0.0, 0.4), ("بالعالم", 0.4, 0.9), ("كيف", 0.9, 1.2), ("حالك", 1.2, 1.6)])
+        XCTAssertTrue(ar.contains("مرحبا بالعالم كيف حالك"))
+        XCTAssertFalse(ar.contains("مرحبابالعالم"))
+
+        let bn = joined("bn", [("নমস্কার", 0.0, 0.5), ("বিশ্ব", 0.5, 0.9), ("কেমন", 0.9, 1.3), ("আছেন", 1.3, 1.7)])
+        XCTAssertTrue(bn.contains("নমস্কার বিশ্ব কেমন আছেন"))
+        XCTAssertFalse(bn.contains("নমস্কারবিশ্ব"))
+    }
+
     func testLocalASRTimingPlannerRejoinsMainstreamLatinSubwordFragments() {
         let transcript = ASRTranscript(
             id: "latin-subwords",

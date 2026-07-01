@@ -3605,7 +3605,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             && !IsStrongLatinContinuationFragment(left, right)
             && !IsLatinContinuationFragment(left, right, allowBroadLatinContinuation)
             && (ContainsHangul(left) && ContainsHangul(right) && !KoreanLeadingProhibitedParticles.Contains(right.Trim())
-                || ContainsDevanagari(left) && ContainsDevanagari(right)
+                || ContainsSpacedScript(left) && ContainsSpacedScript(right)
                 || ContainsAsciiAlphanumeric(left) || ContainsAsciiAlphanumeric(right)));
 
     private static bool IsObservedStandaloneLatinFunction(string left, string right)
@@ -3621,8 +3621,16 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private static bool ContainsHangul(string text) =>
         text.Any(ch => ch is >= '\uAC00' and <= '\uD7A3');
 
-    private static bool ContainsDevanagari(string text) =>
-        text.Any(ch => ch is >= '\u0900' and <= '\u097F');
+    // Space-separated non-CJK scripts (Devanagari/Bengali/Arabic/Cyrillic/\u2026) keep word spaces.
+    private static bool ContainsSpacedScript(string text) =>
+        text.Any(ch =>
+            ch is >= '\u0900' and <= '\u097F'    // Devanagari
+            || ch is >= '\u0980' and <= '\u09FF' // Bengali
+            || ch is >= '\u0600' and <= '\u06FF' // Arabic
+            || ch is >= '\u0750' and <= '\u077F' // Arabic Supplement
+            || ch is >= '\u08A0' and <= '\u08FF' // Arabic Extended-A
+            || ch is >= '\u0400' and <= '\u04FF' // Cyrillic
+            || ch is >= '\u0500' and <= '\u052F'); // Cyrillic Supplement
 
     private static bool ContainsAsciiAlphanumeric(string text) =>
         text.Any(ch => ch <= 0x7F && char.IsLetterOrDigit(ch));
@@ -5225,7 +5233,7 @@ public sealed class WhisperCppJsonTranscriptParser
         IReadOnlyList<(AsrWord Word, double? DtwStart)> entries)
     {
         if (string.IsNullOrWhiteSpace(segmentText)
-            || (!ParserContainsHangul(segmentText) && !ParserContainsDevanagari(segmentText))
+            || (!ParserContainsHangul(segmentText) && !ParserContainsSpacedScript(segmentText))
             || entries.Count == 0)
         {
             return null;
@@ -5301,11 +5309,21 @@ public sealed class WhisperCppJsonTranscriptParser
     private static bool ParserContainsHangul(string text) =>
         text.EnumerateRunes().Any(rune => rune.Value is >= 0xAC00 and <= 0xD7A3);
 
-    // Devanagari block (Hindi/Marathi/Nepali/…). Whisper writes these with real word spacing but
-    // splits words into base-letter + combining-mark token pieces, so word entries must be rebuilt
-    // from segment text to keep readable spacing (mirrors the Hangul eojeol reconstruction).
-    private static bool ParserContainsDevanagari(string text) =>
-        text.EnumerateRunes().Any(rune => rune.Value is >= 0x0900 and <= 0x097F);
+    // Space-separated non-CJK scripts that whisper.cpp writes with real word spacing but splits
+    // into base-letter + combining-mark token pieces (Devanagari, Bengali, Arabic, Cyrillic, …).
+    // Word entries must be rebuilt from segment text to keep readable spacing (mirrors Hangul).
+    // CJK (Han/Kana) is intentionally excluded: it has no word spaces.
+    private static bool ParserContainsSpacedScript(string text) =>
+        text.EnumerateRunes().Any(rune => IsSpacedScriptScalar(rune.Value));
+
+    private static bool IsSpacedScriptScalar(int v) =>
+        v is >= 0x0900 and <= 0x097F      // Devanagari
+        || v is >= 0x0980 and <= 0x09FF   // Bengali
+        || v is >= 0x0600 and <= 0x06FF   // Arabic
+        || v is >= 0x0750 and <= 0x077F   // Arabic Supplement
+        || v is >= 0x08A0 and <= 0x08FF   // Arabic Extended-A
+        || v is >= 0x0400 and <= 0x04FF   // Cyrillic
+        || v is >= 0x0500 and <= 0x052F;  // Cyrillic Supplement
 
     private static string ParserAlignmentText(string text)
     {

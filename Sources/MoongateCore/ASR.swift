@@ -3786,8 +3786,8 @@ enum LocalASRSubtitleTimingPlanner {
            !koreanLeadingProhibitedParticles.contains(right.trimmingCharacters(in: .whitespacesAndNewlines)) {
             return true
         }
-        // Devanagari is space-separated: keep spaces between reconstructed Hindi/Marathi words.
-        if containsDevanagari(left), containsDevanagari(right) {
+        // Space-separated non-CJK scripts (Devanagari/Bengali/Arabic/Cyrillic/…) keep word spaces.
+        if containsSpacedScript(left), containsSpacedScript(right) {
             return true
         }
         return containsASCIIAlphanumeric(left) || containsASCIIAlphanumeric(right)
@@ -3809,9 +3809,16 @@ enum LocalASRSubtitleTimingPlanner {
         }
     }
 
-    private static func containsDevanagari(_ text: String) -> Bool {
+    private static func containsSpacedScript(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
-            (0x0900...0x097F).contains(Int(scalar.value))
+            let v = Int(scalar.value)
+            return (0x0900...0x097F).contains(v)   // Devanagari
+                || (0x0980...0x09FF).contains(v)   // Bengali
+                || (0x0600...0x06FF).contains(v)   // Arabic
+                || (0x0750...0x077F).contains(v)   // Arabic Supplement
+                || (0x08A0...0x08FF).contains(v)   // Arabic Extended-A
+                || (0x0400...0x04FF).contains(v)   // Cyrillic
+                || (0x0500...0x052F).contains(v)   // Cyrillic Supplement
         }
     }
 
@@ -5615,7 +5622,7 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         entries: [(word: ASRWord, dtwStart: Double?)]
     ) -> [(word: ASRWord, dtwStart: Double?)]? {
         guard let segmentText,
-              parserContainsHangul(segmentText) || parserContainsDevanagari(segmentText),
+              parserContainsHangul(segmentText) || parserContainsSpacedScript(segmentText),
               !entries.isEmpty else {
             return nil
         }
@@ -5703,12 +5710,20 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         }
     }
 
-    /// Devanagari block (Hindi/Marathi/Nepali/…). Whisper writes these with real word spacing but
-    /// splits words into base-letter + combining-mark token pieces, so word entries must be rebuilt
-    /// from segment text to keep readable spacing (mirrors the Hangul eojeol reconstruction).
-    private func parserContainsDevanagari(_ text: String) -> Bool {
+    /// Space-separated non-CJK scripts that whisper.cpp writes with real word spacing but splits
+    /// into base-letter + combining-mark token pieces (Devanagari, Bengali, Arabic, Cyrillic, …).
+    /// Word entries must be rebuilt from segment text to keep readable spacing, mirroring the Hangul
+    /// eojeol reconstruction. CJK (Han/Kana) is intentionally excluded: it has no word spaces.
+    private func parserContainsSpacedScript(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
-            (0x0900...0x097F).contains(Int(scalar.value))
+            let v = Int(scalar.value)
+            return (0x0900...0x097F).contains(v)   // Devanagari
+                || (0x0980...0x09FF).contains(v)   // Bengali
+                || (0x0600...0x06FF).contains(v)   // Arabic
+                || (0x0750...0x077F).contains(v)   // Arabic Supplement
+                || (0x08A0...0x08FF).contains(v)   // Arabic Extended-A
+                || (0x0400...0x04FF).contains(v)   // Cyrillic
+                || (0x0500...0x052F).contains(v)   // Cyrillic Supplement
         }
     }
 
