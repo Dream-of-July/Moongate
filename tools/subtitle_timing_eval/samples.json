@@ -8,7 +8,7 @@
   "coverage_goal": {
     "id": "mainstream_language_timing_gate",
     "description": "Product-pragmatic target for mainstream languages/users Moongate is most likely to serve: en/zh/yue/ja/ko/es/fr/it plus translated subtitle timing. This keeps the 90% human-like gate bounded instead of tuning every long-tail language on YouTube.",
-    "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "pt", "fr", "de", "it", "hi", "translated"]
+    "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "pt", "fr", "de", "it", "hi", "ar", "ru", "translated"]
   },
   "category_coverage_goal": {
     "id": "local_asr_content_type_coverage",
@@ -490,6 +490,78 @@
       "spoken_languages": ["de"],
       "section": { "start_seconds": 60, "duration_seconds": 120 },
       "stressors": ["dense_speech", "compound_words", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_arabic_dont_kill_language_ar",
+      "title": "Suzanne Talhouk: Don't kill your language (لا تقتل لغتك)",
+      "source": "https://www.youtube.com/watch?v=bNOiwgrZbPE",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_yarmouk_three_letters_ar",
+      "title": "ثلاث حروف غيرت حياتي | Dr. Nour Isleem | TEDxYarmoukUniversity",
+      "source": "https://www.youtube.com/watch?v=5PB214Pj6LM",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_kau_brain_learning_ar",
+      "title": "التعلم المبني على الدماغ | Yaan Allah Alqarni | TEDxKAU",
+      "source": "https://www.youtube.com/watch?v=StxJGH-ffrI",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_leti_unbanal_ru",
+      "title": "Искусство быть небанальным | Anna Vall | TEDxLETI",
+      "source": "https://www.youtube.com/watch?v=vpmHqudYta8",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_sadovoering_entrepreneurship_ru",
+      "title": "Сам себе проект. Можно ли обучить предпринимательству? | Алексей Чадаев | TEDxSadovoeRing",
+      "source": "https://www.youtube.com/watch?v=a47WdujZtak",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_sadovoering_life_ru",
+      "title": "Жизнь на всю оставшуюся жизнь | Nyuta Federmesser | TEDxSadovoeRingWomen",
+      "source": "https://www.youtube.com/watch?v=H9iHbtoS4Ok",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
       "caption_kind": "manual"
     }
   ]

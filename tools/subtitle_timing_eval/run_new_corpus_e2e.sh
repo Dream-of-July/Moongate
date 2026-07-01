@@ -21,6 +21,12 @@ SAMPLES=(
   "tedx_paris_quantum_fr:fr:fr:60:120"
   "tedx_milano_give_back_it:it:it:60:120"
   "tedx_rheinmain_comfort_zone_de:de:de:60:120"
+  "tedx_arabic_dont_kill_language_ar:ar:ar:60:120"
+  "tedx_yarmouk_three_letters_ar:ar:ar:60:120"
+  "tedx_kau_brain_learning_ar:ar:ar:60:120"
+  "tedx_leti_unbanal_ru:ru:ru:60:120"
+  "tedx_sadovoering_entrepreneurship_ru:ru:ru:60:120"
+  "tedx_sadovoering_life_ru:ru:ru:60:120"
 )
 
 for entry in "${SAMPLES[@]}"; do
