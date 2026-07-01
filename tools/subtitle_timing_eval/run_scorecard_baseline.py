@@ -590,6 +590,41 @@ def clip_cues(cues: List[Cue], window: Optional[Tuple[float, float]]) -> List[Cu
     return [c for c in cues if c.end > lo and c.start < hi]
 
 
+# 段相对候选检测阈值：第一条 cue 起点 <= 此值(秒)视为"从 0 开始"，窗口 start > 此值
+# 视为绝对窗口。本地 ASR 段字幕从 00:00:00 附近开始，覆盖 section 内容；文件名窗口是绝对时间。
+SECTION_RELATIVE_FIRST_CUE_MAX_SECONDS = 5.0
+SECTION_RELATIVE_WINDOW_START_MIN_SECONDS = 5.0
+
+
+def is_section_relative_local_asr(
+    cues: List[Cue],
+    window: Optional[Tuple[float, float]],
+    source_kind: str,
+) -> bool:
+    """判断候选是否为"段相对"本地 ASR 字幕：从 00:00:00 附近开始，但文件名窗口是绝对时间。
+
+    仅当 (a) 源是 local-asr，(b) 窗口 start 明显 > 0，(c) 第一条 cue 起点接近 0 时才成立。
+    这样本来就是绝对时间的候选(如 window 0-120 或首 cue 已在窗口 start 附近)不会被误判。
+    """
+    if source_kind != "local-asr" or not cues or not window:
+        return False
+    window_start = window[0]
+    if window_start <= SECTION_RELATIVE_WINDOW_START_MIN_SECONDS:
+        return False
+    first_start = min(c.start for c in cues)
+    return first_start <= SECTION_RELATIVE_FIRST_CUE_MAX_SECONDS
+
+
+def absolute_candidate_cues(cues: List[Cue], offset_seconds: float) -> List[Cue]:
+    """把段相对候选 cue 偏移到绝对时间(每条加 offset_seconds)。"""
+    if offset_seconds == 0:
+        return list(cues)
+    return [
+        Cue(index=c.index, start=c.start + offset_seconds, end=c.end + offset_seconds, text=c.text)
+        for c in cues
+    ]
+
+
 def _seconds_from_duration_match(match: re.Match[str]) -> float:
     hours = int(match.group(1))
     minutes = int(match.group(2))
@@ -743,12 +778,30 @@ def score_sample(
     reference_path = find_human_reference(sample_dir, language)
     reference_text: Optional[str] = None
     reference_seg_report: Optional[Dict[str, Any]] = None
+    # 段相对候选(从 00:00:00 开始)但文件名窗口是绝对时间时，把候选偏移到绝对时间，
+    # 再拿它实际覆盖的绝对跨度去裁剪人工参考——否则会把段相对候选文本和绝对参考文本
+    # 错位对比，人为压低识别相似度(见 spanish_talk_public_es: 错位 36.8 → 对齐后 ~86)。
+    # 注意：只对齐"识别参考对比"和"信息性分段参考报告"，不改动计入分数的 segmentation
+    # (它用的 speech/words 与段相对候选同帧，已自洽)。
+    section_relative = is_section_relative_local_asr(candidate_cues, window, source_kind)
+    ref_offset = window[0] if (section_relative and window) else 0.0
+    absolute_cues = absolute_candidate_cues(candidate_cues, ref_offset) if section_relative else candidate_cues
     if reference_path:
-        ref_cues = clip_cues(load_subtitle_cues(reference_path), window)
+        if section_relative and absolute_cues:
+            # 参考裁剪到候选实际覆盖的绝对跨度(而非文件名里更宽的名义窗口)。
+            cover_lo = min(c.start for c in absolute_cues)
+            cover_hi = max(c.end for c in absolute_cues)
+            ref_clip_window: Optional[Tuple[float, float]] = (cover_lo, cover_hi)
+        else:
+            ref_clip_window = window
+        ref_cues = clip_cues(load_subtitle_cues(reference_path), ref_clip_window)
         if ref_cues:
             reference_text = "\n".join(c.text for c in ref_cues)
+            # 信息性分段参考报告用对齐后的绝对候选 + 绝对窗口，否则段相对 cue 会被
+            # window_start 全部滤掉，refInfo 退化。此报告 notScored，不影响分段得分。
+            seg_ref_cues = clip_cues(load_subtitle_cues(reference_path), window) or ref_cues
             reference_seg_report = evaluate_segmentation(
-                candidate_cues, ref_cues, sample_dir.name,
+                absolute_cues, seg_ref_cues, sample_dir.name,
                 window_start=window[0] if window else None,
                 window_end=window[1] if window else None,
             )

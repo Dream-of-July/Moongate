@@ -3786,6 +3786,10 @@ enum LocalASRSubtitleTimingPlanner {
            !koreanLeadingProhibitedParticles.contains(right.trimmingCharacters(in: .whitespacesAndNewlines)) {
             return true
         }
+        // Devanagari is space-separated: keep spaces between reconstructed Hindi/Marathi words.
+        if containsDevanagari(left), containsDevanagari(right) {
+            return true
+        }
         return containsASCIIAlphanumeric(left) || containsASCIIAlphanumeric(right)
     }
 
@@ -3802,6 +3806,12 @@ enum LocalASRSubtitleTimingPlanner {
     private static func containsHangul(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0xAC00...0xD7A3).contains(Int(scalar.value))
+        }
+    }
+
+    private static func containsDevanagari(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x0900...0x097F).contains(Int(scalar.value))
         }
     }
 
@@ -4573,9 +4583,20 @@ public enum ASRPromptBuilder {
         guard supportedLyricsLanguage || language == "auto" else { return .speech }
         let strongMusicMarkers = [
             "official music video", "music video", "official mv", " mv", "mv ",
+            "official audio", "official visualizer", "performance video",
             "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ"
         ]
-        return strongMusicMarkers.contains(where: { title.contains($0) }) ? .lyricsHighQuality : .speech
+        return strongMusicMarkers.contains(where: { title.contains($0) })
+            || looksLikeOfficialArtistTitleRelease(title)
+            ? .lyricsHighQuality
+            : .speech
+    }
+
+    private static func looksLikeOfficialArtistTitleRelease(_ title: String) -> Bool {
+        let officialMarkers = ["(official)", "[official]", "【official】"]
+        guard officialMarkers.contains(where: { title.contains($0) }) else { return false }
+        let artistTitleSeparators = [" ⧸ ", " / ", " ／ ", " - ", " – ", " — ", " | ", "｜"]
+        return artistTitleSeparators.contains(where: { title.contains($0) })
     }
 }
 
@@ -5583,15 +5604,18 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
                 mergeEligible.append(startsNewWhisperTokenWord)
             }
         }
-        return koreanSegmentWordEntries(segmentText: segmentText, entries: entries) ?? entries
+        return spacedScriptSegmentWordEntries(segmentText: segmentText, entries: entries) ?? entries
     }
 
-    private func koreanSegmentWordEntries(
+    /// Rebuild word-level entries from segment text for scripts that whisper.cpp writes with real
+    /// word spacing but splits into sub-character token pieces (Hangul eojeol, Devanagari words).
+    /// CJK (Chinese/Japanese) segment text has no spaces, so it yields <2 units and is left untouched.
+    private func spacedScriptSegmentWordEntries(
         segmentText: String?,
         entries: [(word: ASRWord, dtwStart: Double?)]
     ) -> [(word: ASRWord, dtwStart: Double?)]? {
         guard let segmentText,
-              parserContainsHangul(segmentText),
+              parserContainsHangul(segmentText) || parserContainsDevanagari(segmentText),
               !entries.isEmpty else {
             return nil
         }
@@ -5676,6 +5700,15 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
     private func parserContainsHangul(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0xAC00...0xD7A3).contains(Int(scalar.value))
+        }
+    }
+
+    /// Devanagari block (Hindi/Marathi/Nepali/…). Whisper writes these with real word spacing but
+    /// splits words into base-letter + combining-mark token pieces, so word entries must be rebuilt
+    /// from segment text to keep readable spacing (mirrors the Hangul eojeol reconstruction).
+    private func parserContainsDevanagari(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x0900...0x097F).contains(Int(scalar.value))
         }
     }
 

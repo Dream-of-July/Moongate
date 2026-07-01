@@ -1709,6 +1709,18 @@ final class ASRContractsTests: XCTestCase {
         )
     }
 
+    func testLyricsRecognitionProfileDetectsOfficialArtistTitleRelease() {
+        let video = URL(fileURLWithPath: "/tmp/星をみる少女 ⧸ 星街すいせい (official).mp4")
+        let profile = ASRPromptBuilder.recognitionProfile(videoURL: video, languageCode: "ja")
+
+        XCTAssertEqual(profile, .lyricsHighQuality)
+        XCTAssertFalse(ASRPromptBuilder.vadEnabled(for: profile))
+        XCTAssertEqual(
+            ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: "ja", recognitionProfile: profile),
+            "title=星をみる少女 ⧸ 星街すいせい (official); language=ja"
+        )
+    }
+
     func testCJKSpeechRecognitionDisablesPromptContextByDefault() {
         let video = URL(fileURLWithPath: "/tmp/Interview Clip.mp4")
 
@@ -2621,6 +2633,31 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertTrue(text.contains("영어를 포기하면 인생을"))
         XCTAssertFalse(text.contains("수학을포기하면"))
         XCTAssertFalse(text.contains("영어를포기하면"))
+    }
+
+    func testLocalASRTimingPlannerKeepsSpacesBetweenDevanagariWords() {
+        // Hindi/Devanagari is space-separated. Reconstructed word units must render with spaces,
+        // not as an unreadable run-on string like `जिसकीतुलना`.
+        let transcript = ASRTranscript(
+            id: "devanagari-spacing",
+            languageCode: "hi",
+            words: [
+                ASRWord(text: "जिसकी", startSeconds: 0.0, endSeconds: 0.45),
+                ASRWord(text: "तुलना", startSeconds: 0.45, endSeconds: 0.9),
+                ASRWord(text: "फिर", startSeconds: 0.9, endSeconds: 1.2),
+                ASRWord(text: "नहीं", startSeconds: 1.2, endSeconds: 1.5),
+                ASRWord(text: "की", startSeconds: 1.5, endSeconds: 1.7),
+                ASRWord(text: "जाएगी", startSeconds: 1.7, endSeconds: 2.1)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("जिसकी तुलना फिर"))
+        XCTAssertTrue(text.contains("नहीं की जाएगी"))
+        XCTAssertFalse(text.contains("जिसकीतुलना"))
+        XCTAssertFalse(text.contains("कीजाएगी"))
     }
 
     func testLocalASRTimingPlannerRejoinsMainstreamLatinSubwordFragments() {
@@ -3596,6 +3633,53 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(transcript.words[4].endSeconds, 1.8, accuracy: 0.001)
         XCTAssertEqual(transcript.words[9].startSeconds, 41.4, accuracy: 0.001)
         XCTAssertEqual(transcript.words[9].endSeconds, 42.0, accuracy: 0.001)
+    }
+
+    func testWhisperCppJSONParserUsesDevanagariSegmentWordsOverTokenPieces() throws {
+        // Whisper writes Hindi with real word spacing in segment text but splits words into
+        // base-letter + combining-mark token pieces. The parser must rebuild spaced word units
+        // from segment text, mirroring the Hangul eojeol reconstruction, so Hindi subtitles are
+        // not an unreadable run-on string like `जिसकीतुलना`.
+        let json = Data("""
+        {
+          "result": { "language": "hi" },
+          "transcription": [
+            {
+              "text": " जिसकी तुलना फिर",
+              "offsets": { "from": 0, "to": 1200 },
+              "tokens": [
+                { "text": "[_BEG_]", "offsets": { "from": 0, "to": 0 }, "p": 0.6 },
+                { "text": " ज", "offsets": { "from": 0, "to": 120 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 120, "to": 180 }, "p": 0.9 },
+                { "text": "स", "offsets": { "from": 180, "to": 270 }, "p": 0.9 },
+                { "text": "क", "offsets": { "from": 270, "to": 360 }, "p": 0.9 },
+                { "text": "ी", "offsets": { "from": 360, "to": 450 }, "p": 0.9 },
+                { "text": " त", "offsets": { "from": 450, "to": 540 }, "p": 0.9 },
+                { "text": "ु", "offsets": { "from": 540, "to": 630 }, "p": 0.9 },
+                { "text": "ल", "offsets": { "from": 630, "to": 720 }, "p": 0.9 },
+                { "text": "न", "offsets": { "from": 720, "to": 810 }, "p": 0.9 },
+                { "text": "ा", "offsets": { "from": 810, "to": 900 }, "p": 0.9 },
+                { "text": " फ", "offsets": { "from": 900, "to": 1010 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 1010, "to": 1080 }, "p": 0.9 },
+                { "text": "र", "offsets": { "from": 1080, "to": 1200 }, "p": 0.9 },
+                { "text": "[_TT_360]", "offsets": { "from": 1200, "to": 1200 }, "p": 0.1 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: json,
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/hi.wav"), languageCode: "hi", modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "hi"
+        )
+
+        XCTAssertEqual(transcript.words.map(\.text), ["जिसकी", "तुलना", "फिर"])
+        XCTAssertEqual(transcript.words[0].startSeconds, 0.0, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[0].endSeconds, 0.45, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[1].startSeconds, 0.45, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[2].startSeconds, 0.9, accuracy: 0.001)
     }
 
     func testWhisperCppJSONParserFallsBackToSegmentTextWhenNoTokenWords() throws {

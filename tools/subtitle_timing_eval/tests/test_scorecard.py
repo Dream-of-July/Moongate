@@ -434,6 +434,17 @@ class SourceDecisionScoreTests(unittest.TestCase):
         result = sc.source_decision_score(scenarios)
         self.assertEqual(result.score, 50.0)
 
+    def test_reports_scenario_and_correct_counts(self):
+        scenarios = [
+            {"id": "clean", "platform_available": True, "platform_usable": True, "expected_decision": "platform"},
+            {"id": "wrong", "platform_available": True, "platform_usable": False, "local_asr_available": False, "cloud_available": True, "expected_decision": "localASR"},
+        ]
+
+        result = sc.source_decision_score(scenarios)
+
+        self.assertEqual(result.components["scenario_count"], 2)
+        self.assertEqual(result.components["correct_count"], 1)
+
     def test_auto_best_regenerates_when_platform_verdict_below_floor(self):
         scenarios = [
             {
@@ -486,6 +497,30 @@ class SuiteSummaryTests(unittest.TestCase):
         summary = sc.suite_summary(samples, src)
         self.assertTrue(summary["dimensions"]["recognition"]["passes_gate"])
         self.assertTrue(summary["all_dimensions_pass"])
+
+    def test_source_decision_summary_reports_scenario_count(self):
+        samples = [self._sample(85, 82, 81), self._sample(90, 84, 83)]
+        source_decision = sc.source_decision_score([
+            {"id": "manual", "manual_available": True, "expected_decision": "manual"},
+            {"id": "platform", "platform_available": True, "platform_usable": True, "expected_decision": "platform"},
+            {
+                "id": "fallback-local",
+                "platform_available": True,
+                "platform_usable": False,
+                "local_asr_available": True,
+                "expected_decision": "localASR",
+            },
+        ])
+
+        summary = sc.suite_summary(samples, source_decision)
+
+        source = summary["dimensions"]["source_decision"]
+        self.assertEqual(source["scored_samples"], 3)
+        self.assertEqual(source["verified_samples"], 3)
+        self.assertEqual(source["required_verified_samples"], 3)
+        self.assertEqual(source["additional_verified_needed"], 0)
+        self.assertEqual(source["pass_count"], 3)
+        self.assertEqual(source["verified_pass_count"], 3)
 
     def test_high_but_unverified_does_not_pass_verified_gate(self):
         samples = [self._sample(95, 95, 95, verified=False)]
@@ -927,6 +962,32 @@ class RecognitionEvidencePlanTests(unittest.TestCase):
         )
         self.assertNotIn("low-auto-risk", {item["sample_id"] for item in plan["candidates_with_review_risks"]})
         self.assertIn("low-auto-risk", {item["sample_id"] for item in plan["deferred_low_auto_score"]})
+
+    def test_plan_warns_when_recommended_batch_contains_evidence_risks(self):
+        samples = [
+            self._recognition_sample("verified-a", score=86.0, verified=True),
+            self._recognition_sample("verified-b", score=84.0, verified=True),
+            self._recognition_sample("verified-c", score=82.0, verified=True),
+            self._recognition_sample("verified-d", score=81.0, verified=True),
+            self._recognition_sample("semantic-clean", score=96.0),
+            self._recognition_sample(
+                "semantic-risk",
+                score=95.0,
+                evidence_risks=["referenceAcquisition:translated_subtitles_only"],
+            ),
+            self._recognition_sample("low-auto", score=72.0),
+            self._recognition_sample("extra-low-auto", score=71.0),
+            self._recognition_sample("more-low-auto", score=70.0),
+            self._recognition_sample("last-low-auto", score=69.0),
+        ]
+
+        plan = sc.recognition_evidence_plan(samples)
+
+        self.assertEqual(
+            [item["sample_id"] for item in plan["recommended"]],
+            ["semantic-clean", "semantic-risk"],
+        )
+        self.assertIn("recommendedEvidenceRisks:1", plan["coverage_warnings"])
 
     def test_plan_reports_language_coverage_and_single_language_warning(self):
         samples = [
@@ -1508,6 +1569,51 @@ class ScorecardRunnerTests(unittest.TestCase):
         self.assertIsNotNone(result)
         recognition = result.dimensions["recognition"]
         self.assertEqual(recognition.components["reference"], 100.0)
+        self.assertTrue(recognition.verified)
+
+    def test_section_relative_local_asr_reference_is_aligned_to_absolute_window(self):
+        """Regression: a section-relative local-ASR candidate (starts at 00:00:00)
+        whose filename encodes an absolute window (e.g. `.90-390.`) must be aligned
+        to absolute time before comparing against an absolute-time human reference.
+
+        Before the fix the candidate text (section-relative, covering abs 90-210)
+        was compared against the reference clipped to the full nominal window
+        (abs 90-390), so the texts were misaligned and reference similarity was
+        pushed near zero even for a near-perfect transcript. The candidate here is
+        an exact copy of the reference spoken over abs 90-210; after alignment the
+        reference similarity must be high."""
+        with tempfile.TemporaryDirectory() as td:
+            sample = Path(td) / "section_relative_talk_es"
+            sample.mkdir()
+            # Human reference: absolute time. Content over abs 90-102, plus later
+            # content (abs 300-312) that lies inside the nominal window but is NOT
+            # covered by the candidate — it must not be compared against.
+            (sample / "reference.es.clean.srt").write_text(
+                "1\n00:01:30,000 --> 00:01:33,000\nla empatia es ponerse en los zapatos del otro\n\n"
+                "2\n00:01:33,000 --> 00:01:36,000\ny entender los corazones de las personas\n\n"
+                "3\n00:05:00,000 --> 00:05:03,000\ntexto muy posterior que el candidato no cubre\n\n"
+                "4\n00:05:03,000 --> 00:05:06,000\notra frase lejana fuera de la cobertura\n\n",
+                encoding="utf-8",
+            )
+            # Candidate: section-relative (starts at 0), covers section 0-6s which
+            # maps to absolute 90-96s given the .90-390. window in the filename.
+            (sample / "local-asr.90-390.es.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:03,000\nla empatia es ponerse en los zapatos del otro\n\n"
+                "2\n00:00:03,000 --> 00:00:06,000\ny entender los corazones de las personas\n\n",
+                encoding="utf-8",
+            )
+
+            result = runner.score_sample(sample, acoustic=False)
+
+        self.assertIsNotNone(result)
+        recognition = result.dimensions["recognition"]
+        self.assertIsNotNone(recognition.components["reference"])
+        self.assertGreaterEqual(
+            recognition.components["reference"],
+            90.0,
+            "section-relative candidate should align to absolute reference span "
+            f"(got {recognition.components['reference']})",
+        )
         self.assertTrue(recognition.verified)
 
     def test_runner_scores_selected_platform_source_when_source_candidates_exist(self):

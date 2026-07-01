@@ -1935,6 +1935,19 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LyricsRecognitionProfileDetectsOfficialArtistTitleRelease()
+    {
+        var video = Path.Combine(Path.GetTempPath(), "星をみる少女 ⧸ 星街すいせい (official).mp4");
+        var profile = AsrPromptBuilder.RecognitionProfile(video, "ja");
+
+        Assert.Equal(AsrRecognitionProfile.LyricsHighQuality, profile);
+        Assert.False(AsrPromptBuilder.VadEnabled(profile));
+        Assert.Equal(
+            "title=星をみる少女 ⧸ 星街すいせい (official); language=ja",
+            AsrPromptBuilder.DefaultPrompt(video, "ja", profile));
+    }
+
+    [Fact]
     public void CjkSpeechRecognitionDisablesPromptContextByDefault()
     {
         var video = Path.Combine(Path.GetTempPath(), "dialogue clip.mp4");
@@ -3001,6 +3014,33 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerKeepsSpacesBetweenDevanagariWords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "devanagari-spacing",
+            LanguageCode = "hi",
+            Words =
+            [
+                new AsrWord { Text = "जिसकी", StartSeconds = 0.0, EndSeconds = 0.45 },
+                new AsrWord { Text = "तुलना", StartSeconds = 0.45, EndSeconds = 0.9 },
+                new AsrWord { Text = "फिर", StartSeconds = 0.9, EndSeconds = 1.2 },
+                new AsrWord { Text = "नहीं", StartSeconds = 1.2, EndSeconds = 1.5 },
+                new AsrWord { Text = "की", StartSeconds = 1.5, EndSeconds = 1.7 },
+                new AsrWord { Text = "जाएगी", StartSeconds = 1.7, EndSeconds = 2.1 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("जिसकी तुलना फिर", text, StringComparison.Ordinal);
+        Assert.Contains("नहीं की जाएगी", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("जिसकीतुलना", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("कीजाएगी", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerRejoinsMainstreamLatinSubwordFragments()
     {
         var transcript = new AsrTranscript
@@ -3968,6 +4008,55 @@ public class AsrContractsTests
         Assert.Equal(1.8, transcript.Words[4].EndSeconds, precision: 3);
         Assert.Equal(41.4, transcript.Words[9].StartSeconds, precision: 3);
         Assert.Equal(42.0, transcript.Words[9].EndSeconds, precision: 3);
+    }
+
+    [Fact]
+    public void WhisperCppJsonParserUsesDevanagariSegmentWordsOverTokenPieces()
+    {
+        // Whisper writes Hindi with real word spacing in segment text but splits words into
+        // base-letter + combining-mark token pieces. The parser must rebuild spaced word units
+        // from segment text (mirrors Hangul), so Hindi is not a run-on string like जिसकीतुलना.
+        const string json = """
+        {
+          "result": { "language": "hi" },
+          "transcription": [
+            {
+              "text": " जिसकी तुलना फिर",
+              "offsets": { "from": 0, "to": 1200 },
+              "tokens": [
+                { "text": "[_BEG_]", "offsets": { "from": 0, "to": 0 }, "p": 0.6 },
+                { "text": " ज", "offsets": { "from": 0, "to": 120 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 120, "to": 180 }, "p": 0.9 },
+                { "text": "स", "offsets": { "from": 180, "to": 270 }, "p": 0.9 },
+                { "text": "क", "offsets": { "from": 270, "to": 360 }, "p": 0.9 },
+                { "text": "ी", "offsets": { "from": 360, "to": 450 }, "p": 0.9 },
+                { "text": " त", "offsets": { "from": 450, "to": 540 }, "p": 0.9 },
+                { "text": "ु", "offsets": { "from": 540, "to": 630 }, "p": 0.9 },
+                { "text": "ल", "offsets": { "from": 630, "to": 720 }, "p": 0.9 },
+                { "text": "न", "offsets": { "from": 720, "to": 810 }, "p": 0.9 },
+                { "text": "ा", "offsets": { "from": 810, "to": 900 }, "p": 0.9 },
+                { "text": " फ", "offsets": { "from": 900, "to": 1010 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 1010, "to": 1080 }, "p": 0.9 },
+                { "text": "र", "offsets": { "from": 1080, "to": 1200 }, "p": 0.9 },
+                { "text": "[_TT_360]", "offsets": { "from": 1200, "to": 1200 }, "p": 0.1 }
+              ]
+            }
+          ]
+        }
+        """;
+
+        var transcript = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(json),
+            new AsrRequest { AudioPath = "/tmp/hi.wav", LanguageCode = "hi", ModelId = "whisper.cpp:large-v3-turbo-q5_0" },
+            "hi");
+
+        Assert.Equal(
+            ["जिसकी", "तुलना", "फिर"],
+            transcript.Words.Select(word => word.Text).ToArray());
+        Assert.Equal(0.0, transcript.Words[0].StartSeconds, precision: 3);
+        Assert.Equal(0.45, transcript.Words[0].EndSeconds, precision: 3);
+        Assert.Equal(0.45, transcript.Words[1].StartSeconds, precision: 3);
+        Assert.Equal(0.9, transcript.Words[2].StartSeconds, precision: 3);
     }
 
     [Fact]

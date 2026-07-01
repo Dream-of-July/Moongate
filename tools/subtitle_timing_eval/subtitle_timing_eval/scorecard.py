@@ -966,7 +966,13 @@ def source_decision_score(scenarios: Sequence[Dict[str, Any]]) -> DimensionScore
     notes = [f"{correct}/{len(scenarios)} correct"]
     if failures:
         notes.append("failures:" + "; ".join(failures[:8]))
-    return DimensionScore("source_decision", score, {"accuracy": score}, notes, verified=True)
+    return DimensionScore(
+        "source_decision",
+        score,
+        {"accuracy": score, "scenario_count": float(len(scenarios)), "correct_count": float(correct)},
+        notes,
+        verified=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1019,27 +1025,34 @@ def suite_summary(samples: Sequence[SampleScorecard], source_decision: Optional[
             "passes_gate_unverified": bool(scored) and mean(scored) >= EXCELLENT_GATE,
         }
     if source_decision is not None:
+        scenario_count = int(source_decision.components.get("scenario_count") or 0)
+        if scenario_count <= 0 and source_decision.score is not None:
+            scenario_count = 1
+        correct_count = int(source_decision.components.get("correct_count") or 0)
+        if correct_count <= 0 and source_decision.passes:
+            correct_count = scenario_count
+        verified_count = scenario_count if source_decision.verified else 0
         per_dim["source_decision"] = {
             "mean": round(source_decision.score, 1) if source_decision.score is not None else None,
-            "scored_samples": 1 if source_decision.score is not None else 0,
-            "verified_samples": 1 if source_decision.verified else 0,
-            "required_verified_samples": 1,
-            "additional_verified_needed": 0 if source_decision.verified else 1,
-            "strong_verified_samples": 1 if source_decision.verified else 0,
-            "strict_additional_verified_needed": 0 if source_decision.verified else 1,
+            "scored_samples": scenario_count,
+            "verified_samples": verified_count,
+            "required_verified_samples": scenario_count,
+            "additional_verified_needed": max(0, scenario_count - verified_count),
+            "strong_verified_samples": verified_count,
+            "strict_additional_verified_needed": max(0, scenario_count - verified_count),
             "strict_verified_mean": (
                 round(source_decision.score, 1)
                 if source_decision.verified and source_decision.score is not None
                 else None
             ),
             "evidence_quality": {
-                "non_judge_verified_count": 1 if source_decision.verified else 0,
+                "non_judge_verified_count": verified_count,
                 "traceable_judge_count": 0,
                 "untraceable_judge_count": 0,
             },
             "verified_mean": round(source_decision.score, 1) if source_decision.score is not None else None,
-            "pass_count": 1 if source_decision.passes else 0,
-            "verified_pass_count": 1 if source_decision.verified_pass else 0,
+            "pass_count": correct_count,
+            "verified_pass_count": correct_count if source_decision.verified else 0,
             "passes_gate": source_decision.verified_pass,
             "passes_gate_unverified": source_decision.passes,
         }
@@ -1425,13 +1438,17 @@ def _recognition_coverage_warnings(
     recommended: Sequence[Dict[str, Any]],
     additional_needed: int,
 ) -> List[str]:
+    warnings: List[str] = []
     if additional_needed <= 0 or not recommended:
-        return []
+        return warnings
     recommended_languages = sorted({str(item.get("language_code")) for item in recommended if item.get("language_code")})
     scored_languages = [lang for lang, data in language_coverage.items() if data.get("scored_samples", 0) > 0]
     if len(recommended_languages) == 1 and len(scored_languages) > 1:
-        return [f"recommendedSingleLanguage:{recommended_languages[0]}"]
-    return []
+        warnings.append(f"recommendedSingleLanguage:{recommended_languages[0]}")
+    risky_recommended_count = sum(1 for item in recommended if item.get("review_risks"))
+    if risky_recommended_count > 0:
+        warnings.append(f"recommendedEvidenceRisks:{risky_recommended_count}")
+    return warnings
 
 
 def _recognition_multilingual_follow_up(

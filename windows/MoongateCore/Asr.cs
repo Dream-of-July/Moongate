@@ -3605,6 +3605,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             && !IsStrongLatinContinuationFragment(left, right)
             && !IsLatinContinuationFragment(left, right, allowBroadLatinContinuation)
             && (ContainsHangul(left) && ContainsHangul(right) && !KoreanLeadingProhibitedParticles.Contains(right.Trim())
+                || ContainsDevanagari(left) && ContainsDevanagari(right)
                 || ContainsAsciiAlphanumeric(left) || ContainsAsciiAlphanumeric(right)));
 
     private static bool IsObservedStandaloneLatinFunction(string left, string right)
@@ -3619,6 +3620,9 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static bool ContainsHangul(string text) =>
         text.Any(ch => ch is >= '\uAC00' and <= '\uD7A3');
+
+    private static bool ContainsDevanagari(string text) =>
+        text.Any(ch => ch is >= '\u0900' and <= '\u097F');
 
     private static bool ContainsAsciiAlphanumeric(string text) =>
         text.Any(ch => ch <= 0x7F && char.IsLetterOrDigit(ch));
@@ -4222,11 +4226,24 @@ public static class AsrPromptBuilder
         string[] markers =
         [
             "official music video", "music video", "official mv", " mv", "mv ",
+            "official audio", "official visualizer", "performance video",
             "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ",
         ];
         return markers.Any(marker => title.Contains(marker, StringComparison.Ordinal))
+            || LooksLikeOfficialArtistTitleRelease(title)
             ? AsrRecognitionProfile.LyricsHighQuality
             : AsrRecognitionProfile.Speech;
+    }
+
+    private static bool LooksLikeOfficialArtistTitleRelease(string title)
+    {
+        string[] officialMarkers = ["(official)", "[official]", "【official】"];
+        if (!officialMarkers.Any(marker => title.Contains(marker, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        string[] artistTitleSeparators = [" ⧸ ", " / ", " ／ ", " - ", " – ", " — ", " | ", "｜"];
+        return artistTitleSeparators.Any(separator => title.Contains(separator, StringComparison.Ordinal));
     }
 }
 
@@ -5197,15 +5214,18 @@ public sealed class WhisperCppJsonTranscriptParser
                 mergeEligible.Add(startsNewWhisperTokenWord);
             }
         }
-        return KoreanSegmentWordEntries(segmentText, entries) ?? entries;
+        return SpacedScriptSegmentWordEntries(segmentText, entries) ?? entries;
     }
 
-    private static IReadOnlyList<(AsrWord Word, double? DtwStart)>? KoreanSegmentWordEntries(
+    // Rebuild word-level entries from segment text for scripts that whisper.cpp writes with real
+    // word spacing but splits into sub-character token pieces (Hangul eojeol, Devanagari words).
+    // CJK segment text has no spaces, so it yields <2 units and is left untouched.
+    private static IReadOnlyList<(AsrWord Word, double? DtwStart)>? SpacedScriptSegmentWordEntries(
         string? segmentText,
         IReadOnlyList<(AsrWord Word, double? DtwStart)> entries)
     {
         if (string.IsNullOrWhiteSpace(segmentText)
-            || !ParserContainsHangul(segmentText)
+            || (!ParserContainsHangul(segmentText) && !ParserContainsDevanagari(segmentText))
             || entries.Count == 0)
         {
             return null;
@@ -5280,6 +5300,12 @@ public sealed class WhisperCppJsonTranscriptParser
 
     private static bool ParserContainsHangul(string text) =>
         text.EnumerateRunes().Any(rune => rune.Value is >= 0xAC00 and <= 0xD7A3);
+
+    // Devanagari block (Hindi/Marathi/Nepali/…). Whisper writes these with real word spacing but
+    // splits words into base-letter + combining-mark token pieces, so word entries must be rebuilt
+    // from segment text to keep readable spacing (mirrors the Hangul eojeol reconstruction).
+    private static bool ParserContainsDevanagari(string text) =>
+        text.EnumerateRunes().Any(rune => rune.Value is >= 0x0900 and <= 0x097F);
 
     private static string ParserAlignmentText(string text)
     {
