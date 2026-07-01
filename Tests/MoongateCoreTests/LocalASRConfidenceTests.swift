@@ -6,6 +6,10 @@ final class LocalASRConfidenceTests: XCTestCase {
         ASRWord(text: text, startSeconds: 0, endSeconds: 0.1, probability: probability)
     }
 
+    private func timedWord(_ text: String, start: Double, end: Double, probability: Double?) -> ASRWord {
+        ASRWord(text: text, startSeconds: start, endSeconds: end, probability: probability)
+    }
+
     func testCleanTranscriptIsNotLowConfidence() {
         let words = Array(repeating: word(0.95), count: 30)
         let summary = LocalASRConfidence.assess(words: words)
@@ -177,6 +181,25 @@ final class LocalASRConfidenceTests: XCTestCase {
         XCTAssertTrue(summary.qualityIssues.contains("lowSegmentDiversity"))
     }
 
+    func testNearEmptyLocalASRSRTIsSevereLowQuality() {
+        let raw = """
+        1
+        00:00:00,400 --> 00:00:01,530
+        あ
+        """
+
+        let summary = LocalASRConfidence.assessSubtitle(
+            raw: raw,
+            fileName: "clip.local-asr.ja.srt",
+            languageCode: "ja",
+            requestedLanguageCode: "ja",
+            languageHintCode: "ja")
+
+        XCTAssertTrue(summary.isLowQuality)
+        XCTAssertTrue(summary.hasSevereQualityBlocker)
+        XCTAssertTrue(summary.qualityIssues.contains("nearEmptyTranscript"))
+    }
+
     func testHealthyRepeatedLyricsAreNotTreatedAsLoopCollapse() {
         let tokens = ["青", "い", "空", "を", "見", "る", "君", "と", "歩", "く", "道", "で"]
         let words = (0..<36).map { index in word(0.96, text: tokens[index % tokens.count]) }
@@ -185,6 +208,39 @@ final class LocalASRConfidenceTests: XCTestCase {
 
         XCTAssertFalse(summary.isLowQuality)
         XCTAssertEqual(summary.qualityIssues, [])
+    }
+
+    func testStretchedLowConfidenceCJKTokenClusterIsLowQuality() {
+        let opening = [
+            timedWord("착", start: 1.91, end: 5.13, probability: 0.02),
+            timedWord("한", start: 5.14, end: 10.24, probability: 0.99),
+            timedWord("얼굴에", start: 10.24, end: 25.60, probability: 0.96),
+        ]
+        let normal = (0..<30).map { index in
+            timedWord("노래\(index)", start: 26 + Double(index) * 0.4, end: 26.2 + Double(index) * 0.4, probability: 0.95)
+        }
+
+        let summary = LocalASRConfidence.assess(words: opening + normal, languageCode: "ko")
+
+        XCTAssertFalse(summary.isLowConfidence)
+        XCTAssertTrue(summary.isLowQuality)
+        XCTAssertTrue(summary.qualityIssues.contains("stretchedLowConfidenceCJKToken"))
+    }
+
+    func testHealthyStretchedCJKLyricsWithoutLowProbabilityAreNotLowQuality() {
+        let stretched = [
+            timedWord("な", start: 2.0, end: 4.8, probability: 0.94),
+            timedWord("い", start: 8.0, end: 11.2, probability: 0.96),
+            timedWord("君", start: 20.0, end: 23.4, probability: 0.91),
+        ]
+        let normal = (0..<30).map { index in
+            timedWord("歌\(index)", start: 30 + Double(index) * 0.4, end: 30.2 + Double(index) * 0.4, probability: 0.95)
+        }
+
+        let summary = LocalASRConfidence.assess(words: stretched + normal, languageCode: "ja")
+
+        XCTAssertFalse(summary.isLowQuality)
+        XCTAssertFalse(summary.qualityIssues.contains("stretchedLowConfidenceCJKToken"))
     }
 
     func testReadableRepeatedChorusSegmentsAreNotSevereLowQuality() {
@@ -239,6 +295,9 @@ final class LocalASRConfidenceTests: XCTestCase {
         XCTAssertEqual(LocalASRConfidence.lowConfidenceWordProbability, try doubleValue("lowConfidenceWordProbability"))
         XCTAssertEqual(LocalASRConfidence.lowConfidenceWordRatioCeiling, try doubleValue("lowConfidenceWordRatioCeiling"))
         XCTAssertEqual(LocalASRConfidence.minimumAssessableWordCount, try intValue("minimumAssessableWordCount"))
+        XCTAssertEqual(LocalASRConfidence.stretchedCJKTokenSecondsFloor, try doubleValue("stretchedCJKTokenSecondsFloor"))
+        XCTAssertEqual(LocalASRConfidence.stretchedCJKTokenClusterCount, try intValue("stretchedCJKTokenClusterCount"))
+        XCTAssertEqual(LocalASRConfidence.stretchedCJKLowProbabilityCeiling, try doubleValue("stretchedCJKLowProbabilityCeiling"))
     }
 
     private func loadFixtureSection(_ section: String) throws -> [String: Any] {

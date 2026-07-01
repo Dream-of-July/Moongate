@@ -4,9 +4,10 @@ import Foundation
 /// 低置信乱码（青花瓷→「了出情话被风弄转」），此时没有更好的源可换（whisper 本就是 fallback），
 /// 诚实做法是给用户「识别质量较低、字幕仅供参考」提示，而非把乱码当成自信字幕呈现。
 ///
-/// **已知局限（保守取舍）**：whisper 置信度是弱信号——部分乱码（如韩语、个别中文）置信度并不低
-/// （实测 BLACKPINK avg_prob 0.85 却是乱码）。阈值刻意保守，只对**明显低置信**的输出报警，
-/// 零误伤干净内容；代价是 recall 有限（抓不住自信误识）。常量唯一真值在
+/// **已知局限（保守取舍）**：whisper 置信度是弱信号——部分乱码（如韩语、个别中文）置信度并不低。
+/// 因此除整体低置信外，还捕捉「多个 CJK token 被异常拉长，且其中存在极低概率 token」这类
+/// timing/probability 组合信号。阈值刻意保守，只对明显低质输出报警，避免因单个错词误伤干净内容。
+/// 常量唯一真值在
 /// `Tests/fixtures/whisper-timing-constants.json` 的 `localASRConfidence` 段，两端契约断言。
 /// 跨端镜像：windows/MoongateCore/LocalAsrConfidence.cs。
 public struct LocalASRConfidenceSummary: Codable, Equatable, Sendable {
@@ -24,6 +25,7 @@ public struct LocalASRConfidenceSummary: Codable, Equatable, Sendable {
     public var hasSevereQualityBlocker: Bool {
         qualityIssues.contains("phraseLoop")
             || qualityIssues.contains("autoLanguageMismatch")
+            || qualityIssues.contains("nearEmptyTranscript")
     }
 
     public init(
@@ -112,6 +114,12 @@ public enum LocalASRConfidence {
     static let lowConfidenceWordRatioCeiling = 0.2
     /// 样本不足时不评估（短片段噪声大），避免误报。
     static let minimumAssessableWordCount = 24
+    /// CJK 单 token 被拉长到这个时长以上，才进入异常 timing 候选。
+    static let stretchedCJKTokenSecondsFloor = 2.5
+    /// 只有形成多个异常拉长 CJK token 的集群，才把低概率拉长 token 视为低质信号。
+    static let stretchedCJKTokenClusterCount = 3
+    /// 异常拉长 token 的概率低于此值，视为极低置信 timing collapse。
+    static let stretchedCJKLowProbabilityCeiling = 0.15
 
     /// 评估一段转写的整体置信度。只统计有概率、含可见字符的词。
     public static func assess(
@@ -131,13 +139,14 @@ public enum LocalASRConfidence {
         let count = probabilities.count
         let scriptQuality = assessScriptQuality(words: words, languageCode: languageCode)
         let loopIssues = assessLoopQuality(words: words, languageCode: languageCode)
+        let timingIssues = assessTimingQuality(words: words, languageCode: languageCode)
         let segmentQuality = assessSegmentQuality(
             segments: segments,
             languageCode: languageCode,
             requestedLanguageCode: requestedLanguageCode,
             languageHintCode: languageHintCode
         )
-        let qualityIssues = Array(Set(scriptQuality.issues + loopIssues + segmentQuality.issues)).sorted()
+        let qualityIssues = Array(Set(scriptQuality.issues + loopIssues + timingIssues + segmentQuality.issues)).sorted()
         guard count > 0 else {
             return LocalASRConfidenceSummary(
                 assessedWordCount: 0,
@@ -265,6 +274,26 @@ public enum LocalASRConfidence {
         return issues
     }
 
+    private static func assessTimingQuality(
+        words: [ASRWord],
+        languageCode: String?
+    ) -> [String] {
+        let language = normalizeLanguageCode(languageCode)
+        guard isCJKLanguage(language), words.count >= minimumAssessableWordCount else { return [] }
+
+        let stretchedCJKWords = words.filter { word in
+            word.endSeconds > word.startSeconds
+                && word.endSeconds - word.startSeconds >= stretchedCJKTokenSecondsFloor
+                && word.text.unicodeScalars.contains { isExpectedScript($0, language: language) }
+        }
+        guard stretchedCJKWords.count >= stretchedCJKTokenClusterCount else { return [] }
+        let hasLowConfidenceStretchedToken = stretchedCJKWords.contains { word in
+            guard let probability = word.probability else { return false }
+            return probability <= stretchedCJKLowProbabilityCeiling
+        }
+        return hasLowConfidenceStretchedToken ? ["stretchedLowConfidenceCJKToken"] : []
+    }
+
     private static func assessSegmentQuality(
         segments: [ASRSegment],
         languageCode: String?,
@@ -282,6 +311,9 @@ public enum LocalASRConfidence {
             .filter { !$0.phrase.isEmpty }
 
         var issues: [String] = []
+        if looksNearEmptyTranscript(segments) {
+            issues.append("nearEmptyTranscript")
+        }
         let detected = normalizeLanguageCode(languageCode)
         let hint = normalizeLanguageCode(languageHintCode)
         if isAutoLanguage(requestedLanguageCode)
@@ -337,6 +369,16 @@ public enum LocalASRConfidence {
         }
 
         return (dominantRatio, repeatedSpan, issues)
+    }
+
+    private static func looksNearEmptyTranscript(_ segments: [ASRSegment]) -> Bool {
+        let meaningfulScalars = segments.flatMap(\.text.unicodeScalars).filter { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                && !CharacterSet.punctuationCharacters.contains(scalar)
+                && !CharacterSet.symbols.contains(scalar)
+                && !CharacterSet.controlCharacters.contains(scalar)
+        }
+        return segments.count == 1 && meaningfulScalars.count <= 2
     }
 
     private static func isFragmentedCJKLoop(

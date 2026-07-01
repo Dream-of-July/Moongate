@@ -97,6 +97,7 @@ public static class SubtitleQualityScorer
         value -= Math.Min(18, report.RomanizedLoopTokenRatio * 40);
 
         if (extraReasons.Contains("shortCueFragmentation")) value -= 30;
+        if (extraReasons.Contains("longShortCueHold")) value -= 40;
         reasons.AddRange(extraReasons);
 
         var clamped = Math.Clamp(value, 0, 100);
@@ -193,6 +194,28 @@ public static class SubtitleQualityScorer
         if (texts.Length > 0 && (double)cjkShortCueCount / texts.Length >= 0.35)
         {
             reasons.Add("shortCueFragmentation");
+        }
+        var longShortCueDurations = cues
+            .Select(cue =>
+            {
+                var text = cue.Text.Trim();
+                var visibleCount = text.EnumerateRunes().Count(rune => !Rune.IsWhiteSpace(rune));
+                if (visibleCount is <= 0 or > 2
+                    || !text.EnumerateRunes().Any(rune => IsCjkScalar(rune.Value)))
+                {
+                    return (double?)null;
+                }
+                var start = SrtTools.SrtTimeToSeconds(cue.Start);
+                var end = SrtTools.SrtTimeToSeconds(cue.End);
+                if (start is null || end is null || end <= start) return null;
+                var duration = end.Value - start.Value;
+                return duration >= 2.5 ? duration : null;
+            })
+            .OfType<double>()
+            .ToArray();
+        if (longShortCueDurations.Length >= 2 || (longShortCueDurations.Length > 0 && longShortCueDurations.Max() >= 5))
+        {
+            reasons.Add("longShortCueHold");
         }
         return reasons;
     }

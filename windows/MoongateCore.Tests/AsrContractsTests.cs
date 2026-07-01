@@ -863,6 +863,9 @@ public class AsrContractsTests
         Assert.Equal(LocalAsrConfidence.LowConfidenceWordProbability, section.GetProperty("lowConfidenceWordProbability").GetDouble());
         Assert.Equal(LocalAsrConfidence.LowConfidenceWordRatioCeiling, section.GetProperty("lowConfidenceWordRatioCeiling").GetDouble());
         Assert.Equal(LocalAsrConfidence.MinimumAssessableWordCount, section.GetProperty("minimumAssessableWordCount").GetInt32());
+        Assert.Equal(LocalAsrConfidence.StretchedCjkTokenSecondsFloor, section.GetProperty("stretchedCJKTokenSecondsFloor").GetDouble());
+        Assert.Equal(LocalAsrConfidence.StretchedCjkTokenClusterCount, section.GetProperty("stretchedCJKTokenClusterCount").GetInt32());
+        Assert.Equal(LocalAsrConfidence.StretchedCjkLowProbabilityCeiling, section.GetProperty("stretchedCJKLowProbabilityCeiling").GetDouble());
 
         static List<AsrWord> Words(double probability, int count) =>
             Enumerable.Range(0, count)
@@ -1007,6 +1010,20 @@ public class AsrContractsTests
         Assert.Contains("phraseLoop", existingSrtSummary.QualityIssues);
         Assert.Contains("lowSegmentDiversity", existingSrtSummary.QualityIssues);
 
+        var nearEmptySrtSummary = LocalAsrConfidence.AssessSubtitle(
+            """
+            1
+            00:00:00,400 --> 00:00:01,530
+            あ
+            """,
+            "clip.local-asr.ja.srt",
+            "ja",
+            requestedLanguageCode: "ja",
+            languageHintCode: "ja");
+        Assert.True(nearEmptySrtSummary.IsLowQuality);
+        Assert.True(nearEmptySrtSummary.HasSevereQualityBlocker);
+        Assert.Contains("nearEmptyTranscript", nearEmptySrtSummary.QualityIssues);
+
         string[] healthyTokens = ["青", "い", "空", "を", "見", "る", "君", "と", "歩", "く", "道", "で"];
         var healthyRepeated = Enumerable.Range(0, 36)
             .Select(index => new AsrWord
@@ -1020,6 +1037,39 @@ public class AsrContractsTests
         var healthySummary = LocalAsrConfidence.Assess(healthyRepeated, "ja");
         Assert.False(healthySummary.IsLowQuality);
         Assert.Empty(healthySummary.QualityIssues);
+
+        AsrWord TimedWord(string text, double start, double end, double probability) => new()
+        {
+            Text = text,
+            StartSeconds = start,
+            EndSeconds = end,
+            Probability = probability,
+        };
+
+        var stretchedLowConfidence = new[]
+        {
+            TimedWord("착", 1.91, 5.13, 0.02),
+            TimedWord("한", 5.14, 10.24, 0.99),
+            TimedWord("얼굴에", 10.24, 25.60, 0.96),
+        }.Concat(Enumerable.Range(0, 30)
+            .Select(index => TimedWord($"노래{index}", 26 + index * 0.4, 26.2 + index * 0.4, 0.95)))
+            .ToList();
+        var stretchedSummary = LocalAsrConfidence.Assess(stretchedLowConfidence, "ko");
+        Assert.False(stretchedSummary.IsLowConfidence);
+        Assert.True(stretchedSummary.IsLowQuality);
+        Assert.Contains("stretchedLowConfidenceCJKToken", stretchedSummary.QualityIssues);
+
+        var healthyStretched = new[]
+        {
+            TimedWord("な", 2.0, 4.8, 0.94),
+            TimedWord("い", 8.0, 11.2, 0.96),
+            TimedWord("君", 20.0, 23.4, 0.91),
+        }.Concat(Enumerable.Range(0, 30)
+            .Select(index => TimedWord($"歌{index}", 30 + index * 0.4, 30.2 + index * 0.4, 0.95)))
+            .ToList();
+        var healthyStretchedSummary = LocalAsrConfidence.Assess(healthyStretched, "ja");
+        Assert.False(healthyStretchedSummary.IsLowQuality);
+        Assert.DoesNotContain("stretchedLowConfidenceCJKToken", healthyStretchedSummary.QualityIssues);
     }
 
     // Identical to Swift cjkBoundaryParityCases — the two platforms must agree on these so the
@@ -2921,6 +2971,36 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerKeepsSpacesBetweenKoreanWords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "korean-spacing",
+            LanguageCode = "ko",
+            Words =
+            [
+                new AsrWord { Text = "수학을", StartSeconds = 0.0, EndSeconds = 0.4 },
+                new AsrWord { Text = "포기하면", StartSeconds = 0.4, EndSeconds = 0.9 },
+                new AsrWord { Text = "대학을", StartSeconds = 0.9, EndSeconds = 1.3 },
+                new AsrWord { Text = "포기하는", StartSeconds = 1.3, EndSeconds = 1.8 },
+                new AsrWord { Text = "것이고요", StartSeconds = 1.8, EndSeconds = 2.3 },
+                new AsrWord { Text = "영어를", StartSeconds = 2.3, EndSeconds = 2.7 },
+                new AsrWord { Text = "포기하면", StartSeconds = 2.7, EndSeconds = 3.2 },
+                new AsrWord { Text = "인생을", StartSeconds = 3.2, EndSeconds = 3.6 },
+                new AsrWord { Text = "포기하는이라", StartSeconds = 3.6, EndSeconds = 4.3 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("수학을 포기하면 대학을", text, StringComparison.Ordinal);
+        Assert.Contains("영어를 포기하면 인생을", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("수학을포기하면", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("영어를포기하면", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerRejoinsMainstreamLatinSubwordFragments()
     {
         var transcript = new AsrTranscript
@@ -3028,6 +3108,313 @@ public class AsrContractsTests
         Assert.DoesNotContain("univers ità", text, StringComparison.Ordinal);
         Assert.DoesNotContain("abandon né", text, StringComparison.Ordinal);
         Assert.DoesNotContain("gemüt lich", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRejoinsObservedFrenchItalianSubwords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-it-fr-subwords",
+            LanguageCode = "fr",
+            Words =
+            [
+                new AsrWord { Text = "travaill", StartSeconds = 0.0, EndSeconds = 0.2 },
+                new AsrWord { Text = "é", StartSeconds = 0.2, EndSeconds = 0.3 },
+                new AsrWord { Text = "arr", StartSeconds = 0.4, EndSeconds = 0.55 },
+                new AsrWord { Text = "ach", StartSeconds = 0.55, EndSeconds = 0.75 },
+                new AsrWord { Text = "ée", StartSeconds = 0.75, EndSeconds = 0.9 },
+                new AsrWord { Text = "cré", StartSeconds = 1.0, EndSeconds = 1.2 },
+                new AsrWord { Text = "at", StartSeconds = 1.2, EndSeconds = 1.35 },
+                new AsrWord { Text = "rice", StartSeconds = 1.35, EndSeconds = 1.6 },
+                new AsrWord { Text = "magg", StartSeconds = 1.7, EndSeconds = 1.9 },
+                new AsrWord { Text = "ior", StartSeconds = 1.9, EndSeconds = 2.05 },
+                new AsrWord { Text = "i", StartSeconds = 2.05, EndSeconds = 2.15 },
+                new AsrWord { Text = "most", StartSeconds = 2.25, EndSeconds = 2.45 },
+                new AsrWord { Text = "r", StartSeconds = 2.45, EndSeconds = 2.55 },
+                new AsrWord { Text = "ano", StartSeconds = 2.55, EndSeconds = 2.8 },
+                new AsrWord { Text = " arrive", StartSeconds = 3.0, EndSeconds = 3.25 },
+                new AsrWord { Text = " at", StartSeconds = 3.25, EndSeconds = 3.35 },
+                new AsrWord { Text = " rice", StartSeconds = 3.35, EndSeconds = 3.6 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(c => c.Text));
+
+        Assert.Contains("travaillé", text, StringComparison.Ordinal);
+        Assert.Contains("arrachée", text, StringComparison.Ordinal);
+        Assert.Contains("créatrice", text, StringComparison.Ordinal);
+        Assert.Contains("maggiori", text, StringComparison.Ordinal);
+        Assert.Contains("mostrano", text, StringComparison.Ordinal);
+        Assert.Contains("arrive at rice", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("travaill é", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("arr ach ée", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("cré at rice", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("magg ior i", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("most r ano", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("arriveatrice", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRejoinsObservedFrenchItalianSubwordsSecondWave()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-it-fr-subwords-2",
+            LanguageCode = "it",
+            Words =
+            [
+                new AsrWord { Text = "d", StartSeconds = 0.0, EndSeconds = 0.1 },
+                new AsrWord { Text = "ix", StartSeconds = 0.1, EndSeconds = 0.2 },
+                new AsrWord { Text = "sé", StartSeconds = 0.3, EndSeconds = 0.45 },
+                new AsrWord { Text = "lection", StartSeconds = 0.45, EndSeconds = 0.65 },
+                new AsrWord { Text = "n", StartSeconds = 0.65, EndSeconds = 0.75 },
+                new AsrWord { Text = "ée", StartSeconds = 0.75, EndSeconds = 0.9 },
+                new AsrWord { Text = "h", StartSeconds = 1.0, EndSeconds = 1.1 },
+                new AsrWord { Text = "onn", StartSeconds = 1.1, EndSeconds = 1.25 },
+                new AsrWord { Text = "êt", StartSeconds = 1.25, EndSeconds = 1.4 },
+                new AsrWord { Text = "eté", StartSeconds = 1.4, EndSeconds = 1.6 },
+                new AsrWord { Text = "org", StartSeconds = 1.7, EndSeconds = 1.85 },
+                new AsrWord { Text = "og", StartSeconds = 1.85, EndSeconds = 2.0 },
+                new AsrWord { Text = "lio", StartSeconds = 2.0, EndSeconds = 2.2 },
+                new AsrWord { Text = "lat", StartSeconds = 2.3, EndSeconds = 2.45 },
+                new AsrWord { Text = "ino", StartSeconds = 2.45, EndSeconds = 2.65 },
+                new AsrWord { Text = "St", StartSeconds = 2.75, EndSeconds = 2.85 },
+                new AsrWord { Text = "ati", StartSeconds = 2.85, EndSeconds = 3.05 },
+                new AsrWord { Text = "Un", StartSeconds = 3.15, EndSeconds = 3.25 },
+                new AsrWord { Text = "iti", StartSeconds = 3.25, EndSeconds = 3.45 },
+                new AsrWord { Text = "Par", StartSeconds = 3.55, EndSeconds = 3.7 },
+                new AsrWord { Text = "igi", StartSeconds = 3.7, EndSeconds = 3.9 },
+                new AsrWord { Text = "no", StartSeconds = 4.0, EndSeconds = 4.15 },
+                new AsrWord { Text = " entiendo", StartSeconds = 4.15, EndSeconds = 4.45 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(c => c.Text));
+
+        Assert.Contains("dix", text, StringComparison.Ordinal);
+        Assert.Contains("sélectionnée", text, StringComparison.Ordinal);
+        Assert.Contains("honnêteté", text, StringComparison.Ordinal);
+        Assert.Contains("orgoglio", text, StringComparison.Ordinal);
+        Assert.Contains("latino", text, StringComparison.Ordinal);
+        Assert.Contains("Stati", text, StringComparison.Ordinal);
+        Assert.Contains("Uniti", text, StringComparison.Ordinal);
+        Assert.Contains("Parigi", text, StringComparison.Ordinal);
+        Assert.Contains("no entiendo", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("d ix", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("sé lection n ée", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("h onn êt eté", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("org og lio", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("lat ino", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("St ati", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Un iti", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Par igi", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("noentiendo", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRejoinsObservedFrenchItalianSubwordsThirdWave()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-it-fr-subwords-3",
+            LanguageCode = "fr",
+            Words =
+            [
+                new AsrWord { Text = "Ut", StartSeconds = 0.0, EndSeconds = 0.1 },
+                new AsrWord { Text = "il", StartSeconds = 0.1, EndSeconds = 0.2 },
+                new AsrWord { Text = "ise", StartSeconds = 0.2, EndSeconds = 0.35 },
+                new AsrWord { Text = "r", StartSeconds = 0.45, EndSeconds = 0.5 },
+                new AsrWord { Text = "è", StartSeconds = 0.5, EndSeconds = 0.58 },
+                new AsrWord { Text = "gl", StartSeconds = 0.58, EndSeconds = 0.68 },
+                new AsrWord { Text = "és", StartSeconds = 0.68, EndSeconds = 0.82 },
+                new AsrWord { Text = "app", StartSeconds = 0.92, EndSeconds = 1.05 },
+                new AsrWord { Text = "li", StartSeconds = 1.05, EndSeconds = 1.15 },
+                new AsrWord { Text = "quer", StartSeconds = 1.15, EndSeconds = 1.35 },
+                new AsrWord { Text = "quotid", StartSeconds = 1.45, EndSeconds = 1.65 },
+                new AsrWord { Text = "ien", StartSeconds = 1.65, EndSeconds = 1.8 },
+                new AsrWord { Text = "mar", StartSeconds = 1.9, EndSeconds = 2.05 },
+                new AsrWord { Text = "ion", StartSeconds = 2.05, EndSeconds = 2.2 },
+                new AsrWord { Text = "n", StartSeconds = 2.2, EndSeconds = 2.3 },
+                new AsrWord { Text = "ette", StartSeconds = 2.3, EndSeconds = 2.5 },
+                new AsrWord { Text = "op", StartSeconds = 2.6, EndSeconds = 2.75 },
+                new AsrWord { Text = "in", StartSeconds = 2.75, EndSeconds = 2.9 },
+                new AsrWord { Text = "ion", StartSeconds = 2.9, EndSeconds = 3.1 },
+                new AsrWord { Text = "Reg", StartSeconds = 3.2, EndSeconds = 3.35 },
+                new AsrWord { Text = "no", StartSeconds = 3.35, EndSeconds = 3.5 },
+                new AsrWord { Text = "Un", StartSeconds = 3.6, EndSeconds = 3.75 },
+                new AsrWord { Text = "ito", StartSeconds = 3.75, EndSeconds = 3.95 },
+                new AsrWord { Text = "Lond", StartSeconds = 4.05, EndSeconds = 4.25 },
+                new AsrWord { Text = "ra", StartSeconds = 4.25, EndSeconds = 4.4 },
+                new AsrWord { Text = "Core", StartSeconds = 4.5, EndSeconds = 4.7 },
+                new AsrWord { Text = "a", StartSeconds = 4.7, EndSeconds = 4.85 },
+                new AsrWord { Text = "Svez", StartSeconds = 4.95, EndSeconds = 5.15 },
+                new AsrWord { Text = "ia", StartSeconds = 5.15, EndSeconds = 5.3 },
+                new AsrWord { Text = "orgog", StartSeconds = 5.4, EndSeconds = 5.65 },
+                new AsrWord { Text = "li", StartSeconds = 5.65, EndSeconds = 5.75 },
+                new AsrWord { Text = "os", StartSeconds = 5.75, EndSeconds = 5.9 },
+                new AsrWord { Text = "amente", StartSeconds = 5.9, EndSeconds = 6.2 },
+                new AsrWord { Text = "par", StartSeconds = 6.3, EndSeconds = 6.45 },
+                new AsrWord { Text = "la", StartSeconds = 6.45, EndSeconds = 6.6 },
+                new AsrWord { Text = "route", StartSeconds = 6.6, EndSeconds = 6.85 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("Utilise", text, StringComparison.Ordinal);
+        Assert.Contains("règlés", text, StringComparison.Ordinal);
+        Assert.Contains("appliquer", text, StringComparison.Ordinal);
+        Assert.Contains("quotidien", text, StringComparison.Ordinal);
+        Assert.Contains("marionnette", text, StringComparison.Ordinal);
+        Assert.Contains("opinion", text, StringComparison.Ordinal);
+        Assert.Contains("Regno", text, StringComparison.Ordinal);
+        Assert.Contains("Unito", text, StringComparison.Ordinal);
+        Assert.Contains("Londra", text, StringComparison.Ordinal);
+        Assert.Contains("Corea", text, StringComparison.Ordinal);
+        Assert.Contains("Svezia", text, StringComparison.Ordinal);
+        Assert.Contains("orgogliosamente", text, StringComparison.Ordinal);
+        Assert.Contains("par la route", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ut il ise", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("r è gl és", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("app li quer", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("quotid ien", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("mar ion n ette", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("op in ion", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Reg no", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Un ito", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Lond ra", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Core a", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Svez ia", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("orgog li os amente", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("parlaroute", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerPreservesObservedFrenchItalianFunctionWords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-it-fr-function-words",
+            LanguageCode = "it",
+            Words =
+            [
+                new AsrWord { Text = "Un", StartSeconds = 0.0, EndSeconds = 0.1 },
+                new AsrWord { Text = "ito", StartSeconds = 0.1, EndSeconds = 0.25 },
+                new AsrWord { Text = "al", StartSeconds = 0.25, EndSeconds = 0.35 },
+                new AsrWord { Text = "King's", StartSeconds = 0.35, EndSeconds = 0.6 },
+                new AsrWord { Text = "Unito", StartSeconds = 0.7, EndSeconds = 0.95 },
+                new AsrWord { Text = "al", StartSeconds = 0.95, EndSeconds = 1.05 },
+                new AsrWord { Text = "King's", StartSeconds = 1.05, EndSeconds = 1.3 },
+                new AsrWord { Text = "posto", StartSeconds = 1.4, EndSeconds = 1.6 },
+                new AsrWord { Text = "al", StartSeconds = 1.6, EndSeconds = 1.7 },
+                new AsrWord { Text = "mondo", StartSeconds = 1.7, EndSeconds = 1.95 },
+                new AsrWord { Text = "influencer", StartSeconds = 2.05, EndSeconds = 2.3 },
+                new AsrWord { Text = "en", StartSeconds = 2.3, EndSeconds = 2.42 },
+                new AsrWord { Text = "bien", StartSeconds = 2.42, EndSeconds = 2.6 },
+                new AsrWord { Text = "prendre", StartSeconds = 2.7, EndSeconds = 2.9 },
+                new AsrWord { Text = "en", StartSeconds = 2.9, EndSeconds = 3.02 },
+                new AsrWord { Text = "compte", StartSeconds = 3.02, EndSeconds = 3.25 },
+                new AsrWord { Text = "qui", StartSeconds = 3.35, EndSeconds = 3.48 },
+                new AsrWord { Text = "ne", StartSeconds = 3.48, EndSeconds = 3.6 },
+                new AsrWord { Text = "correspondait", StartSeconds = 3.6, EndSeconds = 3.9 },
+                new AsrWord { Text = "Ker", StartSeconds = 4.0, EndSeconds = 4.15 },
+                new AsrWord { Text = "ne", StartSeconds = 4.15, EndSeconds = 4.3 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("Unito al King's", text, StringComparison.Ordinal);
+        Assert.Contains("posto al mondo", text, StringComparison.Ordinal);
+        Assert.Contains("influencer en bien", text, StringComparison.Ordinal);
+        Assert.Contains("prendre en compte", text, StringComparison.Ordinal);
+        Assert.Contains("qui ne correspondait", text, StringComparison.Ordinal);
+        Assert.Contains("Kerne", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unitoal", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("postoal", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("influenceren", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("prendreen", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("quine", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ker ne", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerRejoinsObservedGermanPortugueseSubwords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-de-pt-subwords",
+            LanguageCode = "pt",
+            Words =
+            [
+                new AsrWord { Text = "gem", StartSeconds = 0.0, EndSeconds = 0.1 },
+                new AsrWord { Text = "üt", StartSeconds = 0.1, EndSeconds = 0.18 },
+                new AsrWord { Text = "lich", StartSeconds = 0.18, EndSeconds = 0.25 },
+                new AsrWord { Text = "reg", StartSeconds = 0.3, EndSeconds = 0.45 },
+                new AsrWord { Text = "elt", StartSeconds = 0.45, EndSeconds = 0.6 },
+                new AsrWord { Text = "bef", StartSeconds = 0.7, EndSeconds = 0.85 },
+                new AsrWord { Text = "est", StartSeconds = 0.85, EndSeconds = 1.0 },
+                new AsrWord { Text = "igt", StartSeconds = 1.0, EndSeconds = 1.15 },
+                new AsrWord { Text = "Seiten", StartSeconds = 1.25, EndSeconds = 1.45 },
+                new AsrWord { Text = "ver", StartSeconds = 1.45, EndSeconds = 1.55 },
+                new AsrWord { Text = "kle", StartSeconds = 1.55, EndSeconds = 1.65 },
+                new AsrWord { Text = "id", StartSeconds = 1.65, EndSeconds = 1.75 },
+                new AsrWord { Text = "ung", StartSeconds = 1.75, EndSeconds = 1.9 },
+                new AsrWord { Text = "G", StartSeconds = 2.0, EndSeconds = 2.05 },
+                new AsrWord { Text = "ep", StartSeconds = 2.05, EndSeconds = 2.15 },
+                new AsrWord { Text = "ä", StartSeconds = 2.15, EndSeconds = 2.25 },
+                new AsrWord { Text = "ck", StartSeconds = 2.25, EndSeconds = 2.35 },
+                new AsrWord { Text = "f", StartSeconds = 2.35, EndSeconds = 2.45 },
+                new AsrWord { Text = "ä", StartSeconds = 2.45, EndSeconds = 2.55 },
+                new AsrWord { Text = "cher", StartSeconds = 2.55, EndSeconds = 2.75 },
+                new AsrWord { Text = "Was", StartSeconds = 2.85, EndSeconds = 3.0 },
+                new AsrWord { Text = "ch", StartSeconds = 3.0, EndSeconds = 3.1 },
+                new AsrWord { Text = "rä", StartSeconds = 3.1, EndSeconds = 3.2 },
+                new AsrWord { Text = "ume", StartSeconds = 3.2, EndSeconds = 3.35 },
+                new AsrWord { Text = "levant", StartSeconds = 3.45, EndSeconds = 3.65 },
+                new AsrWord { Text = "amento", StartSeconds = 3.65, EndSeconds = 3.9 },
+                new AsrWord { Text = "influ", StartSeconds = 4.0, EndSeconds = 4.15 },
+                new AsrWord { Text = "ência", StartSeconds = 4.15, EndSeconds = 4.35 },
+                new AsrWord { Text = "trad", StartSeconds = 4.45, EndSeconds = 4.6 },
+                new AsrWord { Text = "ut", StartSeconds = 4.6, EndSeconds = 4.7 },
+                new AsrWord { Text = "ores", StartSeconds = 4.7, EndSeconds = 4.9 },
+                new AsrWord { Text = "volunt", StartSeconds = 5.0, EndSeconds = 5.2 },
+                new AsrWord { Text = "ários", StartSeconds = 5.2, EndSeconds = 5.4 },
+                new AsrWord { Text = "you", StartSeconds = 5.5, EndSeconds = 5.65 },
+                new AsrWord { Text = "are", StartSeconds = 5.65, EndSeconds = 5.85 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(c => c.Text));
+
+        Assert.Contains("gemütlich", text, StringComparison.Ordinal);
+        Assert.Contains("regelt", text, StringComparison.Ordinal);
+        Assert.Contains("befestigt", text, StringComparison.Ordinal);
+        Assert.Contains("Seitenverkleidung", text, StringComparison.Ordinal);
+        Assert.Contains("Gepäckfächer", text, StringComparison.Ordinal);
+        Assert.Contains("Waschräume", text, StringComparison.Ordinal);
+        Assert.Contains("levantamento", text, StringComparison.Ordinal);
+        Assert.Contains("influência", text, StringComparison.Ordinal);
+        Assert.Contains("tradutores", text, StringComparison.Ordinal);
+        Assert.Contains("voluntários", text, StringComparison.Ordinal);
+        Assert.Contains("you are", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("gem üt lich", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("reg elt", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("bef est igt", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Seiten ver kle id ung", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("G ep ä ck f ä cher", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Was ch rä ume", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("levant amento", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("influ ência", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("trad ut ores", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("volunt ários", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("youare", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3450,6 +3837,137 @@ public class AsrContractsTests
         Assert.Equal(9.66, transcript.Words[2].EndSeconds, precision: 3);
         Assert.Equal(17.70, transcript.Words[6].StartSeconds, precision: 3);
         Assert.Equal(18.33, transcript.Words[6].EndSeconds, precision: 3);
+    }
+
+    [Fact]
+    public void WhisperCppJsonParserRejoinsObservedGermanPortugueseTokenPieces()
+    {
+        const string germanJson = """
+        {
+          "result": { "language": "de" },
+          "transcription": [
+            {
+              "text": " gemütlich regelt, so ist doch euer Sitz auf einer Platte",
+              "offsets": { "from": 0, "to": 3600 },
+              "tokens": [
+                { "text": " gem", "offsets": { "from": 0, "to": 130 }, "p": 0.64 },
+                { "text": "üt", "offsets": { "from": 190, "to": 290 }, "p": 0.99 },
+                { "text": "lich", "offsets": { "from": 290, "to": 470 }, "p": 0.99 },
+                { "text": " reg", "offsets": { "from": 480, "to": 630 }, "p": 0.49 },
+                { "text": "elt", "offsets": { "from": 630, "to": 770 }, "p": 0.99 },
+                { "text": ",", "offsets": { "from": 770, "to": 800 }, "p": 0.95 },
+                { "text": " so", "offsets": { "from": 820, "to": 920 }, "p": 0.99 },
+                { "text": " ist", "offsets": { "from": 930, "to": 1030 }, "p": 0.99 },
+                { "text": " doch", "offsets": { "from": 1040, "to": 1220 }, "p": 0.99 },
+                { "text": " eu", "offsets": { "from": 1240, "to": 1360 }, "p": 0.99 },
+                { "text": "er", "offsets": { "from": 1360, "to": 1480 }, "p": 0.99 },
+                { "text": " Sitz", "offsets": { "from": 1500, "to": 1700 }, "p": 0.99 },
+                { "text": " auf", "offsets": { "from": 1720, "to": 1900 }, "p": 0.99 },
+                { "text": " einer", "offsets": { "from": 1920, "to": 2200 }, "p": 0.99 },
+                { "text": " Plat", "offsets": { "from": 2220, "to": 2400 }, "p": 0.99 },
+                { "text": "te", "offsets": { "from": 2400, "to": 2600 }, "p": 0.99 }
+              ]
+            }
+          ]
+        }
+        """;
+        const string portugueseJson = """
+        {
+          "result": { "language": "pt" },
+          "transcription": [
+            {
+              "text": " levantamento do British Council tem influência em inglês",
+              "offsets": { "from": 0, "to": 3000 },
+              "tokens": [
+                { "text": " levant", "offsets": { "from": 0, "to": 180 }, "p": 0.99 },
+                { "text": "amento", "offsets": { "from": 180, "to": 420 }, "p": 0.99 },
+                { "text": " do", "offsets": { "from": 430, "to": 560 }, "p": 0.99 },
+                { "text": " British", "offsets": { "from": 570, "to": 900 }, "p": 0.99 },
+                { "text": " Council", "offsets": { "from": 910, "to": 1250 }, "p": 0.99 },
+                { "text": " tem", "offsets": { "from": 1300, "to": 1450 }, "p": 0.99 },
+                { "text": " influ", "offsets": { "from": 1460, "to": 1700 }, "p": 0.99 },
+                { "text": "ência", "offsets": { "from": 1700, "to": 1950 }, "p": 0.99 },
+                { "text": " em", "offsets": { "from": 1960, "to": 2100 }, "p": 0.99 },
+                { "text": " inglês", "offsets": { "from": 2110, "to": 2500 }, "p": 0.99 }
+              ]
+            }
+          ]
+        }
+        """;
+
+        var german = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(germanJson),
+            new AsrRequest { AudioPath = "/tmp/de.wav", LanguageCode = "de", ModelId = "whisper.cpp:large-v3-turbo-q5_0" },
+            "de");
+        var portuguese = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(portugueseJson),
+            new AsrRequest { AudioPath = "/tmp/pt.wav", LanguageCode = "pt", ModelId = "whisper.cpp:large-v3-turbo-q5_0" },
+            "pt");
+
+        Assert.Equal(["gemütlich", "regelt,", "so", "ist", "doch", "euer", "Sitz", "auf", "einer", "Platte"], german.Words.Select(word => word.Text).ToArray());
+        Assert.Equal(["levantamento", "do", "British", "Council", "tem", "influência", "em", "inglês"], portuguese.Words.Select(word => word.Text).ToArray());
+    }
+
+    [Fact]
+    public void WhisperCppJsonParserUsesKoreanSegmentWordsOverTokenPieces()
+    {
+        const string json = """
+        {
+          "result": { "language": "ko" },
+          "transcription": [
+            {
+              "text": " 착한 얼굴에 그렇지 못한대도 volume은 두 배로",
+              "offsets": { "from": 0, "to": 2200 },
+              "tokens": [
+                { "text": "[_BEG_]", "offsets": { "from": 0, "to": 0 }, "p": 0.61 },
+                { "text": " 착", "offsets": { "from": 0, "to": 120 }, "p": 0.91 },
+                { "text": "한", "offsets": { "from": 120, "to": 240 }, "p": 0.92 },
+                { "text": " 얼굴에", "offsets": { "from": 240, "to": 620 }, "p": 0.95 },
+                { "text": " 그렇지", "offsets": { "from": 620, "to": 980 }, "p": 0.95 },
+                { "text": " 못", "offsets": { "from": 980, "to": 1120 }, "p": 0.93 },
+                { "text": "한대도", "offsets": { "from": 1120, "to": 1450 }, "p": 0.94 },
+                { "text": " volume", "offsets": { "from": 1450, "to": 1700 }, "p": 0.97 },
+                { "text": "은", "offsets": { "from": 1700, "to": 1800 }, "p": 0.97 },
+                { "text": " 두", "offsets": { "from": 1800, "to": 1940 }, "p": 0.98 },
+                { "text": " 배로", "offsets": { "from": 1940, "to": 2200 }, "p": 0.98 },
+                { "text": "[_TT_1359]", "offsets": { "from": 2200, "to": 2200 }, "p": 0.10 }
+              ]
+            },
+            {
+              "text": " 근데 뭔가 즐겁게 배운 것들은",
+              "offsets": { "from": 40680, "to": 42940 },
+              "tokens": [
+                { "text": " 근데", "offsets": { "from": 40680, "to": 40600 }, "p": 0.95 },
+                { "text": " 뭔가", "offsets": { "from": 41010, "to": 41400 }, "p": 0.96 },
+                { "text": " 즐", "offsets": { "from": 41400, "to": 41600 }, "p": 0.93 },
+                { "text": "겁", "offsets": { "from": 41600, "to": 41800 }, "p": 0.93 },
+                { "text": "게", "offsets": { "from": 41800, "to": 42000 }, "p": 0.93 },
+                { "text": " 배", "offsets": { "from": 42000, "to": 42200 }, "p": 0.94 },
+                { "text": "운", "offsets": { "from": 42200, "to": 42400 }, "p": 0.94 },
+                { "text": " 것", "offsets": { "from": 42400, "to": 42600 }, "p": 0.94 },
+                { "text": "들", "offsets": { "from": 42600, "to": 42800 }, "p": 0.94 },
+                { "text": "은", "offsets": { "from": 42800, "to": 42940 }, "p": 0.94 },
+                { "text": "[_TT_648]", "offsets": { "from": 42940, "to": 42940 }, "p": 0.10 }
+              ]
+            }
+          ]
+        }
+        """;
+
+        var transcript = new WhisperCppJsonTranscriptParser().Parse(
+            Encoding.UTF8.GetBytes(json),
+            new AsrRequest { AudioPath = "/tmp/ko.wav", LanguageCode = "ko", ModelId = "whisper.cpp:large-v3-turbo-q5_0" },
+            "ko");
+
+        Assert.Equal(
+            ["착한", "얼굴에", "그렇지", "못한대도", "volume은", "두", "배로", "근데", "뭔가", "즐겁게", "배운", "것들은"],
+            transcript.Words.Select(word => word.Text).ToArray());
+        Assert.Equal(0.0, transcript.Words[0].StartSeconds, precision: 3);
+        Assert.Equal(0.24, transcript.Words[0].EndSeconds, precision: 3);
+        Assert.Equal(1.45, transcript.Words[4].StartSeconds, precision: 3);
+        Assert.Equal(1.8, transcript.Words[4].EndSeconds, precision: 3);
+        Assert.Equal(41.4, transcript.Words[9].StartSeconds, precision: 3);
+        Assert.Equal(42.0, transcript.Words[9].EndSeconds, precision: 3);
     }
 
     [Fact]

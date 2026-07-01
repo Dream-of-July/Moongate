@@ -1626,16 +1626,89 @@ enum LocalASRSubtitleTimingPlanner {
         "mente", "mento", "miento", "amiento", "zione", "zioni", "ient", "aient",
         "lich", "chen", "en", "ern", "ung", "ungen", "heit", "keit",
         "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache", "ne", "wich",
-        "ità", "tà", "né", "nné", "rsità"
+        "ità", "tà", "né", "nné", "rsità", "é", "ée", "ior", "ano", "rice"
     ]
     private static let shortLatinContinuationSuffixes: Set<String> = [
-        "ne", "ês", "né", "tà"
+        "ne", "ês", "né", "tà", "é", "ée"
     ]
     private static let latinBridgeFragments: Set<String> = [
         "la", "le", "li", "lo"
     ]
     private static let latinBridgeTailSuffixes: Set<String> = [
-        "ient", "aient"
+        "ient", "aient", "ée", "rice", "ano", "êt", "lio", "li", "na", "ette"
+    ]
+    private static let observedLatinBridgePrefixes: [String: Set<String>] = [
+        "ach": ["arr"],
+        "at": ["cré"],
+        "r": ["most"],
+        "n": ["lection", "sélection", "selection", "ion"],
+        "onn": ["h"],
+        "og": ["org"],
+        "g": ["inse"]
+    ]
+    private static let observedLatinContinuationPrefixes: [String: Set<String>] = [
+        "ütlich": ["gem"],
+        "üt": ["gem"],
+        "elt": ["reg"],
+        "est": ["bef"],
+        "igt": ["befest"],
+        "ver": ["seiten"],
+        "kle": ["seitenver", "ver"],
+        "id": ["seitenverkle", "kle"],
+        "ung": ["seitenverkleid", "id"],
+        "äck": ["gep"],
+        "ä": ["gep", "ep", "f"],
+        "ck": ["gepä", "ä"],
+        "f": ["gepäck", "ck"],
+        "cher": ["gepäckfä", "fä", "ä"],
+        "fächer": ["gepäck"],
+        "ch": ["was"],
+        "rä": ["wasch", "ch"],
+        "ume": ["waschrä", "rä"],
+        "amento": ["levant"],
+        "cre": ["trans"],
+        "ve": ["transcre", "cre"],
+        "mos": ["transcreve", "ve"],
+        "ut": ["trad"],
+        "ores": ["tradut", "ut"],
+        "ários": ["volunt"],
+        "ng": ["lí"],
+        "u": ["líng"],
+        "as": ["língu"],
+        "il": ["ut"],
+        "ise": ["util"],
+        "è": ["r"],
+        "gl": ["rè"],
+        "és": ["règl"],
+        "li": ["app", "orgog", "neg"],
+        "quer": ["appli"],
+        "ien": ["quotid", "chem"],
+        "ion": ["mar", "op", "opin"],
+        "in": ["op"],
+        "ette": ["marionn", "n"],
+        "no": ["reg"],
+        "ito": ["un"],
+        "ra": ["lond"],
+        "a": ["core"],
+        "ia": ["svez"],
+        "ix": ["d"],
+        "lection": ["sé", "se"],
+        "n": ["sélection", "selection", "marion", "ion"],
+        "êt": ["honn", "onn"],
+        "ée": ["sélectionn", "selectionn"],
+        "eté": ["honnêt", "honnet"],
+        "lio": ["orgog"],
+        "ino": ["lat"],
+        "os": ["orgogli", "li"],
+        "amente": ["orgoglios", "os"],
+        "ati": ["st"],
+        "iti": ["un"],
+        "igi": ["par"]
+    ]
+    private static let observedStandaloneLatinFunctionPrefixes: [String: Set<String>] = [
+        "al": ["ito", "unito", "posto"],
+        "en": ["influencer", "prendre", "encore", "mais"],
+        "ne": ["qui"]
     ]
     private static let strongLatinContinuationSuffixes: Set<String> = [
         "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
@@ -3669,6 +3742,7 @@ enum LocalASRSubtitleTimingPlanner {
                 ? parts[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
                 : nil
             if !output.isEmpty,
+               !isObservedLatinContinuation(left: output, right: trimmed),
                shouldInsertSpace(
                 left: previous,
                 right: trimmed,
@@ -3697,6 +3771,7 @@ enum LocalASRSubtitleTimingPlanner {
     ) -> Bool {
         guard let rightFirst = right.first else { return false }
         if isNoSpaceBefore(rightFirst) { return false }
+        if isObservedStandaloneLatinFunction(left: left, right: right) { return true }
         if isLatinBridgeFragment(left: left, right: right, next: next) { return false }
         if isStrongLatinContinuationFragment(left: left, right: right) { return false }
         if isLatinContinuationFragment(
@@ -3706,7 +3781,28 @@ enum LocalASRSubtitleTimingPlanner {
         ) {
             return false
         }
+        if containsHangul(left),
+           containsHangul(right),
+           !koreanLeadingProhibitedParticles.contains(right.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return true
+        }
         return containsASCIIAlphanumeric(left) || containsASCIIAlphanumeric(right)
+    }
+
+    private static func isObservedStandaloneLatinFunction(left: String, right: String) -> Bool {
+        let leftRun = trailingLatinLetterRun(left).lowercased()
+        let rightRun = leadingLatinLetterRun(right).lowercased()
+        guard !leftRun.isEmpty, !rightRun.isEmpty,
+              let allowedPrefixes = observedStandaloneLatinFunctionPrefixes[rightRun] else {
+            return false
+        }
+        return allowedPrefixes.contains(leftRun)
+    }
+
+    private static func containsHangul(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0xAC00...0xD7A3).contains(Int(scalar.value))
+        }
     }
 
     private static func containsASCIIAlphanumeric(_ text: String) -> Bool {
@@ -3767,6 +3863,9 @@ enum LocalASRSubtitleTimingPlanner {
         right: String,
         allowBroadHeuristics: Bool
     ) -> Bool {
+        if isObservedLatinContinuation(left: left, right: right) {
+            return true
+        }
         if hasApostropheInsideLatinRun(left) { return false }
         let leftRun = trailingLatinLetterRun(left)
         let rightRun = leadingLatinLetterRun(right)
@@ -3777,11 +3876,17 @@ enum LocalASRSubtitleTimingPlanner {
            latinBridgeTailSuffixes.contains(rightLower) {
             return true
         }
+        if latinContinuationFunctionWords.contains(leftLower) { return false }
         if latinContinuationSuffixes.contains(rightLower) {
             if shortLatinContinuationSuffixes.contains(rightLower) {
                 return leftRun.count >= 2 && !latinContinuationFunctionWords.contains(leftLower)
             }
             return !latinContinuationFunctionWords.contains(leftLower)
+        }
+        if rightLower == "i",
+           leftLower.hasSuffix("ior"),
+           !latinContinuationFunctionWords.contains(leftLower) {
+            return true
         }
         if !allowBroadHeuristics { return false }
         if leftRun.count == 1,
@@ -3808,6 +3913,24 @@ enum LocalASRSubtitleTimingPlanner {
         return false
     }
 
+    private static func isObservedLatinContinuation(left: String, right: String) -> Bool {
+        let leftLower = left
+            .precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let rightLower = right
+            .precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if rightLower == "rice" {
+            return leftLower.hasSuffix("créat") || leftLower.hasSuffix("creat")
+        }
+        guard let allowedPrefixes = observedLatinContinuationPrefixes[rightLower] else {
+            return false
+        }
+        return allowedPrefixes.contains { leftLower.hasSuffix($0) }
+    }
+
     private static func isLatinBridgeFragment(left: String, right: String, next: String?) -> Bool {
         guard let next else { return false }
         if hasApostropheInsideLatinRun(left) { return false }
@@ -3818,6 +3941,13 @@ enum LocalASRSubtitleTimingPlanner {
         let leftLower = leftRun.lowercased()
         let rightLower = rightRun.lowercased()
         let nextLower = nextRun.lowercased()
+        if let allowedPrefixes = observedLatinBridgePrefixes[rightLower] {
+            return allowedPrefixes.contains { leftLower.hasSuffix($0) }
+                && latinBridgeTailSuffixes.contains(nextLower)
+        }
+        if observedLatinBridgePrefixes.keys.contains(rightLower) {
+            return false
+        }
         return latinBridgeFragments.contains(rightLower)
             && !latinContinuationFunctionWords.contains(leftLower)
             && latinContinuationSuffixes.contains(nextLower)
@@ -3829,6 +3959,7 @@ enum LocalASRSubtitleTimingPlanner {
     }
 
     private static func trailingLatinLetterRun(_ text: String) -> String {
+        let text = text.precomposedStringWithCanonicalMapping
         var characters: [Character] = []
         for character in text.reversed() {
             guard isLatinLetter(character) else { break }
@@ -3838,6 +3969,7 @@ enum LocalASRSubtitleTimingPlanner {
     }
 
     private static func leadingLatinLetterRun(_ text: String) -> String {
+        let text = text.precomposedStringWithCanonicalMapping
         var characters: [Character] = []
         for character in text {
             guard isLatinLetter(character) else { break }
@@ -5328,7 +5460,7 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
                     rawTexts.append(text)
                 }
             }
-            let tokenEntries = parseTokenEntries(in: segment)
+            let tokenEntries = parseTokenEntries(in: segment, segmentText: cleanText(segment["text"] as? String))
             if tokenEntries.isEmpty {
                 if let fallback = parseSegmentWord(segment) {
                     words.append(fallback)
@@ -5398,7 +5530,10 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         return number(in: result, keys: ["language_probability", "languageProbability", "language_confidence", "languageConfidence"])
     }
 
-    private func parseTokenEntries(in segment: [String: Any]) -> [(word: ASRWord, dtwStart: Double?)] {
+    private func parseTokenEntries(
+        in segment: [String: Any],
+        segmentText: String? = nil
+    ) -> [(word: ASRWord, dtwStart: Double?)] {
         let tokens = (segment["tokens"] as? [[String: Any]])
             ?? (segment["words"] as? [[String: Any]])
             ?? []
@@ -5406,8 +5541,11 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
         var mergeEligible: [Bool] = []
         for token in tokens {
             let rawText = token["text"] as? String ?? ""
+            if isWhisperControlToken(rawText) {
+                continue
+            }
             guard let text = cleanText(rawText),
-                  let interval = interval(in: token, offsetValuesAreMilliseconds: true) else {
+                  let interval = tokenInterval(in: token, offsetValuesAreMilliseconds: true) else {
                 continue
             }
             let word = ASRWord(
@@ -5445,7 +5583,57 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
                 mergeEligible.append(startsNewWhisperTokenWord)
             }
         }
-        return entries
+        return koreanSegmentWordEntries(segmentText: segmentText, entries: entries) ?? entries
+    }
+
+    private func koreanSegmentWordEntries(
+        segmentText: String?,
+        entries: [(word: ASRWord, dtwStart: Double?)]
+    ) -> [(word: ASRWord, dtwStart: Double?)]? {
+        guard let segmentText,
+              parserContainsHangul(segmentText),
+              !entries.isEmpty else {
+            return nil
+        }
+        let units = segmentText
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard units.count >= 2 else { return nil }
+
+        var output: [(word: ASRWord, dtwStart: Double?)] = []
+        var entryIndex = entries.startIndex
+        for unit in units {
+            let target = parserAlignmentText(unit)
+            guard !target.isEmpty else { return nil }
+            var consumed: [(word: ASRWord, dtwStart: Double?)] = []
+            var accumulated = ""
+            while entryIndex < entries.endIndex, accumulated != target {
+                let entry = entries[entryIndex]
+                let tokenText = parserAlignmentText(entry.word.text)
+                guard !tokenText.isEmpty else { return nil }
+                accumulated += tokenText
+                guard target.hasPrefix(accumulated) else { return nil }
+                consumed.append(entry)
+                entryIndex = entries.index(after: entryIndex)
+            }
+            guard accumulated == target,
+                  let first = consumed.first,
+                  let last = consumed.last else {
+                return nil
+            }
+            output.append((
+                word: ASRWord(
+                    text: unit,
+                    startSeconds: first.word.startSeconds,
+                    endSeconds: consumed.reduce(last.word.endSeconds) { max($0, $1.word.endSeconds) },
+                    probability: consumed.map { $0.word.probability ?? 1.0 }.min()
+                ),
+                dtwStart: first.dtwStart
+            ))
+        }
+        guard entryIndex == entries.endIndex else { return nil }
+        return output
     }
 
     private func shouldMergeLatinParserToken(
@@ -5483,6 +5671,21 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
 
     private func parserContainsCJKOrHangul(_ text: String) -> Bool {
         text.unicodeScalars.contains { parserIsCJKOrHangulScalar($0) }
+    }
+
+    private func parserContainsHangul(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0xAC00...0xD7A3).contains(Int(scalar.value))
+        }
+    }
+
+    private func parserAlignmentText(_ text: String) -> String {
+        text.precomposedStringWithCanonicalMapping.filter { !$0.isWhitespace }
+    }
+
+    private func isWhisperControlToken(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("[_") && trimmed.hasSuffix("]")
     }
 
     private func parserIsCJKOrHangulScalar(_ scalar: Unicode.Scalar) -> Bool {
@@ -5524,6 +5727,41 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
             )
         }
         return result
+    }
+
+    private func tokenInterval(
+        in object: [String: Any],
+        offsetValuesAreMilliseconds: Bool
+    ) -> (start: Double, end: Double)? {
+        if let interval = interval(in: object, offsetValuesAreMilliseconds: offsetValuesAreMilliseconds) {
+            return interval
+        }
+        if let repaired = repairedReversedInterval(
+            in: object["offsets"] as? [String: Any],
+            valuesAreMilliseconds: offsetValuesAreMilliseconds
+        ) {
+            return repaired
+        }
+        if let repaired = repairedReversedInterval(
+            in: object["timestamps"] as? [String: Any],
+            valuesAreMilliseconds: false
+        ) {
+            return repaired
+        }
+        return nil
+    }
+
+    private func repairedReversedInterval(
+        in object: [String: Any]?,
+        valuesAreMilliseconds: Bool
+    ) -> (start: Double, end: Double)? {
+        guard let object,
+              let start = seconds(from: object["from"], valuesAreMilliseconds: valuesAreMilliseconds),
+              let end = seconds(from: object["to"], valuesAreMilliseconds: valuesAreMilliseconds),
+              end < start else {
+            return nil
+        }
+        return (start, start + 0.01)
     }
 
     private func parseSegmentWord(_ segment: [String: Any]) -> ASRWord? {

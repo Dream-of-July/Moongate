@@ -1,0 +1,79 @@
+{
+  "backfills": [
+    {
+      "sample_id": "adele-hello",
+      "sourceUrls": ["https://www.youtube.com/watch?v=YQHsXMglC9A"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT YQHsXMglC9A.en.vtt"]
+    },
+    {
+      "sample_id": "billie-eilish-birds",
+      "sourceUrls": ["https://www.youtube.com/watch?v=V9PVRfjEBTI"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT V9PVRfjEBTI.en.vtt"]
+    },
+    {
+      "sample_id": "taylor-swift-anti-hero",
+      "sourceUrls": ["https://www.youtube.com/watch?v=b1kbLwvqugk"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT b1kbLwvqugk.en.vtt"]
+    },
+    {
+      "sample_id": "stromae-papaoutai",
+      "sourceUrls": ["https://www.youtube.com/watch?v=oiKj0Z_Xnjc"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT oiKj0Z_Xnjc.fr.vtt"]
+    },
+    {
+      "sample_id": "aimer-zankyosanka",
+      "sourceUrls": ["https://www.youtube.com/watch?v=tLQLa6lM3Us"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT tLQLa6lM3Us.ja.vtt"]
+    },
+    {
+      "sample_id": "higedan-cry-baby",
+      "sourceUrls": ["https://www.youtube.com/watch?v=O1bhZgkC4Gw"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT O1bhZgkC4Gw.ja.vtt"]
+    },
+    {
+      "sample_id": "king-gnu-hakujitsu",
+      "sourceUrls": ["https://www.youtube.com/watch?v=ony539T074w"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT ony539T074w.ja.vtt"]
+    },
+    {
+      "sample_id": "yoasobi-gunjou",
+      "sourceUrls": ["https://www.youtube.com/watch?v=Y4nEEZwckuU"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached local-asr media Y4nEEZwckuU.webm"]
+    },
+    {
+      "sample_id": "yoasobi-idol",
+      "sourceUrls": ["https://www.youtube.com/watch?v=ZRtdQ81jPUQ"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT ZRtdQ81jPUQ.ja.vtt"]
+    },
+    {
+      "sample_id": "yoasobi-yoru-ni-kakeru",
+      "sourceUrls": ["https://www.youtube.com/watch?v=x8VYWazR5mE"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT x8VYWazR5mE.ja.vtt"]
+    },
+    {
+      "sample_id": "blackpink-ddu-du",
+      "sourceUrls": ["https://www.youtube.com/watch?v=IHNzOHi8sJs"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT IHNzOHi8sJs.ko.vtt"]
+    },
+    {
+      "sample_id": "ive-i-am",
+      "sourceUrls": ["https://www.youtube.com/watch?v=6ZUIwj3FgUY"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT 6ZUIwj3FgUY.ko.vtt"]
+    },
+    {
+      "sample_id": "newjeans-omg",
+      "sourceUrls": ["https://www.youtube.com/watch?v=sVTy_wmn5SU"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT sVTy_wmn5SU.ko.vtt"]
+    },
+    {
+      "sample_id": "eason-chan-exaggerated",
+      "sourceUrls": ["https://www.youtube.com/watch?v=Hrayki5Lp5U"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached platform VTT Hrayki5Lp5U.yue.vtt"]
+    },
+    {
+      "sample_id": "jay-chou-blue-white-porcelain",
+      "sourceUrls": ["https://www.youtube.com/watch?v=Z8Mqw0b9ADs"],
+      "evidence": ["sourceMedia: canonical YouTube URL derived from cached local-asr media Z8Mqw0b9ADs.webm"]
+    }
+  ]
+}

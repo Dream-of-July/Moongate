@@ -1,0 +1,207 @@
+{
+  "attempts": [
+    {
+      "sample_id": "bump-souvenir",
+      "language_code": "ja",
+      "status": "acquired_original_language_subtitle",
+      "sourceUrl": "https://www.youtube.com/watch?v=C9vAUfSEh8Q",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp Available subtitles included ja; downloaded to ignored artifact youtube-platform-ja.ja.clean.srt"
+      ],
+      "nextAction": "Keep platform ja as final source and retain local-ASR comparison as diagnostic evidence."
+    },
+    {
+      "sample_id": "higedan-pretender",
+      "language_code": "ja",
+      "status": "translated_subtitles_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=TQ8WlA2GXbk",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp Available subtitles exposed zh-Hans, zh-Hant, en, and ko; no ja original-language uploaded subtitle",
+        "2026-07-01 retry hit YouTube sign-in/bot confirmation, so no new original-language evidence was acquired"
+      ],
+      "nextAction": "Needs original-language reference or audio-backed recognition judge; do not use browser cookies without explicit approval."
+    },
+    {
+      "sample_id": "aimyon-marigold",
+      "language_code": "ja",
+      "status": "automatic_captions_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=0xSiBpUdW4E",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "2026-07-01 yt-dlp --list-subs returned no Available subtitles",
+        "ja-orig and ja appeared only under Available automatic captions, so they cannot certify human-level recognition"
+      ],
+      "nextAction": "Find a reliable original-language reference or audio-backed recognition judge; do not use automatic captions as recognition proof."
+    },
+    {
+      "sample_id": "back-number-christmas-song",
+      "language_code": "ja",
+      "status": "translated_subtitles_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=7zBeQezaz4U",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "2026-07-01 yt-dlp Available subtitles exposed translated tracks such as zh-HK, zh-Hans, zh-Hant, en, fil, id, ko, ms, th, and vi; no ja original-language uploaded subtitle",
+        "Available automatic captions were translation-derived and are not human reference evidence"
+      ],
+      "nextAction": "Needs original-language reference or audio-backed recognition judge."
+    },
+        {
+            "sample_id": "mayday-stubborn",
+            "language_code": "zh",
+            "status": "acquired_original_language_uploaded_subtitle",
+            "sourceUrl": "https://www.youtube.com/watch?v=R2s-H_crYkc",
+            "checkedAt": "2026-07-01",
+            "evidence": [
+                "yt-dlp --list-subs showed zh under Available subtitles, while automatic captions were listed separately as translations from Chinese"
+            ],
+            "nextAction": "Use platform_caption_provenance_backfills.json to make the uploaded-caption provenance reproducible; keep local-ASR comparison as diagnostic evidence."
+        },
+    {
+      "sample_id": "kenshi-yonezu-lemon",
+      "language_code": "ja",
+      "status": "translated_subtitles_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=SX_ViT4Ra7k",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp Available subtitles exposed zh-Hans, zh-Hant, en, and ko; no ja original-language uploaded subtitle"
+      ],
+      "nextAction": "Needs original-language reference or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "vaundy-kaiju-no-hanauta",
+      "language_code": "ja",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=UM9XNpgrqVk",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "radwimps-zenzenzense",
+      "language_code": "ja",
+      "status": "no_uploaded_subtitles",
+      "sourceUrl": "https://www.youtube.com/watch?v=PDSkFeMVNFs",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitles table returned NA"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "yoasobi-yasashii-suisei-live",
+      "language_code": "ja",
+      "status": "no_uploaded_subtitles",
+      "sourceUrl": "https://www.youtube.com/watch?v=sSmba3k5JZY",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitles table returned NA"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "ado-usseewa",
+      "language_code": "ja",
+      "status": "translated_subtitles_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=Qp3b-RXtz4w",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp Available subtitles exposed translated tracks including ar, zh, en, ko, ru, and es; no ja original-language uploaded subtitle"
+      ],
+      "nextAction": "Needs original-language reference or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "lisa-gurenge",
+      "language_code": "ja",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=x1FV6IrjZCY",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "mrs-green-apple-inferno",
+      "language_code": "ja",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=wfCcs0vLysk",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "kenshi-yonezu-kanden",
+      "language_code": "ja",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=UFQEttrn6CQ",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "ado-new-genesis",
+      "language_code": "ja",
+      "status": "translated_subtitles_only",
+      "sourceUrl": "https://www.youtube.com/watch?v=1FliVTcX8bQ",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp Available subtitles exposed en; no ja original-language uploaded subtitle"
+      ],
+      "nextAction": "Needs original-language reference or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "eve-kaikai-kitan",
+      "language_code": "ja",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=1tk1pqwrOys",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    },
+    {
+      "sample_id": "laura-pausini-la-solitudine",
+      "language_code": "it",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=FpOEN93LX-E",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "A cached it VTT exists, but VTT headers are not manual-caption provenance and the cached platform track is marked unusable by source_quality",
+        "2026-07-01 yt-dlp --list-subs was blocked by YouTube sign-in/bot confirmation, so the it track provenance remains unverified"
+      ],
+      "nextAction": "Needs reliable Italian reference, explicit uploaded-caption provenance, or audio-backed numeric recognition judge."
+    },
+    {
+      "sample_id": "gem-light-years-away",
+      "language_code": "zh",
+      "status": "no_subtitles",
+      "sourceUrl": "https://www.youtube.com/watch?v=T4SimnaiktU",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "2026-07-01 yt-dlp --list-subs reported no automatic captions and no subtitles"
+      ],
+      "nextAction": "Needs another reference source or audio-backed numeric recognition judge."
+    },
+    {
+      "sample_id": "rosalia-despecha",
+      "language_code": "es",
+      "status": "bot_gate",
+      "sourceUrl": "https://www.youtube.com/watch?v=5g2hT4GmAGU",
+      "checkedAt": "2026-07-01",
+      "evidence": [
+        "yt-dlp subtitle metadata request was blocked by YouTube sign-in/bot confirmation",
+        "2026-07-01 retry was also blocked by YouTube sign-in/bot confirmation"
+      ],
+      "nextAction": "Needs another reference source or audio-backed recognition judge."
+    }
+  ]
+}

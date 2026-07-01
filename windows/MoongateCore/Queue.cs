@@ -1826,16 +1826,29 @@ public sealed class QueueManager
         var nextFiles = downloadFiles.ToList();
         if (!nextFiles.Contains(sourceSrt)) nextFiles.Add(sourceSrt);
 
-        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果低置信，且用户已配置并
+        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果质量较低，且用户已配置并
         // 同意云端识别（_cloudAsrGenerator != null 已隐含 cloudASREnabled && consentAccepted），用云端重识别取代本地源。
         // 绝不自动上传——没配置/没同意就保持本地结果。
-        if (request.SubtitleSourcePolicy == SubtitleSourcePolicy.AutoBest
-            && generated.Confidence is { IsLowQuality: true }
-            && _cloudAsrGenerator is not null)
+        var generatedLocalCandidate = Candidate(
+            SubtitleSourceKind.LocalAsr,
+            sourceSrt,
+            primarySubtitleTrack?.Label,
+            "whisper.cpp");
+        var generatedLocalAssessment = SubtitleSourceDecisionEngine.Assess(
+            generatedLocalCandidate,
+            preferredLang,
+            videoDurationSeconds);
+        var cloudAsrGenerator = _cloudAsrGenerator;
+        if (cloudAsrGenerator is not null
+            && SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+                request.SubtitleSourcePolicy,
+                generatedLocalAssessment,
+                generated.Confidence is { IsLowQuality: true },
+                cloudAsrAvailable: true))
         {
             try
             {
-                var cloud = await _cloudAsrGenerator.GenerateSourceSubtitleAsync(
+                var cloud = await cloudAsrGenerator.GenerateSourceSubtitleAsync(
                     videoFile,
                     string.IsNullOrEmpty(language) ? "auto" : language,
                     control,
@@ -1872,9 +1885,9 @@ public sealed class QueueManager
                         CandidateReports = cloudResolved?.CandidateReports ?? [],
                     },
                     L10n.T(
-                        "本地识别置信度较低，已改用你启用的云端精准识别。",
-                        "本機識別置信度較低，已改用你啟用的雲端精準識別。",
-                        "Local recognition was low-confidence, so Moongate used cloud recognition you enabled."));
+                        "本地识别质量较低，已改用你启用的云端精准识别。",
+                        "本機識別品質較低，已改用你啟用的雲端精準識別。",
+                        "Local recognition quality was low, so Moongate used cloud recognition you enabled."));
             }
             catch (OperationCanceledException)
             {
@@ -1899,11 +1912,7 @@ public sealed class QueueManager
             request.SubtitleSourcePolicy,
             [
                 platformCandidate,
-                Candidate(
-                    SubtitleSourceKind.LocalAsr,
-                    sourceSrt,
-                    primarySubtitleTrack?.Label,
-                    "whisper.cpp"),
+                generatedLocalCandidate,
             ],
             videoDurationSeconds));
         var selectedKind = resolved?.SelectedKind ?? (platformAssessment.GateUsable ? SubtitleSourceKind.PlatformAuto : SubtitleSourceKind.LocalAsr);
@@ -2025,6 +2034,13 @@ public sealed class QueueManager
             progress => ApplyAsrProgress(id, generation, progress),
             ct).ConfigureAwait(false);
         var sourceSrt = generated.Url;
+        if (generated.Confidence?.QualityIssues.Contains("nearEmptyTranscript") == true)
+        {
+            throw MoongateException.DownloadFailed(L10n.T(
+                "本地识别几乎没有得到可用文字。请检查源语言或模型后重试；如果有平台字幕或云端识别，建议改用它们。",
+                "本機識別幾乎沒有得到可用文字。請檢查來源語言或模型後重試；如果有平台字幕或雲端識別，建議改用它們。",
+                "Local recognition found almost no usable speech. Check the source language or model, then retry; use platform or cloud recognition if available."));
+        }
         // 严重质量问题(重复循环/语言误判)不再让整个任务失败——whisper 是用户显式选择的源,硬失败让用户一无所得。
         // 与 autoBest 路径一致:照常产出字幕,由下方 LocalAsrSourceNote 附诚实告警。
         if (GenerationOf(id) != generation) return files;

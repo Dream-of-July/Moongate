@@ -30,6 +30,7 @@ let usageText = """
   --engine 支持 \(TranslationEngine.supportedCLIValues.joined(separator: " / "))。
   公司 Claude 网关通常用 --provider anthropic --base "$ANTHROPIC_BASE_URL" --token "$ANTHROPIC_AUTH_TOKEN"。
   burn 默认保持源分辨率；--max-height N 可显式限制高度，--keep-resolution 强制保持源分辨率。
+  local-asr-srt 的 --asr-words 支持 Moongate words JSON，也支持 whisper.cpp 原始 JSON。
 """
 
 func splitLangs(_ value: String) -> [String] {
@@ -57,6 +58,42 @@ struct ASRWordsJSON: Decodable {
     let words: [Word]
 }
 
+func loadLocalASRTranscript(
+    wordsJSON: URL,
+    requestedLanguageCode: String,
+    transcriptID: String
+) throws -> ASRTranscript {
+    let data = try Data(contentsOf: wordsJSON)
+    let language = requestedLanguageCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let payload = try? JSONDecoder().decode(ASRWordsJSON.self, from: data) {
+        return ASRTranscript(
+            id: transcriptID,
+            languageCode: language.isEmpty ? (payload.language ?? "und") : language,
+            durationSeconds: nil,
+            words: payload.words.map {
+                ASRWord(
+                    text: $0.text,
+                    startSeconds: $0.start,
+                    endSeconds: $0.end,
+                    probability: $0.probability
+                )
+            },
+            sourceModelID: "subtitle_timing_eval"
+        )
+    }
+
+    let request = ASRRequest(
+        audioURL: wordsJSON,
+        languageCode: language.isEmpty ? nil : language,
+        modelID: "whisper.cpp:raw-json"
+    )
+    return try WhisperCppJSONTranscriptParser().parse(
+        data: data,
+        request: request,
+        transcriptID: transcriptID
+    )
+}
+
 func writeLocalASRSRT(
     wordsJSON: URL,
     languageCode: String,
@@ -65,21 +102,10 @@ func writeLocalASRSRT(
     audioActivity: ASRAudioActivity? = nil,
     timingProfile: SubtitleTimingProfile? = nil
 ) throws {
-    let payload = try JSONDecoder().decode(ASRWordsJSON.self, from: Data(contentsOf: wordsJSON))
-    let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
-    let transcript = ASRTranscript(
-        id: outputURL.deletingPathExtension().lastPathComponent,
-        languageCode: language.isEmpty ? (payload.language ?? "und") : language,
-        durationSeconds: nil,
-        words: payload.words.map {
-            ASRWord(
-                text: $0.text,
-                startSeconds: $0.start,
-                endSeconds: $0.end,
-                probability: $0.probability
-            )
-        },
-        sourceModelID: "subtitle_timing_eval"
+    let transcript = try loadLocalASRTranscript(
+        wordsJSON: wordsJSON,
+        requestedLanguageCode: languageCode,
+        transcriptID: outputURL.deletingPathExtension().lastPathComponent
     )
     let cues: [SubtitleCue]
     if let timingProfile {

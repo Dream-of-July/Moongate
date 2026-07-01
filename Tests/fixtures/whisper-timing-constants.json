@@ -86,7 +86,10 @@
     "averageProbabilityFloor": 0.8,
     "lowConfidenceWordProbability": 0.5,
     "lowConfidenceWordRatioCeiling": 0.2,
-    "minimumAssessableWordCount": 24
+    "minimumAssessableWordCount": 24,
+    "stretchedCJKTokenSecondsFloor": 2.5,
+    "stretchedCJKTokenClusterCount": 3,
+    "stretchedCJKLowProbabilityCeiling": 0.15
   },
   "subtitleSourceDecision": {
     "_comment": "SubtitleSourceDecisionEngine 的排名/裁决常量唯一真值。Swift 与 C# 各断言本端引擎常量等于此处(SubtitleSourceDecisionEngineTests)。baseScore=按来源出处的转写可信度先验(不看时序,守铁律);sourceKindRank=平分 tie-break 顺序(越小越可信,manual<auto<local);policyBoost=各 policy 对相应来源的排名加成;verdictThresholds=score→5档裁决分界;autoBestRegenerateBelow=autoBest 下平台 verdict 低于此档即重生成 Whisper(具名质量地板,取代旧的双裁决 OR)。",

@@ -28,11 +28,30 @@
       "expected_decision": "localASR"
     },
     {
+      "id": "low-confidence-auto-fallback-local",
+      "desc": "平台自动字幕过门但质量 verdict 低于 usable：autoBest 下回退 Whisper，避免低置信平台源压过本地识别",
+      "platform_available": true,
+      "platform_usable": true,
+      "platform_verdict": "lowConfidence",
+      "local_asr_available": true,
+      "expected_decision": "localASR"
+    },
+    {
       "id": "garbled-auto-fallback-cloud",
       "desc": "平台乱码 + 无本地但配了云端：用云端",
       "platform_available": true,
       "platform_usable": false,
       "local_asr_available": false,
+      "cloud_available": true,
+      "expected_decision": "cloudASR"
+    },
+    {
+      "id": "garbled-auto-local-low-confidence-escalates-cloud",
+      "desc": "平台乱码 + 本地 Whisper 也低置信 + 配了云端：继续升级云端，不把低质 Whisper 静默当最佳源",
+      "platform_available": true,
+      "platform_usable": false,
+      "local_asr_available": true,
+      "local_asr_verdict": "lowConfidence",
       "cloud_available": true,
       "expected_decision": "cloudASR"
     },

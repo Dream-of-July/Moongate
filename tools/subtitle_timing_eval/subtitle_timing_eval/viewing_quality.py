@@ -95,6 +95,8 @@ class ViewingSampleReport:
     fallback_used: bool
     translated_path: Optional[str]
     source_quality: SourceQualityReport
+    local_asr_quality: Optional[SourceQualityReport]
+    local_asr_issues: List[str]
     final_source_issues: List[str]
     translated_issues: List[str]
     preview_rows: List[Dict[str, Any]]
@@ -506,6 +508,20 @@ def build_source_candidate_reports(report: ViewingSampleReport) -> List[Dict[str
     platform_available = report.source_path is not None
     local_available = report.local_asr_path is not None
     platform_usable = platform_available and report.source_quality.usable
+    local_reasons: List[str]
+    if local_available:
+        local_reasons = []
+        if report.local_asr_quality is not None:
+            local_reasons.extend(report.local_asr_quality.reasons)
+        local_reasons.extend(report.local_asr_issues)
+    else:
+        local_reasons = ["unavailable"]
+    local_usable = (
+        local_available
+        and report.local_asr_quality is not None
+        and report.local_asr_quality.usable
+        and not report.local_asr_issues
+    )
     return [
         {
             "kind": "platform",
@@ -514,14 +530,16 @@ def build_source_candidate_reports(report: ViewingSampleReport) -> List[Dict[str
             "usable": platform_usable,
             "reasons": list(report.source_quality.reasons) if platform_available else ["missing"],
             "path": report.source_path,
+            "quality": asdict(report.source_quality) if platform_available else None,
         },
         {
             "kind": "local-asr",
             "available": local_available,
             "selected": report.final_source_kind == "local-asr",
-            "usable": local_available,
-            "reasons": [] if local_available else ["unavailable"],
+            "usable": local_usable,
+            "reasons": local_reasons,
             "path": report.local_asr_path,
+            "quality": asdict(report.local_asr_quality) if report.local_asr_quality is not None else None,
         },
     ]
 
@@ -716,6 +734,23 @@ def build_viewing_sample_report(
         requested_language_code=source_language_code,
         subtitle_language_code=source_language_code,
     )
+    local_asr_report = (
+        source_quality_report(
+            local_asr_cues,
+            requested_language_code=source_language_code,
+            subtitle_language_code=source_language_code,
+        )
+        if local_asr_path else None
+    )
+    local_asr_issues = (
+        final_source_quality_issues(
+            local_asr_cues,
+            preview_seconds=preview_seconds,
+            category=category,
+            source_language_code=source_language_code,
+        )
+        if local_asr_path else []
+    )
     fallback_used = bool(local_asr_path and local_asr_cues and not source_report.usable)
     if fallback_used:
         final_source_path = local_asr_path
@@ -752,6 +787,8 @@ def build_viewing_sample_report(
         fallback_used=fallback_used,
         translated_path=str(translated_path) if translated_path else None,
         source_quality=source_report,
+        local_asr_quality=local_asr_report,
+        local_asr_issues=local_asr_issues,
         final_source_issues=final_source_issues,
         translated_issues=translated_issues,
         preview_rows=rows,

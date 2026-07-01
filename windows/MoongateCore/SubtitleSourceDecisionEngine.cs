@@ -104,6 +104,23 @@ public static class SubtitleSourceDecisionEngine
         new(AsrPlanKind.KeepPlatformRecordReasons, platform?.GateReasons ?? []);
 
     /// <summary>
+    /// Local ASR has already been generated; decide whether an opt-in cloud recognizer should rescue it.
+    /// This keeps the existing confidence-based path and also routes the generated local SRT through the
+    /// same quality gate so obviously unusable Whisper output is not silently kept as a comparable source.
+    /// </summary>
+    public static bool ShouldEscalateGeneratedLocalAsr(
+        SubtitleSourcePolicy policy,
+        Assessment? localAssessment,
+        bool localAsrConfidenceIsLowQuality,
+        bool cloudAsrAvailable)
+    {
+        if (policy != SubtitleSourcePolicy.AutoBest || !cloudAsrAvailable) return false;
+        if (localAsrConfidenceIsLowQuality) return true;
+        return localAssessment is not null
+            && (!localAssessment.GateUsable || localAssessment.Verdict < AutoBestRegenerateBelow);
+    }
+
+    /// <summary>
     /// 在已评估候选中按 Score + PolicyBoost 选最优；平分取更可信来源（更小 SourceKindRank）。
     /// 只在 selectableIds（有文件的候选）里选。无可选时返回 null。
     /// </summary>

@@ -1,0 +1,14 @@
+{
+  "backfills": [
+    {
+      "sample_id": "mayday-stubborn",
+      "sourcePath": "artifacts/subtitle_timing_eval/viewing_quality_songs30/mayday-stubborn/R2s-H_crYkc.zh.vtt",
+      "captionKind": "uploaded",
+      "sourceUrls": [
+        "https://www.youtube.com/watch?v=R2s-H_crYkc"
+      ],
+      "checkedAt": "2026-07-01",
+      "method": "yt-dlp --list-subs showed zh under Available subtitles, not Available automatic captions."
+    }
+  ]
+}
