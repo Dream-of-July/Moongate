@@ -65,7 +65,14 @@ func loadLocalASRTranscript(
 ) throws -> ASRTranscript {
     let data = try Data(contentsOf: wordsJSON)
     let language = requestedLanguageCode.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let payload = try? JSONDecoder().decode(ASRWordsJSON.self, from: data) {
+    // Route by top-level shape instead of try?-then-fall-through: a corrupt Moongate words file
+    // (has "words") must surface its own decode error, not be misreported as a whisper.cpp parse
+    // failure ("emptyTranscript"). Only fall to the raw whisper.cpp parser when there is no
+    // "words" key at all.
+    let topLevel = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let looksLikeMoongateWords = (topLevel?["words"] is [Any])
+    if looksLikeMoongateWords {
+        let payload = try JSONDecoder().decode(ASRWordsJSON.self, from: data)
         return ASRTranscript(
             id: transcriptID,
             languageCode: language.isEmpty ? (payload.language ?? "und") : language,

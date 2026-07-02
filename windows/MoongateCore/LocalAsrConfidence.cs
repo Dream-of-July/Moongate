@@ -442,7 +442,8 @@ public static class LocalAsrConfidence
                 or UnicodeCategory.CurrencySymbol
                 or UnicodeCategory.ModifierSymbol
                 or UnicodeCategory.OtherSymbol
-                or UnicodeCategory.Control => true,
+                or UnicodeCategory.Control
+                or UnicodeCategory.Format => true,
             _ => false,
         };
     }

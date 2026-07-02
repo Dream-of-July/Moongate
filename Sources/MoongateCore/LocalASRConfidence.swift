@@ -216,7 +216,8 @@ public enum LocalASRConfidence {
         for scalar in words.flatMap({ $0.text.unicodeScalars }) {
             if CharacterSet.whitespacesAndNewlines.contains(scalar)
                 || CharacterSet.punctuationCharacters.contains(scalar)
-                || CharacterSet.symbols.contains(scalar) {
+                || CharacterSet.symbols.contains(scalar)
+                || CharacterSet.controlCharacters.contains(scalar) {
                 continue
             }
             visible += 1
@@ -397,6 +398,7 @@ public enum LocalASRConfidence {
             !CharacterSet.punctuationCharacters.contains(scalar)
                 && !CharacterSet.symbols.contains(scalar)
                 && !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                && !CharacterSet.controlCharacters.contains(scalar)
         }
         guard scalars.count >= 18 else { return false }
         let uniqueRatio = Double(Set(scalars.map(\.value)).count) / Double(scalars.count)
@@ -410,6 +412,7 @@ public enum LocalASRConfidence {
             .filter { scalar in
                 !CharacterSet.punctuationCharacters.contains(scalar)
                     && !CharacterSet.symbols.contains(scalar)
+                    && !CharacterSet.controlCharacters.contains(scalar)
             }
             .map(String.init)
             .joined()

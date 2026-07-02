@@ -200,6 +200,27 @@ final class LocalASRConfidenceTests: XCTestCase {
         XCTAssertTrue(summary.qualityIssues.contains("nearEmptyTranscript"))
     }
 
+    /// Cross-platform parity: invisible Unicode Format marks (U+200F RLM etc., common in Arabic
+    /// RTL output) must not count as meaningful characters. Otherwise mac and Windows disagree on
+    /// nearEmptyTranscript for the same transcript. Swift ignores Cc+Cf via controlCharacters; C#
+    /// ignores Control+Format in ShouldIgnoreForScriptQuality.
+    func testNearEmptyDetectionIgnoresInvisibleFormatMarks() {
+        let raw = """
+        1
+        00:00:00,400 --> 00:00:01,530
+        \u{0645}\u{200F}\u{200F}\u{200F}
+        """
+
+        let summary = LocalASRConfidence.assessSubtitle(
+            raw: raw,
+            fileName: "clip.local-asr.ar.srt",
+            languageCode: "ar",
+            requestedLanguageCode: "ar",
+            languageHintCode: "ar")
+
+        XCTAssertTrue(summary.qualityIssues.contains("nearEmptyTranscript"))
+    }
+
     func testHealthyRepeatedLyricsAreNotTreatedAsLoopCollapse() {
         let tokens = ["青", "い", "空", "を", "見", "る", "君", "と", "歩", "く", "道", "で"]
         let words = (0..<36).map { index in word(0.96, text: tokens[index % tokens.count]) }

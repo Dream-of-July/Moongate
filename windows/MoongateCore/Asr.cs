@@ -1304,7 +1304,6 @@ public static partial class LocalAsrSubtitleTimingPlanner
         ["no"] = ["reg"],
         ["ito"] = ["un"],
         ["ra"] = ["lond"],
-        ["a"] = ["core"],
         ["ia"] = ["svez"],
         ["ix"] = ["d"],
         ["lection"] = ["sé", "se"],
@@ -3744,15 +3743,26 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static bool IsObservedLatinContinuation(string left, string right)
     {
-        var leftLower = left.Normalize(NormalizationForm.FormC).Trim().ToLowerInvariant();
         var rightLower = right.Normalize(NormalizationForm.FormC).Trim().ToLowerInvariant();
         if (rightLower == "rice")
         {
+            var leftLower = left.Normalize(NormalizationForm.FormC).Trim().ToLowerInvariant();
             return leftLower.EndsWith("créat", StringComparison.Ordinal)
                 || leftLower.EndsWith("creat", StringComparison.Ordinal);
         }
-        return ObservedLatinContinuationPrefixes.TryGetValue(rightLower, out var allowedPrefixes)
-            && allowedPrefixes.Any(prefix => leftLower.EndsWith(prefix, StringComparison.Ordinal));
+        if (!ObservedLatinContinuationPrefixes.TryGetValue(rightLower, out var allowedPrefixes))
+        {
+            return false;
+        }
+        // Match the trailing Latin run *exactly* against an observed sub-word piece, not with
+        // EndsWith on the whole left string. EndsWith glued mainstream words whose tail merely
+        // happened to end in a fragment ("stop"+"in"→"stopin", "salut"+"il"→"salutil",
+        // "drop"/"shop"/"develop"+"in"). The accumulation chains already list every accumulated
+        // form as its own key, so equality still links real multi-piece sub-words while failing
+        // safe on complete words. Mirrors Swift isObservedLatinContinuation.
+        var leftRun = TrailingLatinLetterRun(left).ToLowerInvariant();
+        if (leftRun.Length == 0) return false;
+        return allowedPrefixes.Any(prefix => string.Equals(leftRun, prefix, StringComparison.Ordinal));
     }
 
     private static bool IsLatinBridgeFragment(string left, string right, string? next)

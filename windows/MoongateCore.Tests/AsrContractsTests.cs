@@ -1024,6 +1024,16 @@ public class AsrContractsTests
         Assert.True(nearEmptySrtSummary.HasSevereQualityBlocker);
         Assert.Contains("nearEmptyTranscript", nearEmptySrtSummary.QualityIssues);
 
+        // Cross-platform parity: invisible Unicode Format marks (U+200F RLM etc.) must not count as
+        // meaningful characters, matching Swift controlCharacters (Cc+Cf).
+        var arabicFormatMarkSummary = LocalAsrConfidence.AssessSubtitle(
+            "1\n00:00:00,400 --> 00:00:01,530\nم\u200F\u200F\u200F",
+            "clip.local-asr.ar.srt",
+            "ar",
+            requestedLanguageCode: "ar",
+            languageHintCode: "ar");
+        Assert.Contains("nearEmptyTranscript", arabicFormatMarkSummary.QualityIssues);
+
         string[] healthyTokens = ["青", "い", "空", "を", "見", "る", "君", "と", "歩", "く", "道", "で"];
         var healthyRepeated = Enumerable.Range(0, 36)
             .Select(index => new AsrWord
@@ -3343,7 +3353,6 @@ public class AsrContractsTests
         Assert.Contains("Regno", text, StringComparison.Ordinal);
         Assert.Contains("Unito", text, StringComparison.Ordinal);
         Assert.Contains("Londra", text, StringComparison.Ordinal);
-        Assert.Contains("Corea", text, StringComparison.Ordinal);
         Assert.Contains("Svezia", text, StringComparison.Ordinal);
         Assert.Contains("orgogliosamente", text, StringComparison.Ordinal);
         Assert.Contains("par la route", text, StringComparison.Ordinal);
@@ -3356,10 +3365,49 @@ public class AsrContractsTests
         Assert.DoesNotContain("Reg no", text, StringComparison.Ordinal);
         Assert.DoesNotContain("Un ito", text, StringComparison.Ordinal);
         Assert.DoesNotContain("Lond ra", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("Core a", text, StringComparison.Ordinal);
         Assert.DoesNotContain("Svez ia", text, StringComparison.Ordinal);
         Assert.DoesNotContain("orgog li os amente", text, StringComparison.Ordinal);
         Assert.DoesNotContain("parlaroute", text, StringComparison.Ordinal);
+    }
+
+    // Regression for the observed-continuation over-join bug: the tables must not glue a complete
+    // left word to a following function word just because the word's tail happens to end in a
+    // listed fragment. "stop"+"in", "core"+"a", "develop"+"in" are separate words, not sub-words.
+    [Fact]
+    public void LocalAsrTimingPlannerDoesNotGlueCompleteWordsToFollowingFunctionWords()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "observed-no-overjoin-en-fr",
+            LanguageCode = "en",
+            Words = new List<AsrWord>
+            {
+                new AsrWord { Text = "we", StartSeconds = 0.0, EndSeconds = 0.2 },
+                new AsrWord { Text = " stop", StartSeconds = 0.2, EndSeconds = 0.5 },
+                new AsrWord { Text = " in", StartSeconds = 0.5, EndSeconds = 0.7 },
+                new AsrWord { Text = " Paris", StartSeconds = 0.7, EndSeconds = 1.1 },
+                new AsrWord { Text = " at", StartSeconds = 1.2, EndSeconds = 1.5 },
+                new AsrWord { Text = " its", StartSeconds = 1.5, EndSeconds = 1.8 },
+                new AsrWord { Text = " core", StartSeconds = 1.8, EndSeconds = 2.1 },
+                new AsrWord { Text = " a", StartSeconds = 2.1, EndSeconds = 2.3 },
+                new AsrWord { Text = " simple", StartSeconds = 2.3, EndSeconds = 2.7 },
+                new AsrWord { Text = " idea", StartSeconds = 2.7, EndSeconds = 3.0 },
+                new AsrWord { Text = " we", StartSeconds = 3.1, EndSeconds = 3.3 },
+                new AsrWord { Text = " develop", StartSeconds = 3.3, EndSeconds = 3.7 },
+                new AsrWord { Text = " in", StartSeconds = 3.7, EndSeconds = 3.9 },
+                new AsrWord { Text = " town", StartSeconds = 3.9, EndSeconds = 4.2 },
+            },
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(c => c.Text));
+
+        Assert.Contains("stop in", text, StringComparison.Ordinal);
+        Assert.Contains("core a", text, StringComparison.Ordinal);
+        Assert.Contains("develop in", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("stopin", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("corea", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("developin", text, StringComparison.Ordinal);
     }
 
     [Fact]

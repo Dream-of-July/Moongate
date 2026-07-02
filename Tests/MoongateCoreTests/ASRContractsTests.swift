@@ -2937,7 +2937,6 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertTrue(text.contains("Regno"), text)
         XCTAssertTrue(text.contains("Unito"), text)
         XCTAssertTrue(text.contains("Londra"), text)
-        XCTAssertTrue(text.contains("Corea"), text)
         XCTAssertTrue(text.contains("Svezia"), text)
         XCTAssertTrue(text.contains("orgogliosamente"), text)
         XCTAssertTrue(text.contains("par la route"), text)
@@ -2950,10 +2949,45 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(text.contains("Reg no"), text)
         XCTAssertFalse(text.contains("Un ito"), text)
         XCTAssertFalse(text.contains("Lond ra"), text)
-        XCTAssertFalse(text.contains("Core a"), text)
         XCTAssertFalse(text.contains("Svez ia"), text)
         XCTAssertFalse(text.contains("orgog li os amente"), text)
         XCTAssertFalse(text.contains("parlaroute"), text)
+    }
+
+    /// Regression for the observed-continuation over-join bug: the tables must not glue a complete
+    /// left word to a following function word just because the word's tail happens to end in a
+    /// listed fragment. "stop"+"in", "core"+"a", "salut"+"il" are separate words, not sub-words.
+    func testLocalASRTimingPlannerDoesNotGlueCompleteWordsToFollowingFunctionWords() {
+        let transcript = ASRTranscript(
+            id: "observed-no-overjoin-en-fr",
+            languageCode: "en",
+            words: [
+                ASRWord(text: "we", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: " stop", startSeconds: 0.2, endSeconds: 0.5),
+                ASRWord(text: " in", startSeconds: 0.5, endSeconds: 0.7),
+                ASRWord(text: " Paris", startSeconds: 0.7, endSeconds: 1.1),
+                ASRWord(text: " at", startSeconds: 1.2, endSeconds: 1.5),
+                ASRWord(text: " its", startSeconds: 1.5, endSeconds: 1.8),
+                ASRWord(text: " core", startSeconds: 1.8, endSeconds: 2.1),
+                ASRWord(text: " a", startSeconds: 2.1, endSeconds: 2.3),
+                ASRWord(text: " simple", startSeconds: 2.3, endSeconds: 2.7),
+                ASRWord(text: " idea", startSeconds: 2.7, endSeconds: 3.0),
+                ASRWord(text: " we", startSeconds: 3.1, endSeconds: 3.3),
+                ASRWord(text: " develop", startSeconds: 3.3, endSeconds: 3.7),
+                ASRWord(text: " in", startSeconds: 3.7, endSeconds: 3.9),
+                ASRWord(text: " town", startSeconds: 3.9, endSeconds: 4.2)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("stop in"), text)
+        XCTAssertTrue(text.contains("core a"), text)
+        XCTAssertTrue(text.contains("develop in"), text)
+        XCTAssertFalse(text.contains("stopin"), text)
+        XCTAssertFalse(text.contains("corea"), text)
+        XCTAssertFalse(text.contains("developin"), text)
     }
 
     func testLocalASRTimingPlannerPreservesObservedFrenchItalianFunctionWords() {

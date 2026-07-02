@@ -1689,7 +1689,6 @@ enum LocalASRSubtitleTimingPlanner {
         "no": ["reg"],
         "ito": ["un"],
         "ra": ["lond"],
-        "a": ["core"],
         "ia": ["svez"],
         "ix": ["d"],
         "lection": ["sé", "se"],
@@ -3945,7 +3944,15 @@ enum LocalASRSubtitleTimingPlanner {
         guard let allowedPrefixes = observedLatinContinuationPrefixes[rightLower] else {
             return false
         }
-        return allowedPrefixes.contains { leftLower.hasSuffix($0) }
+        // Match the trailing Latin run *exactly* against an observed sub-word piece, not with
+        // hasSuffix on the whole left string. hasSuffix glued mainstream words whose tail merely
+        // happened to end in a fragment ("stop"+"in"→"stopin", "salut"+"il"→"salutil",
+        // "drop"/"shop"/"develop"+"in"). The accumulation chains already list every accumulated
+        // form as its own key (e.g. "seitenver"/"seitenverkle"), so equality still links real
+        // multi-piece sub-words while failing safe on complete words.
+        let leftRun = trailingLatinLetterRun(left).lowercased()
+        guard !leftRun.isEmpty else { return false }
+        return allowedPrefixes.contains { leftRun == $0 }
     }
 
     private static func isLatinBridgeFragment(left: String, right: String, next: String?) -> Bool {
