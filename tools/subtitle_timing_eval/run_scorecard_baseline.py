@@ -319,10 +319,27 @@ def find_translated(sample_dir: Path, source_path: Optional[Path] = None) -> Opt
     return None
 
 
-def load_agent_judge(sample_dir: Path, name: str) -> Optional[Dict[str, Any]]:
+def load_agent_judge(
+    sample_dir: Path,
+    name: str,
+    *,
+    source_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
     path = sample_dir / name
     if not path.is_file():
         return None
+    # Freshness guard (mirrors find_translated): a judge written against an older SRT generation
+    # must not keep "verified pass" after the source is regenerated into different content.
+    if source_path is not None and source_path.is_file():
+        try:
+            if path.stat().st_mtime < source_path.stat().st_mtime:
+                print(
+                    f"[stale judge skipped] {sample_dir.name}/{name}: judge older than scored source",
+                    file=sys.stderr,
+                )
+                return None
+        except OSError:
+            pass
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -560,7 +577,10 @@ def _judge_score(
     value = judge.get(key)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         score = float(value)
-        return score if math.isfinite(score) else None
+        if not math.isfinite(score):
+            return None
+        # Judge JSON is hand/agent-authored; a typo (880 for 88) must not inflate the aggregate.
+        return max(0.0, min(100.0, score))
     # pass/blocking 形式回退：pass 且无 blocking → 90，有 blocking → 40
     if allow_pass_fallback and isinstance(judge.get("pass"), bool):
         blocking = judge.get("blockingIssues") or []
@@ -764,7 +784,9 @@ def score_sample(
     local_words = find_words(sample_dir, window)
     platform_words = platform_vtt_words(candidate) if source_kind != "local-asr" else None
     segmentation_words = local_words if source_kind == "local-asr" else platform_words
-    rec_judge = load_agent_judge(sample_dir, "agent_recognition_judge.json")
+    rec_judge = load_agent_judge(
+        sample_dir, "agent_recognition_judge.json", source_path=candidate
+    )
     rec_judge_source: Optional[str] = "file" if rec_judge is not None else None
     if rec_judge is None and batch_recognition_judges:
         rec_judge = batch_recognition_judges.get(sample_dir.name)
@@ -878,11 +900,15 @@ def score_sample(
     translated = find_translated(sample_dir, source_path=candidate)
     translation: Optional[sc.DimensionScore] = None
     if translated:
-        tr_judge = load_agent_judge(sample_dir, "agent_translation_judge.json")
+        tr_judge = load_agent_judge(
+            sample_dir, "agent_translation_judge.json", source_path=translated
+        )
         translation = sc.translation_score(
             source_cues=candidate_cues,
             translated_cues=load_subtitle_cues(translated),
-            llm_translation_score=_judge_score(tr_judge, "score"),
+            # Require a real numeric judge score, matching the hardened recognition path — a
+            # pass/blocking flag alone is not verified translation evidence.
+            llm_translation_score=_judge_score(tr_judge, "score", allow_pass_fallback=False),
         )
 
     dimensions = {"recognition": recognition, "segmentation": segmentation}

@@ -1950,7 +1950,38 @@ Input #0, wav, from 'local-asr.wav':
         self.assertTrue(recognition.verified)
         self.assertIn("judgeEvidence:sourceUrlsMissing", recognition.notes)
 
-    def test_agent_recognition_judge_with_source_urls_records_traceable_evidence_note(self):
+    def test_stale_recognition_judge_older_than_source_is_dropped(self):
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            sample = Path(td) / "sample_en"
+            sample.mkdir()
+            judge = sample / "agent_recognition_judge.json"
+            judge.write_text(
+                '{"accuracyScore":88,"issues":[],"judgedBy":"agent"}\n',
+                encoding="utf-8",
+            )
+            srt = sample / "local-asr.en.srt"
+            srt.write_text(
+                "1\n00:00:00,000 --> 00:00:02,000\nhello world\n\n",
+                encoding="utf-8",
+            )
+            # Judge predates the (re)generated source: must not count as verified.
+            os.utime(judge, (1_000_000, 1_000_000))
+            os.utime(srt, (2_000_000, 2_000_000))
+
+            result = runner.score_sample(sample, acoustic=False)
+
+        self.assertIsNotNone(result)
+        recognition = result.dimensions["recognition"]
+        self.assertIsNone(recognition.components.get("llm"))
+        self.assertFalse(recognition.verified)
+
+    def test_judge_score_is_clamped_to_valid_range(self):
+        # A typo'd 880 (meant 88) must not inflate the aggregate above 100.
+        self.assertEqual(runner._judge_score({"score": 880}, "score"), 100.0)
+        self.assertEqual(runner._judge_score({"score": -5}, "score"), 0.0)
+        self.assertEqual(runner._judge_score({"score": 88}, "score"), 88.0)
         with tempfile.TemporaryDirectory() as td:
             sample = Path(td) / "sample_en"
             sample.mkdir()

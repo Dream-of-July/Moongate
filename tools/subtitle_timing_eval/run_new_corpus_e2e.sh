@@ -11,6 +11,12 @@ MODEL="$HOME/Library/Application Support/月之门/asr/models/ggml-large-v3-turb
 COOKIE="$HOME/Library/Application Support/月之门/cookies/youtube.txt"
 export PYTHONPATH=tools/subtitle_timing_eval
 
+# Any temp cookie copy is registered here so a trap wipes it even on SIGINT/SIGTERM/error —
+# without this the authenticated cookie could survive in $TMPDIR after an interrupt.
+TMP_COOKIE=""
+cleanup() { [ -n "$TMP_COOKIE" ] && rm -f "$TMP_COOKIE"; }
+trap cleanup EXIT INT TERM
+
 # sample_id : lang : whisper_lang (some subtitle_lang differ e.g. pt-BR)
 SAMPLES=(
   "tedx_rosario_simpsons_science_es:es:es:60:120"
@@ -38,11 +44,11 @@ for entry in "${SAMPLES[@]}"; do
   # 1) download section audio + human captions (temp cookie copy for safety)
   audio=$(ls "$d"/*.m4a 2>/dev/null | head -1)
   if [ -z "$audio" ]; then
-    TMPC=$(mktemp); cp "$COOKIE" "$TMPC"
+    TMP_COOKIE=$(mktemp); cp "$COOKIE" "$TMP_COOKIE"
     python3 -m subtitle_timing_eval.cli prepare \
       --manifest tools/subtitle_timing_eval/samples.json \
-      --sample-id "$sid" --artifacts "$ART" --cookies "$TMPC" 2>&1 | tail -3
-    rm -f "$TMPC"
+      --sample-id "$sid" --artifacts "$ART" --cookies "$TMP_COOKIE" 2>&1 | tail -3
+    rm -f "$TMP_COOKIE"; TMP_COOKIE=""
     sleep 4
     audio=$(ls "$d"/*.m4a 2>/dev/null | head -1)
   fi

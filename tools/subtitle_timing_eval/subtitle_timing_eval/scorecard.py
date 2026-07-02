@@ -998,7 +998,9 @@ def suite_summary(samples: Sequence[SampleScorecard], source_decision: Optional[
         dims = [s.dimensions[name] for s in samples if name in s.dimensions and s.dimensions[name].score is not None]
         scored = [d.score for d in dims]
         verified = [d.score for d in dims if d.verified]
-        required_verified = max(1, int(0.6 * len(scored))) if scored else 0
+        # Ceiling, not floor: "≥60% 样本有金标准支撑" must round up, otherwise e.g. 12 scored
+        # would enforce only 7 (58.3%) < 60%.
+        required_verified = max(1, math.ceil(0.6 * len(scored))) if scored else 0
         evidence_quality = _verified_evidence_quality(dims)
         strong_verified_scores = [
             float(d.score)
