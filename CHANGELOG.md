@@ -4,6 +4,20 @@
 
 This project follows semantic versioning (major.minor.patch).
 
+## 0.8.2
+
+A subtitle-quality and release-hygiene follow-up to 0.8.1.
+
+### Subtitle recognition fixes
+
+- **No more glued words in Latin-script subtitles**: the sub-word rejoin that repairs Whisper's split tokens (e.g. `op`+`in`+`ion` → `opinion`) was matching too loosely and could fuse ordinary adjacent words — "at its core, a simple idea" came out as "corea", "we stop in Paris" as "stopin". It now only rejoins genuine sub-word pieces, so normal English/French/German/Italian/Portuguese speech stays intact.
+- **Consistent recognition-quality handling across platforms**: an Arabic (right-to-left) transcript carrying invisible formatting marks could be judged empty on macOS but not on Windows. Both platforms now treat invisible marks identically.
+
+### Under the hood
+
+- **Release version surfaces unified**: every packaging and documentation surface (build scripts, installer, appcast, README, docs) is now checked against a single version/build-number source of truth, closing the split-version gaps from 0.8.1.
+- **Subtitle quality-measurement integrity**: the internal evaluation harness no longer counts stale review evidence as fresh, clamps out-of-range judge scores, and cleans up temporary credential copies on interruption.
+
 ## 0.8.1
 
 A subtitle quality release: language-first subtitle selection, a unified subtitle-source decision, more reliable local recognition, and several real timing/parsing fixes for when the first subtitle appears. macOS and Windows keep their core logic in lockstep, with a new quantifiable quality scorecard.

@@ -4,7 +4,7 @@
 
 The Windows app is a separate native implementation under `windows/`:
 
-- **MoongateCore** (C#, .NET 10) — the core library, ported line-for-line from the Swift `MoongateCore` + `QueueManager`: yt-dlp wrapper, subtitle parse/clean/translate, ffmpeg burn-in, the queue and its concurrency slots, pause/cancel, settings and cookies. 470 unit tests, runnable in full on both macOS and Windows.
+- **MoongateCore** (C#, .NET 10) — the core library, ported line-for-line from the Swift `MoongateCore` + `QueueManager`: yt-dlp wrapper, subtitle parse/clean/translate, ffmpeg burn-in, the queue and its concurrency slots, pause/cancel, settings and cookies. A large mirrored unit-test suite runnable in full on both macOS and Windows.
 - **MoongateApp** (WPF) — a GUI matching the macOS app in structure and wording: paste-and-resolve (with multi-link batch enqueue), quality/subtitle selection, translate + burn-in, the queue (per-task pause/cancel/retry), settings (protocol choice, fetch models, concurrency, burn cap), WebView2 site login, and first-launch dependency download.
 - **installer/installer.nsi** (NSIS) — installs without admin rights (into `%LOCALAPPDATA%\Programs\月之门`), adds Start-menu and desktop shortcuts, and is uninstallable from Control Panel.
 
@@ -15,14 +15,14 @@ The Windows app is a separate native implementation under `windows/`:
 One-time deps: `brew install dotnet makensis`
 
 ```bash
-./build-windows.sh            # outputs ~/Downloads/Moongate-Windows-Setup-v0.8.0.exe and .sha256
+./build-windows.sh            # outputs ~/Downloads/Moongate-Windows-Setup-v0.8.2.exe and .sha256
 ```
 
 Flow: core-library unit tests (must all pass) → `dotnet publish` win-x64 self-contained (no .NET needed on the user's machine) → NSIS packaging.
 
 ## What Windows users get
 
-1. Double-click `Moongate-Windows-Setup-v0.8.0.exe` → installs to the default user directory (no UAC prompt).
+1. Double-click `Moongate-Windows-Setup-v0.8.2.exe` → installs to the default user directory (no UAC prompt).
 2. First launch auto-downloads yt-dlp / ffmpeg (GyanD full build, includes libass) / deno from pinned official sources into `%LOCALAPPDATA%\Moongate\bin`, verifying SHA-256 (needs network; you can re-download or reinstall yt-dlp from settings).
 3. From there it matches macOS: paste a link → pick quality and subtitles → download / translate / burn-in, with multi-file jobs auto-foldered.
 4. Site login uses WebView2 (bundled on Windows 11; the app guides installation if it's missing).

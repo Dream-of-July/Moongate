@@ -5,7 +5,7 @@
 A gateway to videos, subtitles, and your local library.
 
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-1f1f1f?style=flat-square)
-![version](https://img.shields.io/badge/version-0.8.0-1f1f1f?style=flat-square)
+![version](https://img.shields.io/badge/version-0.8.2-1f1f1f?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-1f1f1f?style=flat-square)
 
 Paste a video link, pick the quality and subtitles, then download — optionally summarizing, translating, or burning in subtitles before it lands in your library. Native apps for macOS and Windows.
@@ -47,7 +47,7 @@ Runtime media tools come from Homebrew:
 
 The app itself pulls only Sparkle 2 via SwiftPM, for macOS self-update.
 
-Release/update packaging is separate from the local install build: `./make-sparkle-zip.sh` creates `Moongate-macOS-v0.8.0.zip` for Sparkle, then `./make-appcast.sh` signs that ZIP into `docs/appcast.xml` after it is uploaded to the matching GitHub Release. `./make-dmg.sh` remains the manual drag-install fallback.
+Release/update packaging is separate from the local install build: `./make-sparkle-zip.sh` creates `Moongate-macOS-v0.8.2.zip` for Sparkle, then `./make-appcast.sh` signs that ZIP into `docs/appcast.xml` after it is uploaded to the matching GitHub Release. `./make-dmg.sh` remains the manual drag-install fallback.
 
 ### Windows
 
@@ -55,7 +55,7 @@ Release/update packaging is separate from the local install build: `./make-spark
 ./build-windows.sh
 ```
 
-Produces `Moongate-Windows-Setup-v0.8.0.exe` (plus a `.sha256`). Double-click to install — no admin rights — and the first launch auto-downloads yt-dlp / ffmpeg / deno. Details in [docs/WINDOWS.md](docs/WINDOWS.md).
+Produces `Moongate-Windows-Setup-v0.8.2.exe` (plus a `.sha256`). Double-click to install — no admin rights — and the first launch auto-downloads yt-dlp / ffmpeg / deno. Details in [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## AI setup
 

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 PROJ_DIR="${0:a:h:h:h}"
-RC_VERSION="${MOONGATE_RC_VERSION:-0.8.0}"
+RC_VERSION="${MOONGATE_RC_VERSION:-0.8.2}"
 SWIFT_SCRATCH="${MOONGATE_RC_SWIFT_SCRATCH:-/tmp/moongate-v08-rc-swift}"
 CLANG_CACHE="${CLANG_MODULE_CACHE_PATH:-/tmp/moongate-v08-rc-clang-module-cache}"
 SWIFT_FILTER="ASRContractsTests|MacOSContentBoundaryTests|MacOSViewModelBoundaryTests|MacOSQueueBoundaryTests|MacOSSettingsBoundaryTests|LocalizerTests|QueueProgressTests|EngineProgressTests|HDRSupportTests"
