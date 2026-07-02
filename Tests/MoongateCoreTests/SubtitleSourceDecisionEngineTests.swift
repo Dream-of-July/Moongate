@@ -96,6 +96,72 @@ final class SubtitleSourceDecisionEngineTests: XCTestCase {
             .generateLocalASRThenChoose)
     }
 
+    // MARK: - post-generation local ASR escalation
+
+    func testAutoBestEscalatesGeneratedLocalASRWhenLocalAssessmentBelowUsable() {
+        let local = assessment(kind: .localASR, score: 40, gateUsable: false, verdict: .lowConfidence)
+
+        XCTAssertTrue(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .autoBest,
+            localAssessment: local,
+            localASRConfidenceIsLowQuality: false,
+            cloudASRAvailable: true))
+    }
+
+    func testAutoBestEscalatesGeneratedLocalASRWhenConfidenceIsLowQuality() {
+        let local = assessment(kind: .localASR, score: 80, gateUsable: true, verdict: .good)
+
+        XCTAssertTrue(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .autoBest,
+            localAssessment: local,
+            localASRConfidenceIsLowQuality: true,
+            cloudASRAvailable: true))
+    }
+
+    func testAutoBestEscalatesGeneratedLocalASRWhenScoredSubtitleContentFallsBelowUsable() throws {
+        let url = try writeTimedSRT(
+            name: "local-asr.ja.srt",
+            cues: (0..<12).map { index in
+                ("作詞・作曲・編曲 初音ミク \(index)", Double(index) * 14.0, Double(index) * 14.0 + 13.0)
+            })
+        let local = SubtitleSourceDecisionEngine.assess(
+            candidate: SubtitleSourceCandidate(id: "l", kind: .localASR, languageCode: "ja", displayName: "L",
+                                               fileURL: url, isGenerated: true, provider: "whisper.cpp"),
+            requestedSourceLanguageCode: "ja", videoDurationSeconds: nil)
+
+        XCTAssertLessThan(local.verdict, .usable)
+        XCTAssertTrue(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .autoBest,
+            localAssessment: local,
+            localASRConfidenceIsLowQuality: false,
+            cloudASRAvailable: true))
+    }
+
+    func testGeneratedLocalASREscalationRespectsPolicyAndCloudAvailability() {
+        let lowQualityLocal = assessment(kind: .localASR, score: 40, gateUsable: false, verdict: .lowConfidence)
+
+        XCTAssertFalse(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .preferLocalASR,
+            localAssessment: lowQualityLocal,
+            localASRConfidenceIsLowQuality: true,
+            cloudASRAvailable: true))
+        XCTAssertFalse(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .autoBest,
+            localAssessment: lowQualityLocal,
+            localASRConfidenceIsLowQuality: true,
+            cloudASRAvailable: false))
+    }
+
+    func testGeneratedLocalASRDoesNotEscalateHealthyLocalResult() {
+        let healthyLocal = assessment(kind: .localASR, score: 80, gateUsable: true, verdict: .good)
+
+        XCTAssertFalse(SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: .autoBest,
+            localAssessment: healthyLocal,
+            localASRConfidenceIsLowQuality: false,
+            cloudASRAvailable: true))
+    }
+
     // MARK: - choose: tie-break prefers more-trusted source
 
     func testChooseTieBreakPrefersLowerSourceKindRank() {
@@ -224,21 +290,32 @@ final class SubtitleSourceDecisionEngineTests: XCTestCase {
     // MARK: - SRT helper
 
     private func writeSRT(name: String, texts: [String]) throws -> URL {
+        try writeTimedSRT(
+            name: name,
+            cues: texts.enumerated().map { index, text in
+                (text, Double(index) * 2.0, Double(index) * 2.0 + 1.5)
+            })
+    }
+
+    private func writeTimedSRT(name: String, cues: [(String, Double, Double)]) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("moongate-engine-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)
-        let body = texts.enumerated().map { index, text in
-            let start = index * 2_000
-            let end = start + 1_500
-            return "\(index + 1)\n\(timestamp(start)) --> \(timestamp(end))\n\(text)"
+        let body = cues.enumerated().map { index, cue in
+            "\(index + 1)\n\(timestamp(cue.1)) --> \(timestamp(cue.2))\n\(cue.0)"
         }.joined(separator: "\n\n")
         try body.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
 
-    private func timestamp(_ totalMs: Int) -> String {
-        String(format: "%02d:%02d:%02d,%03d",
-               totalMs / 3_600_000, (totalMs % 3_600_000) / 60_000, (totalMs % 60_000) / 1000, totalMs % 1000)
+    private func timestamp(_ seconds: Double) -> String {
+        let totalMs = Int((seconds * 1000).rounded())
+        return String(
+            format: "%02d:%02d:%02d,%03d",
+            totalMs / 3_600_000,
+            (totalMs % 3_600_000) / 60_000,
+            (totalMs % 60_000) / 1000,
+            totalMs % 1000)
     }
 }

@@ -8,7 +8,7 @@
   "coverage_goal": {
     "id": "mainstream_language_timing_gate",
     "description": "Product-pragmatic target for mainstream languages/users Moongate is most likely to serve: en/zh/yue/ja/ko/es/fr/it plus translated subtitle timing. This keeps the 90% human-like gate bounded instead of tuning every long-tail language on YouTube.",
-    "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "fr", "it", "translated"]
+    "required_language_groups": ["en", "zh", "yue", "ja", "ko", "es", "pt", "fr", "de", "it", "hi", "ar", "ru", "translated"]
   },
   "category_coverage_goal": {
     "id": "local_asr_content_type_coverage",
@@ -395,6 +395,174 @@
       "spoken_languages": ["zh"],
       "section": { "start_seconds": 0, "duration_seconds": 120 },
       "stressors": ["translated_timing", "manual_captions", "cjk_no_spaces", "multiline_bilingual_subtitles"]
+    },
+    {
+      "id": "tedx_rosario_simpsons_science_es",
+      "title": "La ciencia escondida en los Simpsons | Claudio Sanchez | TEDxRosario",
+      "source": "https://www.youtube.com/watch?v=29niQX5bEPw",
+      "category": "spanish_talk",
+      "language_group": "es",
+      "subtitle_lang": "es",
+      "spoken_languages": ["es"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_riodelaplata_social_media_es",
+      "title": "Cómo nos manipulan en las redes sociales | Santiago Bilinkis | TEDxRiodelaPlata",
+      "source": "https://www.youtube.com/watch?v=8nKCA9h-7BA",
+      "category": "spanish_talk",
+      "language_group": "es",
+      "subtitle_lang": "es",
+      "spoken_languages": ["es"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_saopaulo_help_yourself_pt",
+      "title": "If you don't want to help yourself, nobody will | Mariana Ferrão | TEDxSaoPaulo",
+      "source": "https://www.youtube.com/watch?v=uKIr2U632aY",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt-BR",
+      "spoken_languages": ["pt"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_saopaulo_meaningless_life_pt",
+      "title": "The strange case of a comfortable and meaningless life | Emanuel Aragão | TEDxSaoPaulo",
+      "source": "https://www.youtube.com/watch?v=2igfLjjBuZw",
+      "category": "portuguese_talk",
+      "language_group": "pt",
+      "subtitle_lang": "pt-BR",
+      "spoken_languages": ["pt"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_gateway_poetry_hi",
+      "title": "Jab Duniya Ke Saare Kavi Mar Jaayenge | Daaniyal Zia | TEDxGateway",
+      "source": "https://www.youtube.com/watch?v=U_2_IDkkxbQ",
+      "category": "hindi_spoken_word",
+      "language_group": "hi",
+      "subtitle_lang": "hi",
+      "spoken_languages": ["hi"],
+      "section": { "start_seconds": 20, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "devanagari_script", "manual_captions", "spoken_word_cadence"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_paris_quantum_fr",
+      "title": "Univers Parallèles et Révolution Quantique | Christophe Galfard | TEDxParis",
+      "source": "https://www.youtube.com/watch?v=J8PEymuDf6A",
+      "category": "french_talk",
+      "language_group": "fr",
+      "subtitle_lang": "fr",
+      "spoken_languages": ["fr"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_milano_give_back_it",
+      "title": "How Do You Say \"Give Back\" in Italian? | Diego Piacentini | TEDxMilano",
+      "source": "https://www.youtube.com/watch?v=gokjgamJgxQ",
+      "category": "italian_talk",
+      "language_group": "it",
+      "subtitle_lang": "it",
+      "spoken_languages": ["it"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "romance_word_boundaries", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_rheinmain_comfort_zone_de",
+      "title": "The comfort zone of the future or dehabituation | Gunter Dueck | TEDxRheinMain",
+      "source": "https://www.youtube.com/watch?v=QxtDdEMp9w4",
+      "category": "german_talk",
+      "language_group": "de",
+      "subtitle_lang": "de",
+      "spoken_languages": ["de"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "compound_words", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_arabic_dont_kill_language_ar",
+      "title": "Suzanne Talhouk: Don't kill your language (لا تقتل لغتك)",
+      "source": "https://www.youtube.com/watch?v=bNOiwgrZbPE",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_yarmouk_three_letters_ar",
+      "title": "ثلاث حروف غيرت حياتي | Dr. Nour Isleem | TEDxYarmoukUniversity",
+      "source": "https://www.youtube.com/watch?v=5PB214Pj6LM",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_kau_brain_learning_ar",
+      "title": "التعلم المبني على الدماغ | Yaan Allah Alqarni | TEDxKAU",
+      "source": "https://www.youtube.com/watch?v=StxJGH-ffrI",
+      "category": "arabic_talk",
+      "language_group": "ar",
+      "subtitle_lang": "ar",
+      "spoken_languages": ["ar"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "rtl_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_leti_unbanal_ru",
+      "title": "Искусство быть небанальным | Anna Vall | TEDxLETI",
+      "source": "https://www.youtube.com/watch?v=vpmHqudYta8",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_sadovoering_entrepreneurship_ru",
+      "title": "Сам себе проект. Можно ли обучить предпринимательству? | Алексей Чадаев | TEDxSadovoeRing",
+      "source": "https://www.youtube.com/watch?v=a47WdujZtak",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
+      "caption_kind": "manual"
+    },
+    {
+      "id": "tedx_sadovoering_life_ru",
+      "title": "Жизнь на всю оставшуюся жизнь | Nyuta Federmesser | TEDxSadovoeRingWomen",
+      "source": "https://www.youtube.com/watch?v=H9iHbtoS4Ok",
+      "category": "russian_talk",
+      "language_group": "ru",
+      "subtitle_lang": "ru",
+      "spoken_languages": ["ru"],
+      "section": { "start_seconds": 60, "duration_seconds": 120 },
+      "stressors": ["dense_speech", "cyrillic_script", "manual_captions"],
+      "caption_kind": "manual"
     }
   ]
 }

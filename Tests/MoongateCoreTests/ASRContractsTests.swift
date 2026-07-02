@@ -1709,6 +1709,18 @@ final class ASRContractsTests: XCTestCase {
         )
     }
 
+    func testLyricsRecognitionProfileDetectsOfficialArtistTitleRelease() {
+        let video = URL(fileURLWithPath: "/tmp/星をみる少女 ⧸ 星街すいせい (official).mp4")
+        let profile = ASRPromptBuilder.recognitionProfile(videoURL: video, languageCode: "ja")
+
+        XCTAssertEqual(profile, .lyricsHighQuality)
+        XCTAssertFalse(ASRPromptBuilder.vadEnabled(for: profile))
+        XCTAssertEqual(
+            ASRPromptBuilder.defaultPrompt(videoURL: video, languageCode: "ja", recognitionProfile: profile),
+            "title=星をみる少女 ⧸ 星街すいせい (official); language=ja"
+        )
+    }
+
     func testCJKSpeechRecognitionDisablesPromptContextByDefault() {
         let video = URL(fileURLWithPath: "/tmp/Interview Clip.mp4")
 
@@ -2597,6 +2609,83 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(text.contains("lingu ist"))
     }
 
+    func testLocalASRTimingPlannerKeepsSpacesBetweenKoreanWords() {
+        let transcript = ASRTranscript(
+            id: "korean-spacing",
+            languageCode: "ko",
+            words: [
+                ASRWord(text: "수학을", startSeconds: 0.0, endSeconds: 0.4),
+                ASRWord(text: "포기하면", startSeconds: 0.4, endSeconds: 0.9),
+                ASRWord(text: "대학을", startSeconds: 0.9, endSeconds: 1.3),
+                ASRWord(text: "포기하는", startSeconds: 1.3, endSeconds: 1.8),
+                ASRWord(text: "것이고요", startSeconds: 1.8, endSeconds: 2.3),
+                ASRWord(text: "영어를", startSeconds: 2.3, endSeconds: 2.7),
+                ASRWord(text: "포기하면", startSeconds: 2.7, endSeconds: 3.2),
+                ASRWord(text: "인생을", startSeconds: 3.2, endSeconds: 3.6),
+                ASRWord(text: "포기하는이라", startSeconds: 3.6, endSeconds: 4.3)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("수학을 포기하면 대학을"))
+        XCTAssertTrue(text.contains("영어를 포기하면 인생을"))
+        XCTAssertFalse(text.contains("수학을포기하면"))
+        XCTAssertFalse(text.contains("영어를포기하면"))
+    }
+
+    func testLocalASRTimingPlannerKeepsSpacesBetweenDevanagariWords() {
+        // Hindi/Devanagari is space-separated. Reconstructed word units must render with spaces,
+        // not as an unreadable run-on string like `जिसकीतुलना`.
+        let transcript = ASRTranscript(
+            id: "devanagari-spacing",
+            languageCode: "hi",
+            words: [
+                ASRWord(text: "जिसकी", startSeconds: 0.0, endSeconds: 0.45),
+                ASRWord(text: "तुलना", startSeconds: 0.45, endSeconds: 0.9),
+                ASRWord(text: "फिर", startSeconds: 0.9, endSeconds: 1.2),
+                ASRWord(text: "नहीं", startSeconds: 1.2, endSeconds: 1.5),
+                ASRWord(text: "की", startSeconds: 1.5, endSeconds: 1.7),
+                ASRWord(text: "जाएगी", startSeconds: 1.7, endSeconds: 2.1)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("जिसकी तुलना फिर"))
+        XCTAssertTrue(text.contains("नहीं की जाएगी"))
+        XCTAssertFalse(text.contains("जिसकीतुलना"))
+        XCTAssertFalse(text.contains("कीजाएगी"))
+    }
+
+    func testLocalASRTimingPlannerKeepsSpacesBetweenSpacedNonLatinScripts() {
+        // Arabic (RTL), Cyrillic, and Bengali are all space-separated word scripts like Devanagari.
+        // Reconstructed word units must render with spaces, not run-on strings.
+        func joined(_ language: String, _ words: [(String, Double, Double)]) -> String {
+            let transcript = ASRTranscript(
+                id: "spaced-\(language)",
+                languageCode: language,
+                words: words.map { ASRWord(text: $0.0, startSeconds: $0.1, endSeconds: $0.2) },
+                sourceModelID: "whisper.cpp:test"
+            )
+            return ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+        }
+
+        let ru = joined("ru", [("Привет", 0.0, 0.4), ("мир", 0.4, 0.8), ("как", 0.8, 1.1), ("дела", 1.1, 1.5)])
+        XCTAssertTrue(ru.contains("Привет мир как дела"))
+        XCTAssertFalse(ru.contains("Приветмир"))
+
+        let ar = joined("ar", [("مرحبا", 0.0, 0.4), ("بالعالم", 0.4, 0.9), ("كيف", 0.9, 1.2), ("حالك", 1.2, 1.6)])
+        XCTAssertTrue(ar.contains("مرحبا بالعالم كيف حالك"))
+        XCTAssertFalse(ar.contains("مرحبابالعالم"))
+
+        let bn = joined("bn", [("নমস্কার", 0.0, 0.5), ("বিশ্ব", 0.5, 0.9), ("কেমন", 0.9, 1.3), ("আছেন", 1.3, 1.7)])
+        XCTAssertTrue(bn.contains("নমস্কার বিশ্ব কেমন আছেন"))
+        XCTAssertFalse(bn.contains("নমস্কারবিশ্ব"))
+    }
+
     func testLocalASRTimingPlannerRejoinsMainstreamLatinSubwordFragments() {
         let transcript = ASRTranscript(
             id: "latin-subwords",
@@ -2694,6 +2783,327 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(text.contains("univers ità"))
         XCTAssertFalse(text.contains("abandon né"))
         XCTAssertFalse(text.contains("gemüt lich"))
+    }
+
+    func testLocalASRTimingPlannerRejoinsObservedFrenchItalianSubwords() {
+        let transcript = ASRTranscript(
+            id: "observed-it-fr-subwords",
+            languageCode: "fr",
+            words: [
+                ASRWord(text: "travaill", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: "é", startSeconds: 0.2, endSeconds: 0.3),
+                ASRWord(text: "arr", startSeconds: 0.4, endSeconds: 0.55),
+                ASRWord(text: "ach", startSeconds: 0.55, endSeconds: 0.75),
+                ASRWord(text: "ée", startSeconds: 0.75, endSeconds: 0.9),
+                ASRWord(text: "cré", startSeconds: 1.0, endSeconds: 1.2),
+                ASRWord(text: "at", startSeconds: 1.2, endSeconds: 1.35),
+                ASRWord(text: "rice", startSeconds: 1.35, endSeconds: 1.6),
+                ASRWord(text: "magg", startSeconds: 1.7, endSeconds: 1.9),
+                ASRWord(text: "ior", startSeconds: 1.9, endSeconds: 2.05),
+                ASRWord(text: "i", startSeconds: 2.05, endSeconds: 2.15),
+                ASRWord(text: "most", startSeconds: 2.25, endSeconds: 2.45),
+                ASRWord(text: "r", startSeconds: 2.45, endSeconds: 2.55),
+                ASRWord(text: "ano", startSeconds: 2.55, endSeconds: 2.8),
+                ASRWord(text: " arrive", startSeconds: 3.0, endSeconds: 3.25),
+                ASRWord(text: " at", startSeconds: 3.25, endSeconds: 3.35),
+                ASRWord(text: " rice", startSeconds: 3.35, endSeconds: 3.6)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("travaillé"), text)
+        XCTAssertTrue(text.contains("arrachée"), text)
+        XCTAssertTrue(text.contains("créatrice"), text)
+        XCTAssertTrue(text.contains("maggiori"), text)
+        XCTAssertTrue(text.contains("mostrano"), text)
+        XCTAssertTrue(text.contains("arrive at rice"), text)
+        XCTAssertFalse(text.contains("travaill é"))
+        XCTAssertFalse(text.contains("arr ach ée"))
+        XCTAssertFalse(text.contains("cré at rice"))
+        XCTAssertFalse(text.contains("magg ior i"))
+        XCTAssertFalse(text.contains("most r ano"))
+        XCTAssertFalse(text.contains("arriveatrice"))
+    }
+
+    func testLocalASRTimingPlannerRejoinsObservedFrenchItalianSubwordsSecondWave() {
+        let transcript = ASRTranscript(
+            id: "observed-it-fr-subwords-2",
+            languageCode: "it",
+            words: [
+                ASRWord(text: "d", startSeconds: 0.0, endSeconds: 0.1),
+                ASRWord(text: "ix", startSeconds: 0.1, endSeconds: 0.2),
+                ASRWord(text: "sé", startSeconds: 0.3, endSeconds: 0.45),
+                ASRWord(text: "lection", startSeconds: 0.45, endSeconds: 0.65),
+                ASRWord(text: "n", startSeconds: 0.65, endSeconds: 0.75),
+                ASRWord(text: "ée", startSeconds: 0.75, endSeconds: 0.9),
+                ASRWord(text: "h", startSeconds: 1.0, endSeconds: 1.1),
+                ASRWord(text: "onn", startSeconds: 1.1, endSeconds: 1.25),
+                ASRWord(text: "êt", startSeconds: 1.25, endSeconds: 1.4),
+                ASRWord(text: "eté", startSeconds: 1.4, endSeconds: 1.6),
+                ASRWord(text: "org", startSeconds: 1.7, endSeconds: 1.85),
+                ASRWord(text: "og", startSeconds: 1.85, endSeconds: 2.0),
+                ASRWord(text: "lio", startSeconds: 2.0, endSeconds: 2.2),
+                ASRWord(text: "lat", startSeconds: 2.3, endSeconds: 2.45),
+                ASRWord(text: "ino", startSeconds: 2.45, endSeconds: 2.65),
+                ASRWord(text: "St", startSeconds: 2.75, endSeconds: 2.85),
+                ASRWord(text: "ati", startSeconds: 2.85, endSeconds: 3.05),
+                ASRWord(text: "Un", startSeconds: 3.15, endSeconds: 3.25),
+                ASRWord(text: "iti", startSeconds: 3.25, endSeconds: 3.45),
+                ASRWord(text: "Par", startSeconds: 3.55, endSeconds: 3.7),
+                ASRWord(text: "igi", startSeconds: 3.7, endSeconds: 3.9),
+                ASRWord(text: "no", startSeconds: 4.0, endSeconds: 4.15),
+                ASRWord(text: " entiendo", startSeconds: 4.15, endSeconds: 4.45)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("dix"), text)
+        XCTAssertTrue(text.contains("sélectionnée"), text)
+        XCTAssertTrue(text.contains("honnêteté"), text)
+        XCTAssertTrue(text.contains("orgoglio"), text)
+        XCTAssertTrue(text.contains("latino"), text)
+        XCTAssertTrue(text.contains("Stati"), text)
+        XCTAssertTrue(text.contains("Uniti"), text)
+        XCTAssertTrue(text.contains("Parigi"), text)
+        XCTAssertTrue(text.contains("no entiendo"), text)
+        XCTAssertFalse(text.contains("d ix"))
+        XCTAssertFalse(text.contains("sé lection n ée"))
+        XCTAssertFalse(text.contains("h onn êt eté"))
+        XCTAssertFalse(text.contains("org og lio"))
+        XCTAssertFalse(text.contains("lat ino"))
+        XCTAssertFalse(text.contains("St ati"))
+        XCTAssertFalse(text.contains("Un iti"))
+        XCTAssertFalse(text.contains("Par igi"))
+        XCTAssertFalse(text.contains("noentiendo"))
+    }
+
+    func testLocalASRTimingPlannerRejoinsObservedFrenchItalianSubwordsThirdWave() {
+        let transcript = ASRTranscript(
+            id: "observed-it-fr-subwords-3",
+            languageCode: "fr",
+            words: [
+                ASRWord(text: "Ut", startSeconds: 0.0, endSeconds: 0.1),
+                ASRWord(text: "il", startSeconds: 0.1, endSeconds: 0.2),
+                ASRWord(text: "ise", startSeconds: 0.2, endSeconds: 0.35),
+                ASRWord(text: "r", startSeconds: 0.45, endSeconds: 0.5),
+                ASRWord(text: "è", startSeconds: 0.5, endSeconds: 0.58),
+                ASRWord(text: "gl", startSeconds: 0.58, endSeconds: 0.68),
+                ASRWord(text: "és", startSeconds: 0.68, endSeconds: 0.82),
+                ASRWord(text: "app", startSeconds: 0.92, endSeconds: 1.05),
+                ASRWord(text: "li", startSeconds: 1.05, endSeconds: 1.15),
+                ASRWord(text: "quer", startSeconds: 1.15, endSeconds: 1.35),
+                ASRWord(text: "quotid", startSeconds: 1.45, endSeconds: 1.65),
+                ASRWord(text: "ien", startSeconds: 1.65, endSeconds: 1.8),
+                ASRWord(text: "mar", startSeconds: 1.9, endSeconds: 2.05),
+                ASRWord(text: "ion", startSeconds: 2.05, endSeconds: 2.2),
+                ASRWord(text: "n", startSeconds: 2.2, endSeconds: 2.3),
+                ASRWord(text: "ette", startSeconds: 2.3, endSeconds: 2.5),
+                ASRWord(text: "op", startSeconds: 2.6, endSeconds: 2.75),
+                ASRWord(text: "in", startSeconds: 2.75, endSeconds: 2.9),
+                ASRWord(text: "ion", startSeconds: 2.9, endSeconds: 3.1),
+                ASRWord(text: "Reg", startSeconds: 3.2, endSeconds: 3.35),
+                ASRWord(text: "no", startSeconds: 3.35, endSeconds: 3.5),
+                ASRWord(text: "Un", startSeconds: 3.6, endSeconds: 3.75),
+                ASRWord(text: "ito", startSeconds: 3.75, endSeconds: 3.95),
+                ASRWord(text: "Lond", startSeconds: 4.05, endSeconds: 4.25),
+                ASRWord(text: "ra", startSeconds: 4.25, endSeconds: 4.4),
+                ASRWord(text: "Core", startSeconds: 4.5, endSeconds: 4.7),
+                ASRWord(text: "a", startSeconds: 4.7, endSeconds: 4.85),
+                ASRWord(text: "Svez", startSeconds: 4.95, endSeconds: 5.15),
+                ASRWord(text: "ia", startSeconds: 5.15, endSeconds: 5.3),
+                ASRWord(text: "orgog", startSeconds: 5.4, endSeconds: 5.65),
+                ASRWord(text: "li", startSeconds: 5.65, endSeconds: 5.75),
+                ASRWord(text: "os", startSeconds: 5.75, endSeconds: 5.9),
+                ASRWord(text: "amente", startSeconds: 5.9, endSeconds: 6.2),
+                ASRWord(text: "par", startSeconds: 6.3, endSeconds: 6.45),
+                ASRWord(text: "la", startSeconds: 6.45, endSeconds: 6.6),
+                ASRWord(text: "route", startSeconds: 6.6, endSeconds: 6.85)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("Utilise"), text)
+        XCTAssertTrue(text.contains("règlés"), text)
+        XCTAssertTrue(text.contains("appliquer"), text)
+        XCTAssertTrue(text.contains("quotidien"), text)
+        XCTAssertTrue(text.contains("marionnette"), text)
+        XCTAssertTrue(text.contains("opinion"), text)
+        XCTAssertTrue(text.contains("Regno"), text)
+        XCTAssertTrue(text.contains("Unito"), text)
+        XCTAssertTrue(text.contains("Londra"), text)
+        XCTAssertTrue(text.contains("Svezia"), text)
+        XCTAssertTrue(text.contains("orgogliosamente"), text)
+        XCTAssertTrue(text.contains("par la route"), text)
+        XCTAssertFalse(text.contains("Ut il ise"), text)
+        XCTAssertFalse(text.contains("r è gl és"), text)
+        XCTAssertFalse(text.contains("app li quer"), text)
+        XCTAssertFalse(text.contains("quotid ien"), text)
+        XCTAssertFalse(text.contains("mar ion n ette"), text)
+        XCTAssertFalse(text.contains("op in ion"), text)
+        XCTAssertFalse(text.contains("Reg no"), text)
+        XCTAssertFalse(text.contains("Un ito"), text)
+        XCTAssertFalse(text.contains("Lond ra"), text)
+        XCTAssertFalse(text.contains("Svez ia"), text)
+        XCTAssertFalse(text.contains("orgog li os amente"), text)
+        XCTAssertFalse(text.contains("parlaroute"), text)
+    }
+
+    /// Regression for the observed-continuation over-join bug: the tables must not glue a complete
+    /// left word to a following function word just because the word's tail happens to end in a
+    /// listed fragment. "stop"+"in", "core"+"a", "salut"+"il" are separate words, not sub-words.
+    func testLocalASRTimingPlannerDoesNotGlueCompleteWordsToFollowingFunctionWords() {
+        let transcript = ASRTranscript(
+            id: "observed-no-overjoin-en-fr",
+            languageCode: "en",
+            words: [
+                ASRWord(text: "we", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: " stop", startSeconds: 0.2, endSeconds: 0.5),
+                ASRWord(text: " in", startSeconds: 0.5, endSeconds: 0.7),
+                ASRWord(text: " Paris", startSeconds: 0.7, endSeconds: 1.1),
+                ASRWord(text: " at", startSeconds: 1.2, endSeconds: 1.5),
+                ASRWord(text: " its", startSeconds: 1.5, endSeconds: 1.8),
+                ASRWord(text: " core", startSeconds: 1.8, endSeconds: 2.1),
+                ASRWord(text: " a", startSeconds: 2.1, endSeconds: 2.3),
+                ASRWord(text: " simple", startSeconds: 2.3, endSeconds: 2.7),
+                ASRWord(text: " idea", startSeconds: 2.7, endSeconds: 3.0),
+                ASRWord(text: " we", startSeconds: 3.1, endSeconds: 3.3),
+                ASRWord(text: " develop", startSeconds: 3.3, endSeconds: 3.7),
+                ASRWord(text: " in", startSeconds: 3.7, endSeconds: 3.9),
+                ASRWord(text: " town", startSeconds: 3.9, endSeconds: 4.2)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("stop in"), text)
+        XCTAssertTrue(text.contains("core a"), text)
+        XCTAssertTrue(text.contains("develop in"), text)
+        XCTAssertFalse(text.contains("stopin"), text)
+        XCTAssertFalse(text.contains("corea"), text)
+        XCTAssertFalse(text.contains("developin"), text)
+    }
+
+    func testLocalASRTimingPlannerPreservesObservedFrenchItalianFunctionWords() {
+        let transcript = ASRTranscript(
+            id: "observed-it-fr-function-words",
+            languageCode: "it",
+            words: [
+                ASRWord(text: "Un", startSeconds: 0.0, endSeconds: 0.1),
+                ASRWord(text: "ito", startSeconds: 0.1, endSeconds: 0.25),
+                ASRWord(text: "al", startSeconds: 0.25, endSeconds: 0.35),
+                ASRWord(text: "King's", startSeconds: 0.35, endSeconds: 0.6),
+                ASRWord(text: "Unito", startSeconds: 0.7, endSeconds: 0.95),
+                ASRWord(text: "al", startSeconds: 0.95, endSeconds: 1.05),
+                ASRWord(text: "King's", startSeconds: 1.05, endSeconds: 1.3),
+                ASRWord(text: "posto", startSeconds: 1.4, endSeconds: 1.6),
+                ASRWord(text: "al", startSeconds: 1.6, endSeconds: 1.7),
+                ASRWord(text: "mondo", startSeconds: 1.7, endSeconds: 1.95),
+                ASRWord(text: "influencer", startSeconds: 2.05, endSeconds: 2.3),
+                ASRWord(text: "en", startSeconds: 2.3, endSeconds: 2.42),
+                ASRWord(text: "bien", startSeconds: 2.42, endSeconds: 2.6),
+                ASRWord(text: "prendre", startSeconds: 2.7, endSeconds: 2.9),
+                ASRWord(text: "en", startSeconds: 2.9, endSeconds: 3.02),
+                ASRWord(text: "compte", startSeconds: 3.02, endSeconds: 3.25),
+                ASRWord(text: "qui", startSeconds: 3.35, endSeconds: 3.48),
+                ASRWord(text: "ne", startSeconds: 3.48, endSeconds: 3.6),
+                ASRWord(text: "correspondait", startSeconds: 3.6, endSeconds: 3.9),
+                ASRWord(text: "Ker", startSeconds: 4.0, endSeconds: 4.15),
+                ASRWord(text: "ne", startSeconds: 4.15, endSeconds: 4.3)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("Unito al King's"), text)
+        XCTAssertTrue(text.contains("posto al mondo"), text)
+        XCTAssertTrue(text.contains("influencer en bien"), text)
+        XCTAssertTrue(text.contains("prendre en compte"), text)
+        XCTAssertTrue(text.contains("qui ne correspondait"), text)
+        XCTAssertTrue(text.contains("Kerne"), text)
+        XCTAssertFalse(text.contains("Unitoal"), text)
+        XCTAssertFalse(text.contains("postoal"), text)
+        XCTAssertFalse(text.contains("influenceren"), text)
+        XCTAssertFalse(text.contains("prendreen"), text)
+        XCTAssertFalse(text.contains("quine"), text)
+        XCTAssertFalse(text.contains("Ker ne"), text)
+    }
+
+    func testLocalASRTimingPlannerRejoinsObservedGermanPortugueseSubwords() {
+        let transcript = ASRTranscript(
+            id: "observed-de-pt-subwords",
+            languageCode: "pt",
+            words: [
+                ASRWord(text: "gem", startSeconds: 0.0, endSeconds: 0.1),
+                ASRWord(text: "üt", startSeconds: 0.1, endSeconds: 0.18),
+                ASRWord(text: "lich", startSeconds: 0.18, endSeconds: 0.25),
+                ASRWord(text: "reg", startSeconds: 0.3, endSeconds: 0.45),
+                ASRWord(text: "elt", startSeconds: 0.45, endSeconds: 0.6),
+                ASRWord(text: "bef", startSeconds: 0.7, endSeconds: 0.85),
+                ASRWord(text: "est", startSeconds: 0.85, endSeconds: 1.0),
+                ASRWord(text: "igt", startSeconds: 1.0, endSeconds: 1.15),
+                ASRWord(text: "Seiten", startSeconds: 1.25, endSeconds: 1.45),
+                ASRWord(text: "ver", startSeconds: 1.45, endSeconds: 1.55),
+                ASRWord(text: "kle", startSeconds: 1.55, endSeconds: 1.65),
+                ASRWord(text: "id", startSeconds: 1.65, endSeconds: 1.75),
+                ASRWord(text: "ung", startSeconds: 1.75, endSeconds: 1.9),
+                ASRWord(text: "G", startSeconds: 2.0, endSeconds: 2.05),
+                ASRWord(text: "ep", startSeconds: 2.05, endSeconds: 2.15),
+                ASRWord(text: "ä", startSeconds: 2.15, endSeconds: 2.25),
+                ASRWord(text: "ck", startSeconds: 2.25, endSeconds: 2.35),
+                ASRWord(text: "f", startSeconds: 2.35, endSeconds: 2.45),
+                ASRWord(text: "ä", startSeconds: 2.45, endSeconds: 2.55),
+                ASRWord(text: "cher", startSeconds: 2.55, endSeconds: 2.75),
+                ASRWord(text: "Was", startSeconds: 2.85, endSeconds: 3.0),
+                ASRWord(text: "ch", startSeconds: 3.0, endSeconds: 3.1),
+                ASRWord(text: "rä", startSeconds: 3.1, endSeconds: 3.2),
+                ASRWord(text: "ume", startSeconds: 3.2, endSeconds: 3.35),
+                ASRWord(text: "levant", startSeconds: 3.45, endSeconds: 3.65),
+                ASRWord(text: "amento", startSeconds: 3.65, endSeconds: 3.9),
+                ASRWord(text: "influ", startSeconds: 4.0, endSeconds: 4.15),
+                ASRWord(text: "ência", startSeconds: 4.15, endSeconds: 4.35),
+                ASRWord(text: "trad", startSeconds: 4.45, endSeconds: 4.6),
+                ASRWord(text: "ut", startSeconds: 4.6, endSeconds: 4.7),
+                ASRWord(text: "ores", startSeconds: 4.7, endSeconds: 4.9),
+                ASRWord(text: "volunt", startSeconds: 5.0, endSeconds: 5.2),
+                ASRWord(text: "ários", startSeconds: 5.2, endSeconds: 5.4),
+                ASRWord(text: "you", startSeconds: 5.5, endSeconds: 5.65),
+                ASRWord(text: "are", startSeconds: 5.65, endSeconds: 5.85)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("gemütlich"), text)
+        XCTAssertTrue(text.contains("regelt"), text)
+        XCTAssertTrue(text.contains("befestigt"), text)
+        XCTAssertTrue(text.contains("Seitenverkleidung"), text)
+        XCTAssertTrue(text.contains("Gepäckfächer"), text)
+        XCTAssertTrue(text.contains("Waschräume"), text)
+        XCTAssertTrue(text.contains("levantamento"), text)
+        XCTAssertTrue(text.contains("influência"), text)
+        XCTAssertTrue(text.contains("tradutores"), text)
+        XCTAssertTrue(text.contains("voluntários"), text)
+        XCTAssertTrue(text.contains("you are"), text)
+        XCTAssertFalse(text.contains("gem üt lich"), text)
+        XCTAssertFalse(text.contains("reg elt"), text)
+        XCTAssertFalse(text.contains("bef est igt"), text)
+        XCTAssertFalse(text.contains("Seiten ver kle id ung"), text)
+        XCTAssertFalse(text.contains("G ep ä ck f ä cher"), text)
+        XCTAssertFalse(text.contains("Was ch rä ume"), text)
+        XCTAssertFalse(text.contains("levant amento"), text)
+        XCTAssertFalse(text.contains("influ ência"), text)
+        XCTAssertFalse(text.contains("trad ut ores"), text)
+        XCTAssertFalse(text.contains("volunt ários"), text)
+        XCTAssertFalse(text.contains("youare"), text)
     }
 
     func testKoreanParticleNeverStartsLine() {
@@ -3152,6 +3562,184 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(transcript.words[2].endSeconds, 9.66, accuracy: 0.001)
         XCTAssertEqual(transcript.words[6].startSeconds, 17.70, accuracy: 0.001)
         XCTAssertEqual(transcript.words[6].endSeconds, 18.33, accuracy: 0.001)
+    }
+
+    func testWhisperCppJSONParserRejoinsObservedGermanPortugueseTokenPieces() throws {
+        let germanJSON = Data("""
+        {
+          "result": { "language": "de" },
+          "transcription": [
+            {
+              "text": " gemütlich regelt, so ist doch euer Sitz auf einer Platte",
+              "offsets": { "from": 0, "to": 3600 },
+              "tokens": [
+                { "text": " gem", "offsets": { "from": 0, "to": 130 }, "p": 0.64 },
+                { "text": "üt", "offsets": { "from": 190, "to": 290 }, "p": 0.99 },
+                { "text": "lich", "offsets": { "from": 290, "to": 470 }, "p": 0.99 },
+                { "text": " reg", "offsets": { "from": 480, "to": 630 }, "p": 0.49 },
+                { "text": "elt", "offsets": { "from": 630, "to": 770 }, "p": 0.99 },
+                { "text": ",", "offsets": { "from": 770, "to": 800 }, "p": 0.95 },
+                { "text": " so", "offsets": { "from": 820, "to": 920 }, "p": 0.99 },
+                { "text": " ist", "offsets": { "from": 930, "to": 1030 }, "p": 0.99 },
+                { "text": " doch", "offsets": { "from": 1040, "to": 1220 }, "p": 0.99 },
+                { "text": " eu", "offsets": { "from": 1240, "to": 1360 }, "p": 0.99 },
+                { "text": "er", "offsets": { "from": 1360, "to": 1480 }, "p": 0.99 },
+                { "text": " Sitz", "offsets": { "from": 1500, "to": 1700 }, "p": 0.99 },
+                { "text": " auf", "offsets": { "from": 1720, "to": 1900 }, "p": 0.99 },
+                { "text": " einer", "offsets": { "from": 1920, "to": 2200 }, "p": 0.99 },
+                { "text": " Plat", "offsets": { "from": 2220, "to": 2400 }, "p": 0.99 },
+                { "text": "te", "offsets": { "from": 2400, "to": 2600 }, "p": 0.99 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+        let portugueseJSON = Data("""
+        {
+          "result": { "language": "pt" },
+          "transcription": [
+            {
+              "text": " levantamento do British Council tem influência em inglês",
+              "offsets": { "from": 0, "to": 3000 },
+              "tokens": [
+                { "text": " levant", "offsets": { "from": 0, "to": 180 }, "p": 0.99 },
+                { "text": "amento", "offsets": { "from": 180, "to": 420 }, "p": 0.99 },
+                { "text": " do", "offsets": { "from": 430, "to": 560 }, "p": 0.99 },
+                { "text": " British", "offsets": { "from": 570, "to": 900 }, "p": 0.99 },
+                { "text": " Council", "offsets": { "from": 910, "to": 1250 }, "p": 0.99 },
+                { "text": " tem", "offsets": { "from": 1300, "to": 1450 }, "p": 0.99 },
+                { "text": " influ", "offsets": { "from": 1460, "to": 1700 }, "p": 0.99 },
+                { "text": "ência", "offsets": { "from": 1700, "to": 1950 }, "p": 0.99 },
+                { "text": " em", "offsets": { "from": 1960, "to": 2100 }, "p": 0.99 },
+                { "text": " inglês", "offsets": { "from": 2110, "to": 2500 }, "p": 0.99 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+
+        let german = try WhisperCppJSONTranscriptParser().parse(
+            data: germanJSON,
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/de.wav"), languageCode: "de", modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "de"
+        )
+        let portuguese = try WhisperCppJSONTranscriptParser().parse(
+            data: portugueseJSON,
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/pt.wav"), languageCode: "pt", modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "pt"
+        )
+
+        XCTAssertEqual(german.words.map(\.text), ["gemütlich", "regelt,", "so", "ist", "doch", "euer", "Sitz", "auf", "einer", "Platte"])
+        XCTAssertEqual(portuguese.words.map(\.text), ["levantamento", "do", "British", "Council", "tem", "influência", "em", "inglês"])
+    }
+
+    func testWhisperCppJSONParserUsesKoreanSegmentWordsOverTokenPieces() throws {
+        let json = Data("""
+        {
+          "result": { "language": "ko" },
+          "transcription": [
+            {
+              "text": " 착한 얼굴에 그렇지 못한대도 volume은 두 배로",
+              "offsets": { "from": 0, "to": 2200 },
+              "tokens": [
+                { "text": "[_BEG_]", "offsets": { "from": 0, "to": 0 }, "p": 0.61 },
+                { "text": " 착", "offsets": { "from": 0, "to": 120 }, "p": 0.91 },
+                { "text": "한", "offsets": { "from": 120, "to": 240 }, "p": 0.92 },
+                { "text": " 얼굴에", "offsets": { "from": 240, "to": 620 }, "p": 0.95 },
+                { "text": " 그렇지", "offsets": { "from": 620, "to": 980 }, "p": 0.95 },
+                { "text": " 못", "offsets": { "from": 980, "to": 1120 }, "p": 0.93 },
+                { "text": "한대도", "offsets": { "from": 1120, "to": 1450 }, "p": 0.94 },
+                { "text": " volume", "offsets": { "from": 1450, "to": 1700 }, "p": 0.97 },
+                { "text": "은", "offsets": { "from": 1700, "to": 1800 }, "p": 0.97 },
+                { "text": " 두", "offsets": { "from": 1800, "to": 1940 }, "p": 0.98 },
+                { "text": " 배로", "offsets": { "from": 1940, "to": 2200 }, "p": 0.98 },
+                { "text": "[_TT_1359]", "offsets": { "from": 2200, "to": 2200 }, "p": 0.10 }
+              ]
+            },
+            {
+              "text": " 근데 뭔가 즐겁게 배운 것들은",
+              "offsets": { "from": 40680, "to": 42940 },
+              "tokens": [
+                { "text": " 근데", "offsets": { "from": 40680, "to": 40600 }, "p": 0.95 },
+                { "text": " 뭔가", "offsets": { "from": 41010, "to": 41400 }, "p": 0.96 },
+                { "text": " 즐", "offsets": { "from": 41400, "to": 41600 }, "p": 0.93 },
+                { "text": "겁", "offsets": { "from": 41600, "to": 41800 }, "p": 0.93 },
+                { "text": "게", "offsets": { "from": 41800, "to": 42000 }, "p": 0.93 },
+                { "text": " 배", "offsets": { "from": 42000, "to": 42200 }, "p": 0.94 },
+                { "text": "운", "offsets": { "from": 42200, "to": 42400 }, "p": 0.94 },
+                { "text": " 것", "offsets": { "from": 42400, "to": 42600 }, "p": 0.94 },
+                { "text": "들", "offsets": { "from": 42600, "to": 42800 }, "p": 0.94 },
+                { "text": "은", "offsets": { "from": 42800, "to": 42940 }, "p": 0.94 },
+                { "text": "[_TT_648]", "offsets": { "from": 42940, "to": 42940 }, "p": 0.10 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: json,
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/ko.wav"), languageCode: "ko", modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "ko"
+        )
+
+        XCTAssertEqual(
+            transcript.words.map(\.text),
+            ["착한", "얼굴에", "그렇지", "못한대도", "volume은", "두", "배로", "근데", "뭔가", "즐겁게", "배운", "것들은"]
+        )
+        XCTAssertEqual(transcript.words[0].startSeconds, 0.0, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[0].endSeconds, 0.24, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[4].startSeconds, 1.45, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[4].endSeconds, 1.8, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[9].startSeconds, 41.4, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[9].endSeconds, 42.0, accuracy: 0.001)
+    }
+
+    func testWhisperCppJSONParserUsesDevanagariSegmentWordsOverTokenPieces() throws {
+        // Whisper writes Hindi with real word spacing in segment text but splits words into
+        // base-letter + combining-mark token pieces. The parser must rebuild spaced word units
+        // from segment text, mirroring the Hangul eojeol reconstruction, so Hindi subtitles are
+        // not an unreadable run-on string like `जिसकीतुलना`.
+        let json = Data("""
+        {
+          "result": { "language": "hi" },
+          "transcription": [
+            {
+              "text": " जिसकी तुलना फिर",
+              "offsets": { "from": 0, "to": 1200 },
+              "tokens": [
+                { "text": "[_BEG_]", "offsets": { "from": 0, "to": 0 }, "p": 0.6 },
+                { "text": " ज", "offsets": { "from": 0, "to": 120 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 120, "to": 180 }, "p": 0.9 },
+                { "text": "स", "offsets": { "from": 180, "to": 270 }, "p": 0.9 },
+                { "text": "क", "offsets": { "from": 270, "to": 360 }, "p": 0.9 },
+                { "text": "ी", "offsets": { "from": 360, "to": 450 }, "p": 0.9 },
+                { "text": " त", "offsets": { "from": 450, "to": 540 }, "p": 0.9 },
+                { "text": "ु", "offsets": { "from": 540, "to": 630 }, "p": 0.9 },
+                { "text": "ल", "offsets": { "from": 630, "to": 720 }, "p": 0.9 },
+                { "text": "न", "offsets": { "from": 720, "to": 810 }, "p": 0.9 },
+                { "text": "ा", "offsets": { "from": 810, "to": 900 }, "p": 0.9 },
+                { "text": " फ", "offsets": { "from": 900, "to": 1010 }, "p": 0.9 },
+                { "text": "ि", "offsets": { "from": 1010, "to": 1080 }, "p": 0.9 },
+                { "text": "र", "offsets": { "from": 1080, "to": 1200 }, "p": 0.9 },
+                { "text": "[_TT_360]", "offsets": { "from": 1200, "to": 1200 }, "p": 0.1 }
+              ]
+            }
+          ]
+        }
+        """.utf8)
+
+        let transcript = try WhisperCppJSONTranscriptParser().parse(
+            data: json,
+            request: ASRRequest(audioURL: URL(fileURLWithPath: "/tmp/hi.wav"), languageCode: "hi", modelID: "whisper.cpp:large-v3-turbo-q5_0"),
+            transcriptID: "hi"
+        )
+
+        XCTAssertEqual(transcript.words.map(\.text), ["जिसकी", "तुलना", "फिर"])
+        XCTAssertEqual(transcript.words[0].startSeconds, 0.0, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[0].endSeconds, 0.45, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[1].startSeconds, 0.45, accuracy: 0.001)
+        XCTAssertEqual(transcript.words[2].startSeconds, 0.9, accuracy: 0.001)
     }
 
     func testWhisperCppJSONParserFallsBackToSegmentTextWhenNoTokenWords() throws {

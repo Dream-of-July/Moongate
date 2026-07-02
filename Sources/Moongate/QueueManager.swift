@@ -1639,15 +1639,23 @@ final class QueueManager: ObservableObject {
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
         if !downloadFiles.contains(sourceSRT) { downloadFiles.append(sourceSRT) }
 
-        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果低置信，
+        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果质量较低，
         // 且用户已配置并同意云端识别（cloudASRGenerator != nil 已隐含 cloudASREnabled && consentAccepted），
         // 则用云端重识别取代本地源。绝不自动上传——没配置/没同意就保持本地结果。
         var finalSourceSRT = sourceSRT
         var finalConfidence = generated.confidence
         var usedCloudEscalation = false
-        if request.subtitleSourcePolicy == .autoBest,
-           generated.confidence?.isLowQuality == true,
-           cloudASRGenerator != nil {
+        let generatedLocalCandidate = candidate(kind: .localASR, fileURL: sourceSRT, provider: "whisper.cpp")
+        let generatedLocalAssessment = SubtitleSourceDecisionEngine.assess(
+            candidate: generatedLocalCandidate,
+            requestedSourceLanguageCode: preferredLang,
+            videoDurationSeconds: videoDurationSeconds
+        )
+        if SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR(
+            policy: request.subtitleSourcePolicy,
+            localAssessment: generatedLocalAssessment,
+            localASRConfidenceIsLowQuality: generated.confidence?.isLowQuality == true,
+            cloudASRAvailable: cloudASRGenerator != nil) {
             if let cloudSRT = try? await generateCloudASRSourceSubtitle(
                 videoFile: videoFile,
                 languageCode: language.isEmpty ? "auto" : language,
@@ -1680,13 +1688,13 @@ final class QueueManager: ObservableObject {
                     candidates: [candidate(kind: .cloudASR, fileURL: finalSourceSRT, provider: "OpenAI-compatible")],
                     fallbackReasons: platformAssessment.gateReasons),
                 note: CoreL10n.text(
-                    en: "Local recognition was low-confidence, so Moongate used cloud recognition you enabled.",
-                    zhHans: "本地识别置信度较低，已改用你启用的云端精准识别。",
-                    zhHant: "本機識別置信度較低，已改用你啟用的雲端精準識別。"))
+                    en: "Local recognition quality was low, so Moongate used cloud recognition you enabled.",
+                    zhHans: "本地识别质量较低，已改用你启用的云端精准识别。",
+                    zhHant: "本機識別品質較低，已改用你啟用的雲端精準識別。"))
         }
         let resolved = resolverResult(candidates: [
             platformCandidate,
-            candidate(kind: .localASR, fileURL: finalSourceSRT, provider: "whisper.cpp")
+            generatedLocalCandidate
         ])
         let selectedKind = resolved?.selectedKind ?? .localASR
         let selectedFile = selectedKind == .localASR ? finalSourceSRT : pickedSource
@@ -1834,6 +1842,12 @@ final class QueueManager: ObservableObject {
             }
         }
         let sourceSRT = generated.url
+        if generated.confidence?.qualityIssues.contains("nearEmptyTranscript") == true {
+            throw MoongateError.downloadFailed(CoreL10n.text(
+                en: "Local recognition found almost no usable speech. Check the source language or model, then retry; use platform or cloud recognition if available.",
+                zhHans: "本地识别几乎没有得到可用文字。请检查源语言或模型后重试；如果有平台字幕或云端识别，建议改用它们。",
+                zhHant: "本機識別幾乎沒有得到可用文字。請檢查來源語言或模型後重試；如果有平台字幕或雲端識別，建議改用它們。"))
+        }
         // 严重质量问题(重复循环/语言误判)**不再让整个任务失败**——whisper 是用户显式选择的源,没有更好的可换,
         // 硬失败只会让用户一无所得。与 autoBest 路径一致:照常产出字幕,由下方 localASRSourceNote 附诚实告警。
         guard item(id)?.generation == generation else { return files }

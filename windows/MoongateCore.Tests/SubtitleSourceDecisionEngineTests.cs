@@ -98,6 +98,81 @@ public sealed class SubtitleSourceDecisionEngineTests : IDisposable
             SubtitleSourceDecisionEngine.GenerationPlan(SubtitleSourcePolicy.PreferLocalAsr, bad, true, false).Kind);
     }
 
+    // ---- post-generation local ASR escalation ----
+
+    [Fact]
+    public void AutoBestEscalatesGeneratedLocalAsrWhenLocalAssessmentBelowUsable()
+    {
+        var local = Assessment(SubtitleSourceKind.LocalAsr, 40, false, SubtitleQualityVerdict.LowConfidence);
+
+        Assert.True(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.AutoBest,
+            local,
+            localAsrConfidenceIsLowQuality: false,
+            cloudAsrAvailable: true));
+    }
+
+    [Fact]
+    public void AutoBestEscalatesGeneratedLocalAsrWhenConfidenceIsLowQuality()
+    {
+        var local = Assessment(SubtitleSourceKind.LocalAsr, 80, true, SubtitleQualityVerdict.Good);
+
+        Assert.True(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.AutoBest,
+            local,
+            localAsrConfidenceIsLowQuality: true,
+            cloudAsrAvailable: true));
+    }
+
+    [Fact]
+    public void AutoBestEscalatesGeneratedLocalAsrWhenScoredSubtitleContentFallsBelowUsable()
+    {
+        var path = WriteTimedSrt(
+            "local-asr.ja.srt",
+            Enumerable.Range(0, 12)
+                .Select(index => ($"作詞・作曲・編曲 初音ミク {index}", index * 14.0, index * 14.0 + 13.0))
+                .ToArray());
+        var local = SubtitleSourceDecisionEngine.Assess(
+            new SubtitleSourceCandidate("l", SubtitleSourceKind.LocalAsr, "ja", "L", path, true, "whisper.cpp"),
+            "ja", null);
+
+        Assert.True(local.Verdict < SubtitleQualityVerdict.Usable);
+        Assert.True(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.AutoBest,
+            local,
+            localAsrConfidenceIsLowQuality: false,
+            cloudAsrAvailable: true));
+    }
+
+    [Fact]
+    public void GeneratedLocalAsrEscalationRespectsPolicyAndCloudAvailability()
+    {
+        var lowQualityLocal = Assessment(SubtitleSourceKind.LocalAsr, 40, false, SubtitleQualityVerdict.LowConfidence);
+
+        Assert.False(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.PreferLocalAsr,
+            lowQualityLocal,
+            localAsrConfidenceIsLowQuality: true,
+            cloudAsrAvailable: true));
+        Assert.False(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.AutoBest,
+            lowQualityLocal,
+            localAsrConfidenceIsLowQuality: true,
+            cloudAsrAvailable: false));
+    }
+
+    [Fact]
+    public void GeneratedLocalAsrDoesNotEscalateHealthyLocalResult()
+    {
+        var healthyLocal = Assessment(SubtitleSourceKind.LocalAsr, 80, true, SubtitleQualityVerdict.Good);
+
+        Assert.False(SubtitleSourceDecisionEngine.ShouldEscalateGeneratedLocalAsr(
+            SubtitleSourcePolicy.AutoBest,
+            healthyLocal,
+            localAsrConfidenceIsLowQuality: false,
+            cloudAsrAvailable: true));
+    }
+
     // ---- choose: tie-break prefers more-trusted source ----
 
     [Fact]
@@ -181,13 +256,20 @@ public sealed class SubtitleSourceDecisionEngineTests : IDisposable
 
     private string WriteSrt(string name, IReadOnlyList<string> texts)
     {
-        var cues = texts.Select((text, index) =>
+        return WriteTimedSrt(
+            name,
+            texts.Select((text, index) => (text, index * 2.0, index * 2.0 + 1.5)).ToArray());
+    }
+
+    private string WriteTimedSrt(string name, IReadOnlyList<(string Text, double Start, double End)> cues)
+    {
+        var srtCues = cues.Select((cue, index) =>
             new SubtitleCue(index + 1,
-                SrtTools.SecondsToSrtTime(index * 2.0),
-                SrtTools.SecondsToSrtTime(index * 2.0 + 1.5),
-                text, [])).ToArray();
+                SrtTools.SecondsToSrtTime(cue.Start),
+                SrtTools.SecondsToSrtTime(cue.End),
+                cue.Text, [])).ToArray();
         var path = Path.Combine(_directory, name);
-        File.WriteAllText(path, SrtTools.SerializeSrt(cues));
+        File.WriteAllText(path, SrtTools.SerializeSrt(srtCues));
         return path;
     }
 }

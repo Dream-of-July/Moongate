@@ -60,6 +60,37 @@ public sealed class SubtitleSourceResolverTests : IDisposable
     }
 
     [Fact]
+    public void LocalAsrDetectsLongCjkShortCueHolds()
+    {
+        var file = WriteSrt("blackpink.long-hold.local-asr.ko.srt",
+        [
+            Cue(1, 1.91, 5.06, "착"),
+            Cue(2, 5.34, 10.16, "한"),
+            Cue(3, 10.44, 12.10, "얼굴에"),
+            Cue(4, 12.50, 14.00, "그렇지 못한대도"),
+            Cue(5, 14.20, 15.70, "volume은 두 배로"),
+            Cue(6, 16.00, 17.50, "거침없이 직진"),
+            Cue(7, 17.80, 19.30, "나는 믿고 있어"),
+            Cue(8, 19.60, 21.10, "지금 이 순간"),
+        ]);
+
+        var score = SubtitleQualityScorer.Score(
+            new SubtitleSourceCandidate(
+                "local-ko",
+                SubtitleSourceKind.LocalAsr,
+                "ko",
+                "Local Korean",
+                file,
+                true,
+                "whisper.cpp"),
+            "ko",
+            null);
+
+        Assert.True((int)score.Verdict <= (int)SubtitleQualityVerdict.LowConfidence);
+        Assert.Contains("longShortCueHold", score.Reasons);
+    }
+
+    [Fact]
     public void ResolverNeverReturnsEmptySelectedFileForMissingCandidate()
     {
         var resolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(

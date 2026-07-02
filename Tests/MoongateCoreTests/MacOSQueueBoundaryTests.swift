@@ -230,6 +230,18 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         )
     }
 
+    func testQueueStopsDirectLocalASRFlowWhenRecognizerProducesNearEmptyTranscript() throws {
+        let source = try queueManagerSource()
+        let prepareBody = try XCTUnwrap(functionBody(named: "prepareLocalASRSourceSubtitleIfNeeded", in: source))
+
+        XCTAssertTrue(prepareBody.contains("nearEmptyTranscript"))
+        XCTAssertTrue(prepareBody.contains("throw MoongateError.downloadFailed"))
+        XCTAssertLessThan(
+            try XCTUnwrap(prepareBody.range(of: "nearEmptyTranscript")).lowerBound,
+            try XCTUnwrap(prepareBody.range(of: "if !nextFiles.contains(sourceSRT)")).lowerBound
+        )
+    }
+
     func testNormalSubtitlePathDoesNotRunLocalASRWork() throws {
         let source = try queueManagerSource()
         let workPlanBody = try XCTUnwrap(functionBody(named: "workPlan", in: source))
@@ -336,8 +348,9 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("provider: \"OpenAI-compatible\""))
         XCTAssertTrue(source.contains("return primarySubtitleTrack.sourceKind == .platformAuto"))
         XCTAssertTrue(source.contains("platformAssessment.gateReasons"))
-        // B3 弱语言云端救场(opt-in):autoBest 下本地低置信 + 已配置云端 → 改用云端;不自动上传。
-        XCTAssertTrue(source.contains("generated.confidence?.isLowQuality == true"))
+        // B3 弱语言云端救场(opt-in):autoBest 下本地低质 + 已配置云端 → 改用云端;不自动上传。
+        XCTAssertTrue(source.contains("SubtitleSourceDecisionEngine.shouldEscalateGeneratedLocalASR"))
+        XCTAssertTrue(source.contains("localASRConfidenceIsLowQuality: generated.confidence?.isLowQuality == true"))
         XCTAssertTrue(source.contains("cloudASRGenerator != nil"))
         XCTAssertTrue(source.contains("usedCloudEscalation"))
         // 防回归：旧的双裁决 OR 与 QueueManager 内单独跑门必须彻底消失。

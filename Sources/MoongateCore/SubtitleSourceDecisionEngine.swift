@@ -104,6 +104,23 @@ public enum SubtitleSourceDecisionEngine {
         .keepPlatformRecordReasons(platform?.gateReasons ?? [])
     }
 
+    // MARK: - 生成后本地 ASR 云端救场
+
+    /// 本地 ASR 已生成后，判断是否应在用户启用云端识别时升级为云端重识别。
+    /// 这保留原有低置信度救场，同时让生成出的本地 SRT 也经过统一质量门，避免明显不可用的
+    /// Whisper 结果被当作可比较候选静默留下。
+    public static func shouldEscalateGeneratedLocalASR(
+        policy: SubtitleSourcePolicy,
+        localAssessment: Assessment?,
+        localASRConfidenceIsLowQuality: Bool,
+        cloudASRAvailable: Bool
+    ) -> Bool {
+        guard policy == .autoBest, cloudASRAvailable else { return false }
+        if localASRConfidenceIsLowQuality { return true }
+        guard let localAssessment else { return false }
+        return !localAssessment.gateUsable || localAssessment.verdict < autoBestRegenerateBelow
+    }
+
     // MARK: - 多候选择优（tie-break）
 
     /// 在已评估的候选中按 `score + policyBoost` 选最优；平分取更可信来源（更小 `sourceKindRank`）。

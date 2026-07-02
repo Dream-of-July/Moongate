@@ -5347,7 +5347,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("auto_translate", categories)
         self.assertEqual(
             required_groups,
-            {"en", "zh", "yue", "ja", "ko", "es", "fr", "it", "translated"},
+            {"en", "zh", "yue", "ja", "ko", "es", "pt", "fr", "de", "it", "hi", "ar", "ru", "translated"},
         )
         self.assertTrue(required_groups.issubset(language_groups))
         self.assertGreaterEqual(

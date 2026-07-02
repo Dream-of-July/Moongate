@@ -100,6 +100,8 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
     public bool LowConfidence { get; set; }
     /// <summary>When true the transcript carries a severe quality blocker (phraseLoop)——must NOT fail the job.</summary>
     public bool Severe { get; set; }
+    /// <summary>When true Whisper effectively recognized no useful text and the job must stop before translation.</summary>
+    public bool NearEmpty { get; set; }
     public string? OutputSrt { get; set; }
 
     public Task<GeneratedLocalAsrSource> GenerateSourceSubtitleAsync(
@@ -119,7 +121,9 @@ internal sealed class FakeLocalAsrGenerator : ILocalAsrSubtitleGenerator
             Path.GetFileNameWithoutExtension(videoFile) + ".local-asr." + languageCode + ".srt");
         Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
         File.WriteAllText(output, OutputSrt ?? "1\n00:00:00,000 --> 00:00:01,500\n梅雨 が 明ける。\n");
-        var confidence = Severe
+        var confidence = NearEmpty
+            ? new LocalAsrConfidenceSummary(0, 1.0, 0.0, false, qualityIssues: ["nearEmptyTranscript"])
+            : Severe
             ? new LocalAsrConfidenceSummary(30, 0.6, 0.3, true, qualityIssues: ["phraseLoop"])
             : LowConfidence
                 ? new LocalAsrConfidenceSummary(30, 0.6, 0.3, true)
@@ -1663,6 +1667,48 @@ public class QueueManagerTests
             Assert.Equal(1, localAsr.CallCount);
             // 字幕仍产出(本地 ASR 文件在结果中)。
             Assert.Contains(item.ResultFiles, f => f.Contains(".local-asr."));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ForceLocalAsrNearEmptyTranscriptStopsBeforeTranslation()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-near-empty-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            File.WriteAllText(video, "fake");
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var localAsr = new FakeLocalAsrGenerator { NearEmpty = true };
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: localAsr, settings: Settings());
+            var localTrack = SubtitleChoice.Create("ja", "本地识别", SubtitleSourceKind.LocalAsr, provider: "whisper.cpp");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "4:32"),
+                Request("a", subtitleTracks: [localTrack], primarySubtitleTrackId: localTrack.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir,
+                    subtitleSourcePolicy: SubtitleSourcePolicy.ForceLocalAsr),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video);
+
+            await WaitUntilAsync(
+                () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && queue.Item(id)?.PartialFailure == true,
+                "near-empty ASR 收敛为部分失败");
+            var item = queue.Item(id)!;
+            Assert.Equal(1, localAsr.CallCount);
+            Assert.Equal(0, translator.CallCount);
+            Assert.Contains(video, item.ResultFiles);
+            Assert.DoesNotContain(item.ResultFiles, file => file.Contains(".local-asr."));
+            Assert.Contains("语音识别失败", item.StatusText);
         }
         finally
         {

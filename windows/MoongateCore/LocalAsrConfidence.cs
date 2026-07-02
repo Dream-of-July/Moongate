@@ -14,10 +14,11 @@ namespace Moongate.Core;
 /// quality is low; for reference only" note rather than presenting garbage as confident subtitles.
 ///
 /// Known limitation (conservative trade-off): whisper confidence is a weak signal — some garbage is
-/// confident (BLACKPINK avg_prob 0.85 yet garbled). Thresholds are deliberately conservative: only
-/// clearly-low-confidence output is flagged, zero false positives on clean content, at the cost of
-/// limited recall. Single source of truth in Tests/fixtures/whisper-timing-constants.json
-/// (localASRConfidence); both ends assert their constants equal it. Mirror of Swift LocalASRConfidence.
+/// confident. In addition to overall low confidence, we catch a conservative timing/probability
+/// combination: multiple stretched CJK tokens with at least one extremely low-probability token.
+/// This avoids switching on a single wrong word while catching obvious timing collapse. Single
+/// source of truth in Tests/fixtures/whisper-timing-constants.json (localASRConfidence); both ends
+/// assert their constants equal it. Mirror of Swift LocalASRConfidence.
 /// </summary>
 public readonly record struct LocalAsrConfidenceSummary
 {
@@ -33,7 +34,9 @@ public readonly record struct LocalAsrConfidenceSummary
     public bool IsLowQuality { get; init; }
     [JsonIgnore]
     public bool HasSevereQualityBlocker =>
-        QualityIssues.Contains("phraseLoop") || QualityIssues.Contains("autoLanguageMismatch");
+        QualityIssues.Contains("phraseLoop")
+        || QualityIssues.Contains("autoLanguageMismatch")
+        || QualityIssues.Contains("nearEmptyTranscript");
 
     public LocalAsrConfidenceSummary(
         int assessedWordCount,
@@ -66,6 +69,9 @@ public static class LocalAsrConfidence
     public const double LowConfidenceWordProbability = 0.5;
     public const double LowConfidenceWordRatioCeiling = 0.2;
     public const int MinimumAssessableWordCount = 24;
+    public const double StretchedCjkTokenSecondsFloor = 2.5;
+    public const int StretchedCjkTokenClusterCount = 3;
+    public const double StretchedCjkLowProbabilityCeiling = 0.15;
 
     public static LocalAsrConfidenceSummary Assess(
         IReadOnlyList<AsrWord> words,
@@ -85,6 +91,7 @@ public static class LocalAsrConfidence
         var count = probabilities.Count;
         var scriptQuality = AssessScriptQuality(words, languageCode);
         var loopIssues = AssessLoopQuality(words, languageCode);
+        var timingIssues = AssessTimingQuality(words, languageCode);
         var segmentQuality = AssessSegmentQuality(
             segments ?? [],
             languageCode,
@@ -92,6 +99,7 @@ public static class LocalAsrConfidence
             languageHintCode);
         var qualityIssues = scriptQuality.Issues
             .Concat(loopIssues)
+            .Concat(timingIssues)
             .Concat(segmentQuality.Issues)
             .Distinct()
             .Order(StringComparer.Ordinal)
@@ -238,6 +246,30 @@ public static class LocalAsrConfidence
         return issues;
     }
 
+    private static IReadOnlyList<string> AssessTimingQuality(IReadOnlyList<AsrWord> words, string? languageCode)
+    {
+        var language = NormalizeLanguageCode(languageCode);
+        if (!IsCjkLanguage(language) || words.Count < MinimumAssessableWordCount)
+        {
+            return [];
+        }
+
+        var stretchedCjkWords = words
+            .Where(word => word.EndSeconds > word.StartSeconds
+                && word.EndSeconds - word.StartSeconds >= StretchedCjkTokenSecondsFloor
+                && (word.Text ?? "").EnumerateRunes().Any(scalar => IsExpectedScript(scalar, language)))
+            .ToList();
+        if (stretchedCjkWords.Count < StretchedCjkTokenClusterCount)
+        {
+            return [];
+        }
+
+        return stretchedCjkWords.Any(word => word.Probability is { } probability
+                                            && probability <= StretchedCjkLowProbabilityCeiling)
+            ? ["stretchedLowConfidenceCJKToken"]
+            : [];
+    }
+
     private static (double DominantPhraseRatio, double RepeatedPhraseSpanSeconds, IReadOnlyList<string> Issues)
         AssessSegmentQuality(
             IReadOnlyList<AsrSegment> segments,
@@ -255,6 +287,10 @@ public static class LocalAsrConfidence
             .Where(segment => segment.Phrase.Length > 0)
             .ToList();
         var issues = new List<string>();
+        if (LooksNearEmptyTranscript(segments))
+        {
+            issues.Add("nearEmptyTranscript");
+        }
         var detected = NormalizeLanguageCode(languageCode);
         var hint = NormalizeLanguageCode(languageHintCode);
         if (IsAutoLanguage(requestedLanguageCode)
@@ -309,6 +345,14 @@ public static class LocalAsrConfidence
             issues.Add("phraseLoop");
         }
         return (dominantRatio, repeatedSpan, issues);
+    }
+
+    private static bool LooksNearEmptyTranscript(IReadOnlyList<AsrSegment> segments)
+    {
+        var meaningfulScalarCount = string.Concat(segments.Select(segment => segment.Text ?? ""))
+            .EnumerateRunes()
+            .Count(scalar => !ShouldIgnoreForScriptQuality(scalar));
+        return segments.Count == 1 && meaningfulScalarCount <= 2;
     }
 
     private static bool IsFragmentedCjkLoop(
@@ -397,7 +441,9 @@ public static class LocalAsrConfidence
                 or UnicodeCategory.MathSymbol
                 or UnicodeCategory.CurrencySymbol
                 or UnicodeCategory.ModifierSymbol
-                or UnicodeCategory.OtherSymbol => true,
+                or UnicodeCategory.OtherSymbol
+                or UnicodeCategory.Control
+                or UnicodeCategory.Format => true,
             _ => false,
         };
     }

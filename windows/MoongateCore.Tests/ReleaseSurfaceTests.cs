@@ -19,33 +19,47 @@ public class ReleaseSurfaceTests
 
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
+    // Single source of truth for the release version surfaces. Bumping a release means changing
+    // these two constants and running this test — every packaging/doc surface is asserted against
+    // them, so a missed file fails loudly instead of shipping a split version (as 0.8.1 did).
+    private const string ReleaseVersion = "0.8.2";
+    private const string BuildNumber = "8201";
+
     [Fact]
-    public void ReleaseVersionSurfacesUse080ForMacAndWindows()
+    public void ReleaseVersionSurfacesAreConsistentAcrossMacAndWindows()
     {
-        Assert.Contains("VERSION=\"0.8.0\"", Read("build-windows.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-dmg.sh"));
-        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("build.sh"));
-        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("build.sh"));
+        Assert.Contains($"VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("build-windows.sh"));
+        Assert.Contains($"VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("make-dmg.sh"));
+        Assert.Contains($"APP_VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("build.sh"));
+        Assert.Contains($"APP_BUILD_NUMBER=\"${{MOONGATE_BUILD_NUMBER:-{BuildNumber}}}\"", Read("build.sh"));
         Assert.Contains("<string>$APP_VERSION</string>", Read("build.sh"));
         Assert.Contains("<string>$APP_BUILD_NUMBER</string>", Read("build.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-pkg.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-sparkle-zip.sh"));
-        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("make-sparkle-zip.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.8.0}\"", Read("make-appcast.sh"));
-        Assert.Contains("BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-8005}\"", Read("make-appcast.sh"));
+        Assert.Contains($"VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("make-pkg.sh"));
+        Assert.Contains($"VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains($"BUILD_NUMBER=\"${{MOONGATE_BUILD_NUMBER:-{BuildNumber}}}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains($"VERSION=\"${{MOONGATE_VERSION:-{ReleaseVersion}}}\"", Read("make-appcast.sh"));
+        Assert.Contains($"BUILD_NUMBER=\"${{MOONGATE_BUILD_NUMBER:-{BuildNumber}}}\"", Read("make-appcast.sh"));
         Assert.Contains("productbuild", Read("make-pkg.sh"));
         Assert.Contains("PKG_SIGN_IDENTITY", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"$STAGING/Applications\"", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
-        Assert.Contains("Moongate-macOS-v0.8.0.zip", Read("README.md"));
+        Assert.Contains($"Moongate-macOS-v{ReleaseVersion}.zip", Read("README.md"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.8.0", workflow);
-        Assert.Contains("default: 0.8.0", workflow);
+        Assert.Contains($"default: v{ReleaseVersion}", workflow);
+        Assert.Contains($"default: {ReleaseVersion}", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.8.0\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains($"!define APPVERSION \"{ReleaseVersion}\"", Read("windows", "installer", "installer.nsi"));
+
+        // Prevent the 0.8.1-style split: the Sparkle build number must agree with build.sh.
+        Assert.Contains($"BUILD_NUMBER=\"${{MOONGATE_BUILD_NUMBER:-{BuildNumber}}}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains($"APP_BUILD_NUMBER=\"${{MOONGATE_BUILD_NUMBER:-{BuildNumber}}}\"", Read("build.sh"));
+
+        // README badge + CHANGELOG section must track the release too.
+        Assert.Contains($"version-{ReleaseVersion}-", Read("README.md"));
+        Assert.Contains($"## {ReleaseVersion}", Read("CHANGELOG.md"));
     }
 
     [Fact]
@@ -362,8 +376,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("Moongate-Windows-Setup-v0.8.0.exe", docs);
-        Assert.Contains("Moongate-Windows-Setup-v0.8.0.exe", readme);
+        Assert.Contains($"Moongate-Windows-Setup-v{ReleaseVersion}.exe", docs);
+        Assert.Contains($"Moongate-Windows-Setup-v{ReleaseVersion}.exe", readme);
     }
 
     [Fact]
@@ -378,7 +392,7 @@ public class ReleaseSurfaceTests
         var preflight = File.ReadAllText(preflightPath);
         var vmPreflight = File.ReadAllText(vmPreflightPath);
 
-        Assert.Contains("0.8.0", preflight);
+        Assert.Contains(ReleaseVersion, preflight);
         Assert.Contains("PROJ_DIR=\"${0:a:h:h:h}\"", preflight);
         Assert.Contains("git diff --check", preflight);
         Assert.Contains("python3 -m unittest discover -s tools/subtitle_timing_eval/tests", preflight);
@@ -415,23 +429,17 @@ public class ReleaseSurfaceTests
     }
 
     [Fact]
-    public void WindowsDocumentedTestCountMatchesCurrentSuite()
+    public void WindowsDocsDoNotCiteAStaleAbsoluteTestCount()
     {
+        // The docs used to hardcode "470 unit tests", which drifted to ~764. Rather than chase a
+        // brittle number on every test addition, the docs now describe the suite qualitatively.
+        // Guard against regressing to any stale absolute count.
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("470", docs);
-        Assert.DoesNotContain("414", docs);
-        Assert.DoesNotContain("413", docs);
-        Assert.DoesNotContain("412", docs);
-        Assert.DoesNotContain("409", docs);
-        Assert.DoesNotContain("392", docs);
-        Assert.DoesNotContain("271", docs);
-        Assert.DoesNotContain("247", docs);
-        Assert.DoesNotContain("241", docs);
-        Assert.DoesNotContain("240", docs);
-        Assert.DoesNotContain("232", docs);
-        Assert.DoesNotContain("225", docs);
-        Assert.DoesNotContain("217", docs);
-        Assert.DoesNotContain("144", docs);
+        Assert.Contains("mirrored unit-test suite", docs);
+        foreach (var stale in new[] { "470", "414", "413", "412", "409", "392", "271", "247", "241", "240", "232", "225", "217", "144" })
+        {
+            Assert.DoesNotContain($"{stale} unit tests", docs);
+        }
     }
 }

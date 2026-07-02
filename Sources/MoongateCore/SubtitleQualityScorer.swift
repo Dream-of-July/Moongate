@@ -60,6 +60,7 @@ public enum SubtitleQualityScorer {
         value -= min(18, report.romanizedLoopTokenRatio * 40)
 
         if extraReasons.contains("shortCueFragmentation") { value -= 30 }
+        if extraReasons.contains("longShortCueHold") { value -= 40 }
         reasons.append(contentsOf: extraReasons)
 
         let clamped = min(100, max(0, value))
@@ -184,6 +185,23 @@ public enum SubtitleQualityScorer {
         if !texts.isEmpty,
            Double(cjkShortCueCount) / Double(texts.count) >= 0.35 {
             reasons.append("shortCueFragmentation")
+        }
+        let longShortCueDurations = cues.compactMap { cue -> Double? in
+            let text = cue.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let visibleCount = text.unicodeScalars.filter { !$0.properties.isWhitespace }.count
+            guard visibleCount > 0,
+                  visibleCount <= 2,
+                  text.unicodeScalars.contains(where: isCJKScalar),
+                  let start = srtTimeToSeconds(cue.start),
+                  let end = srtTimeToSeconds(cue.end),
+                  end > start else {
+                return nil
+            }
+            let duration = end - start
+            return duration >= 2.5 ? duration : nil
+        }
+        if longShortCueDurations.count >= 2 || (longShortCueDurations.max() ?? 0) >= 5 {
+            reasons.append("longShortCueHold")
         }
         return reasons
     }

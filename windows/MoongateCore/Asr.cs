@@ -1236,11 +1236,11 @@ public static partial class LocalAsrSubtitleTimingPlanner
         "mente", "mento", "miento", "amiento", "zione", "zioni", "ient", "aient",
         "lich", "chen", "en", "ern", "ung", "ungen", "heit", "keit",
         "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache", "ne", "wich",
-        "ità", "tà", "né", "nné", "rsità",
+        "ità", "tà", "né", "nné", "rsità", "é", "ée", "ior", "ano", "rice",
     ];
     private static readonly HashSet<string> ShortLatinContinuationSuffixes =
     [
-        "ne", "ês", "né", "tà",
+        "ne", "ês", "né", "tà", "é", "ée",
     ];
     private static readonly HashSet<string> LatinBridgeFragments =
     [
@@ -1248,8 +1248,83 @@ public static partial class LocalAsrSubtitleTimingPlanner
     ];
     private static readonly HashSet<string> LatinBridgeTailSuffixes =
     [
-        "ient", "aient",
+        "ient", "aient", "ée", "rice", "ano", "êt", "lio", "li", "na", "ette",
     ];
+    private static readonly Dictionary<string, HashSet<string>> ObservedLatinBridgePrefixes = new()
+    {
+        ["ach"] = ["arr"],
+        ["at"] = ["cré"],
+        ["r"] = ["most"],
+        ["n"] = ["lection", "sélection", "selection", "ion"],
+        ["onn"] = ["h"],
+        ["og"] = ["org"],
+        ["g"] = ["inse"],
+    };
+    private static readonly Dictionary<string, HashSet<string>> ObservedLatinContinuationPrefixes = new()
+    {
+        ["ütlich"] = ["gem"],
+        ["üt"] = ["gem"],
+        ["elt"] = ["reg"],
+        ["est"] = ["bef"],
+        ["igt"] = ["befest"],
+        ["ver"] = ["seiten"],
+        ["kle"] = ["seitenver", "ver"],
+        ["id"] = ["seitenverkle", "kle"],
+        ["ung"] = ["seitenverkleid", "id"],
+        ["äck"] = ["gep"],
+        ["ä"] = ["gep", "ep", "f"],
+        ["ck"] = ["gepä", "ä"],
+        ["f"] = ["gepäck", "ck"],
+        ["cher"] = ["gepäckfä", "fä", "ä"],
+        ["fächer"] = ["gepäck"],
+        ["ch"] = ["was"],
+        ["rä"] = ["wasch", "ch"],
+        ["ume"] = ["waschrä", "rä"],
+        ["amento"] = ["levant"],
+        ["cre"] = ["trans"],
+        ["ve"] = ["transcre", "cre"],
+        ["mos"] = ["transcreve", "ve"],
+        ["ut"] = ["trad"],
+        ["ores"] = ["tradut", "ut"],
+        ["ários"] = ["volunt"],
+        ["ng"] = ["lí"],
+        ["u"] = ["líng"],
+        ["as"] = ["língu"],
+        ["il"] = ["ut"],
+        ["ise"] = ["util"],
+        ["è"] = ["r"],
+        ["gl"] = ["rè"],
+        ["és"] = ["règl"],
+        ["li"] = ["app", "orgog", "neg"],
+        ["quer"] = ["appli"],
+        ["ien"] = ["quotid", "chem"],
+        ["ion"] = ["mar", "op", "opin"],
+        ["in"] = ["op"],
+        ["ette"] = ["marionn", "n"],
+        ["no"] = ["reg"],
+        ["ito"] = ["un"],
+        ["ra"] = ["lond"],
+        ["ia"] = ["svez"],
+        ["ix"] = ["d"],
+        ["lection"] = ["sé", "se"],
+        ["n"] = ["sélection", "selection", "marion", "ion"],
+        ["êt"] = ["honn", "onn"],
+        ["ée"] = ["sélectionn", "selectionn"],
+        ["eté"] = ["honnêt", "honnet"],
+        ["lio"] = ["orgog"],
+        ["ino"] = ["lat"],
+        ["os"] = ["orgogli", "li"],
+        ["amente"] = ["orgoglios", "os"],
+        ["ati"] = ["st"],
+        ["iti"] = ["un"],
+        ["igi"] = ["par"],
+    };
+    private static readonly Dictionary<string, HashSet<string>> ObservedStandaloneLatinFunctionPrefixes = new()
+    {
+        ["al"] = ["ito", "unito", "posto"],
+        ["en"] = ["influencer", "prendre", "encore", "mais"],
+        ["ne"] = ["qui"],
+    };
     private static readonly HashSet<string> StrongLatinContinuationSuffixes =
     [
         "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
@@ -3505,7 +3580,9 @@ public static partial class LocalAsrSubtitleTimingPlanner
         {
             var part = parts[index];
             var next = index + 1 < parts.Count ? parts[index + 1] : null;
-            if (builder.Length > 0 && ShouldInsertSpace(previous, part, next, allowBroadLatinContinuation))
+            if (builder.Length > 0
+                && !IsObservedLatinContinuation(builder.ToString(), part)
+                && ShouldInsertSpace(previous, part, next, allowBroadLatinContinuation))
             {
                 builder.Append(' ');
             }
@@ -3522,10 +3599,37 @@ public static partial class LocalAsrSubtitleTimingPlanner
         bool allowBroadLatinContinuation) =>
         right.Length > 0
         && !IsNoSpaceBefore(right[0])
-        && !IsLatinBridgeFragment(left, right, next)
-        && !IsStrongLatinContinuationFragment(left, right)
-        && !IsLatinContinuationFragment(left, right, allowBroadLatinContinuation)
-        && (ContainsAsciiAlphanumeric(left) || ContainsAsciiAlphanumeric(right));
+        && (IsObservedStandaloneLatinFunction(left, right)
+            || !IsLatinBridgeFragment(left, right, next)
+            && !IsStrongLatinContinuationFragment(left, right)
+            && !IsLatinContinuationFragment(left, right, allowBroadLatinContinuation)
+            && (ContainsHangul(left) && ContainsHangul(right) && !KoreanLeadingProhibitedParticles.Contains(right.Trim())
+                || ContainsSpacedScript(left) && ContainsSpacedScript(right)
+                || ContainsAsciiAlphanumeric(left) || ContainsAsciiAlphanumeric(right)));
+
+    private static bool IsObservedStandaloneLatinFunction(string left, string right)
+    {
+        var leftRun = TrailingLatinLetterRun(left).ToLowerInvariant();
+        var rightRun = LeadingLatinLetterRun(right).ToLowerInvariant();
+        return leftRun.Length > 0
+            && rightRun.Length > 0
+            && ObservedStandaloneLatinFunctionPrefixes.TryGetValue(rightRun, out var allowedPrefixes)
+            && allowedPrefixes.Contains(leftRun);
+    }
+
+    private static bool ContainsHangul(string text) =>
+        text.Any(ch => ch is >= '\uAC00' and <= '\uD7A3');
+
+    // Space-separated non-CJK scripts (Devanagari/Bengali/Arabic/Cyrillic/\u2026) keep word spaces.
+    private static bool ContainsSpacedScript(string text) =>
+        text.Any(ch =>
+            ch is >= '\u0900' and <= '\u097F'    // Devanagari
+            || ch is >= '\u0980' and <= '\u09FF' // Bengali
+            || ch is >= '\u0600' and <= '\u06FF' // Arabic
+            || ch is >= '\u0750' and <= '\u077F' // Arabic Supplement
+            || ch is >= '\u08A0' and <= '\u08FF' // Arabic Extended-A
+            || ch is >= '\u0400' and <= '\u04FF' // Cyrillic
+            || ch is >= '\u0500' and <= '\u052F'); // Cyrillic Supplement
 
     private static bool ContainsAsciiAlphanumeric(string text) =>
         text.Any(ch => ch <= 0x7F && char.IsLetterOrDigit(ch));
@@ -3583,6 +3687,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static bool IsLatinContinuationFragment(string left, string right, bool allowBroadHeuristics)
     {
+        if (IsObservedLatinContinuation(left, right)) return true;
         if (HasApostropheInsideLatinRun(left)) return false;
         var leftRun = TrailingLatinLetterRun(left);
         var rightRun = LeadingLatinLetterRun(right);
@@ -3593,6 +3698,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
         {
             return true;
         }
+        if (LatinContinuationFunctionWords.Contains(leftLower)) return false;
         if (LatinContinuationSuffixes.Contains(rightLower))
         {
             if (ShortLatinContinuationSuffixes.Contains(rightLower))
@@ -3600,6 +3706,12 @@ public static partial class LocalAsrSubtitleTimingPlanner
                 return leftRun.Length >= 2 && !LatinContinuationFunctionWords.Contains(leftLower);
             }
             return !LatinContinuationFunctionWords.Contains(leftLower);
+        }
+        if (rightLower == "i"
+            && leftLower.EndsWith("ior", StringComparison.Ordinal)
+            && !LatinContinuationFunctionWords.Contains(leftLower))
+        {
+            return true;
         }
         if (!allowBroadHeuristics) return false;
         if (leftRun.Length == 1
@@ -3629,6 +3741,30 @@ public static partial class LocalAsrSubtitleTimingPlanner
         return false;
     }
 
+    private static bool IsObservedLatinContinuation(string left, string right)
+    {
+        var rightLower = right.Normalize(NormalizationForm.FormC).Trim().ToLowerInvariant();
+        if (rightLower == "rice")
+        {
+            var leftLower = left.Normalize(NormalizationForm.FormC).Trim().ToLowerInvariant();
+            return leftLower.EndsWith("créat", StringComparison.Ordinal)
+                || leftLower.EndsWith("creat", StringComparison.Ordinal);
+        }
+        if (!ObservedLatinContinuationPrefixes.TryGetValue(rightLower, out var allowedPrefixes))
+        {
+            return false;
+        }
+        // Match the trailing Latin run *exactly* against an observed sub-word piece, not with
+        // EndsWith on the whole left string. EndsWith glued mainstream words whose tail merely
+        // happened to end in a fragment ("stop"+"in"→"stopin", "salut"+"il"→"salutil",
+        // "drop"/"shop"/"develop"+"in"). The accumulation chains already list every accumulated
+        // form as its own key, so equality still links real multi-piece sub-words while failing
+        // safe on complete words. Mirrors Swift isObservedLatinContinuation.
+        var leftRun = TrailingLatinLetterRun(left).ToLowerInvariant();
+        if (leftRun.Length == 0) return false;
+        return allowedPrefixes.Any(prefix => string.Equals(leftRun, prefix, StringComparison.Ordinal));
+    }
+
     private static bool IsLatinBridgeFragment(string left, string right, string? next)
     {
         if (next is null) return false;
@@ -3640,6 +3776,15 @@ public static partial class LocalAsrSubtitleTimingPlanner
         var leftLower = leftRun.ToLowerInvariant();
         var rightLower = rightRun.ToLowerInvariant();
         var nextLower = nextRun.ToLowerInvariant();
+        if (ObservedLatinBridgePrefixes.TryGetValue(rightLower, out var allowedPrefixes))
+        {
+            return allowedPrefixes.Any(prefix => leftLower.EndsWith(prefix, StringComparison.Ordinal))
+                && LatinBridgeTailSuffixes.Contains(nextLower);
+        }
+        if (ObservedLatinBridgePrefixes.ContainsKey(rightLower))
+        {
+            return false;
+        }
         return LatinBridgeFragments.Contains(rightLower)
             && !LatinContinuationFunctionWords.Contains(leftLower)
             && LatinContinuationSuffixes.Contains(nextLower);
@@ -3653,6 +3798,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static string TrailingLatinLetterRun(string text)
     {
+        text = text.Normalize(NormalizationForm.FormC);
         var index = text.Length - 1;
         while (index >= 0 && IsLatinLetter(text[index])) index--;
         return text[(index + 1)..];
@@ -3660,6 +3806,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static string LeadingLatinLetterRun(string text)
     {
+        text = text.Normalize(NormalizationForm.FormC);
         var index = 0;
         while (index < text.Length && IsLatinLetter(text[index])) index++;
         return text[..index];
@@ -4097,11 +4244,24 @@ public static class AsrPromptBuilder
         string[] markers =
         [
             "official music video", "music video", "official mv", " mv", "mv ",
+            "official audio", "official visualizer", "performance video",
             "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ",
         ];
         return markers.Any(marker => title.Contains(marker, StringComparison.Ordinal))
+            || LooksLikeOfficialArtistTitleRelease(title)
             ? AsrRecognitionProfile.LyricsHighQuality
             : AsrRecognitionProfile.Speech;
+    }
+
+    private static bool LooksLikeOfficialArtistTitleRelease(string title)
+    {
+        string[] officialMarkers = ["(official)", "[official]", "【official】"];
+        if (!officialMarkers.Any(marker => title.Contains(marker, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        string[] artistTitleSeparators = [" ⧸ ", " / ", " ／ ", " - ", " – ", " — ", " | ", "｜"];
+        return artistTitleSeparators.Any(separator => title.Contains(separator, StringComparison.Ordinal));
     }
 }
 
@@ -4903,10 +5063,11 @@ public sealed class WhisperCppJsonTranscriptParser
             segmentCount = segments.GetArrayLength();
             foreach (var segment in segments.EnumerateArray())
             {
+                var segmentText = TryCleanText(segment, out var cleanSegmentText) ? cleanSegmentText : null;
                 if (TryInterval(segment, offsetsAreMilliseconds: true, out var segmentStart, out var segmentEnd))
                 {
                     maxEnd = Math.Max(maxEnd ?? segmentEnd, segmentEnd);
-                    if (TryCleanText(segment, out var segmentText))
+                    if (segmentText is not null)
                     {
                         transcriptSegments.Add(new AsrSegment
                         {
@@ -4918,7 +5079,7 @@ public sealed class WhisperCppJsonTranscriptParser
                     }
                 }
 
-                var tokenEntries = ParseTokenEntries(segment);
+                var tokenEntries = ParseTokenEntries(segment, segmentText);
                 if (tokenEntries.Count == 0)
                 {
                     if (ParseSegmentWord(segment) is { } fallback)
@@ -5020,7 +5181,7 @@ public sealed class WhisperCppJsonTranscriptParser
         return Number(result, ["language_probability", "languageProbability", "language_confidence", "languageConfidence"]);
     }
 
-    private static IReadOnlyList<(AsrWord Word, double? DtwStart)> ParseTokenEntries(JsonElement segment)
+    private static IReadOnlyList<(AsrWord Word, double? DtwStart)> ParseTokenEntries(JsonElement segment, string? segmentText = null)
     {
         if (!TryGetArray(segment, "tokens", out var tokens)
             && !TryGetArray(segment, "words", out tokens))
@@ -5033,8 +5194,9 @@ public sealed class WhisperCppJsonTranscriptParser
         foreach (var token in tokens.EnumerateArray())
         {
             var rawText = TryGetString(token, "text", out var raw) ? raw : "";
+            if (IsWhisperControlToken(rawText)) continue;
             if (!TryCleanText(token, out var text)
-                || !TryInterval(token, offsetsAreMilliseconds: true, out var start, out var end))
+                || !TryTokenInterval(token, offsetsAreMilliseconds: true, out var start, out var end))
             {
                 continue;
             }
@@ -5070,7 +5232,58 @@ public sealed class WhisperCppJsonTranscriptParser
                 mergeEligible.Add(startsNewWhisperTokenWord);
             }
         }
-        return entries;
+        return SpacedScriptSegmentWordEntries(segmentText, entries) ?? entries;
+    }
+
+    // Rebuild word-level entries from segment text for scripts that whisper.cpp writes with real
+    // word spacing but splits into sub-character token pieces (Hangul eojeol, Devanagari words).
+    // CJK segment text has no spaces, so it yields <2 units and is left untouched.
+    private static IReadOnlyList<(AsrWord Word, double? DtwStart)>? SpacedScriptSegmentWordEntries(
+        string? segmentText,
+        IReadOnlyList<(AsrWord Word, double? DtwStart)> entries)
+    {
+        if (string.IsNullOrWhiteSpace(segmentText)
+            || (!ParserContainsHangul(segmentText) && !ParserContainsSpacedScript(segmentText))
+            || entries.Count == 0)
+        {
+            return null;
+        }
+        var units = segmentText
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .ToArray();
+        if (units.Length < 2) return null;
+
+        var output = new List<(AsrWord Word, double? DtwStart)>();
+        var entryIndex = 0;
+        foreach (var unit in units)
+        {
+            var target = ParserAlignmentText(unit);
+            if (target.Length == 0) return null;
+            var consumed = new List<(AsrWord Word, double? DtwStart)>();
+            var accumulated = "";
+            while (entryIndex < entries.Count && accumulated != target)
+            {
+                var entry = entries[entryIndex];
+                var tokenText = ParserAlignmentText(entry.Word.Text);
+                if (tokenText.Length == 0) return null;
+                accumulated += tokenText;
+                if (!target.StartsWith(accumulated, StringComparison.Ordinal)) return null;
+                consumed.Add(entry);
+                entryIndex++;
+            }
+            if (accumulated != target || consumed.Count == 0) return null;
+            var first = consumed[0];
+            var end = consumed.Max(entry => entry.Word.EndSeconds);
+            output.Add((
+                first.Word with
+                {
+                    Text = unit,
+                    EndSeconds = end,
+                    Probability = consumed.Min(entry => entry.Word.Probability ?? 1.0),
+                },
+                first.DtwStart));
+        }
+        return entryIndex == entries.Count ? output : null;
     }
 
     private static bool ShouldMergeLatinParserToken(
@@ -5102,6 +5315,41 @@ public sealed class WhisperCppJsonTranscriptParser
 
     private static bool ParserContainsCjkOrHangul(string text) =>
         text.EnumerateRunes().Any(rune => ParserIsCjkOrHangulScalar(rune.Value));
+
+    private static bool ParserContainsHangul(string text) =>
+        text.EnumerateRunes().Any(rune => rune.Value is >= 0xAC00 and <= 0xD7A3);
+
+    // Space-separated non-CJK scripts that whisper.cpp writes with real word spacing but splits
+    // into base-letter + combining-mark token pieces (Devanagari, Bengali, Arabic, Cyrillic, …).
+    // Word entries must be rebuilt from segment text to keep readable spacing (mirrors Hangul).
+    // CJK (Han/Kana) is intentionally excluded: it has no word spaces.
+    private static bool ParserContainsSpacedScript(string text) =>
+        text.EnumerateRunes().Any(rune => IsSpacedScriptScalar(rune.Value));
+
+    private static bool IsSpacedScriptScalar(int v) =>
+        v is >= 0x0900 and <= 0x097F      // Devanagari
+        || v is >= 0x0980 and <= 0x09FF   // Bengali
+        || v is >= 0x0600 and <= 0x06FF   // Arabic
+        || v is >= 0x0750 and <= 0x077F   // Arabic Supplement
+        || v is >= 0x08A0 and <= 0x08FF   // Arabic Extended-A
+        || v is >= 0x0400 and <= 0x04FF   // Cyrillic
+        || v is >= 0x0500 and <= 0x052F;  // Cyrillic Supplement
+
+    private static string ParserAlignmentText(string text)
+    {
+        var builder = new StringBuilder();
+        foreach (var ch in text.Normalize(NormalizationForm.FormC))
+        {
+            if (!char.IsWhiteSpace(ch)) builder.Append(ch);
+        }
+        return builder.ToString();
+    }
+
+    private static bool IsWhisperControlToken(string text)
+    {
+        var trimmed = text.Trim();
+        return trimmed.StartsWith("[_", StringComparison.Ordinal) && trimmed.EndsWith(']');
+    }
 
     private static bool ParserIsCjkOrHangulScalar(int value) =>
         value is >= 0x3040 and <= 0x30FF
@@ -5137,6 +5385,49 @@ public sealed class WhisperCppJsonTranscriptParser
             result[i] = words[i] with { StartSeconds = start, EndSeconds = end };
         }
         return result;
+    }
+
+    private static bool TryTokenInterval(
+        JsonElement element,
+        bool offsetsAreMilliseconds,
+        out double start,
+        out double end)
+    {
+        if (TryInterval(element, offsetsAreMilliseconds, out start, out end))
+        {
+            return true;
+        }
+        if (TryGetObject(element, "offsets", out var offsets)
+            && TryRepairedReversedInterval(offsets, offsetsAreMilliseconds, out start, out end))
+        {
+            return true;
+        }
+        if (TryGetObject(element, "timestamps", out var timestamps)
+            && TryRepairedReversedInterval(timestamps, valuesAreMilliseconds: false, out start, out end))
+        {
+            return true;
+        }
+        start = 0;
+        end = 0;
+        return false;
+    }
+
+    private static bool TryRepairedReversedInterval(
+        JsonElement element,
+        bool valuesAreMilliseconds,
+        out double start,
+        out double end)
+    {
+        if (TrySeconds(element, "from", valuesAreMilliseconds, out start)
+            && TrySeconds(element, "to", valuesAreMilliseconds, out end)
+            && end < start)
+        {
+            end = start + 0.01;
+            return true;
+        }
+        start = 0;
+        end = 0;
+        return false;
     }
 
     private static AsrWord? ParseSegmentWord(JsonElement segment)

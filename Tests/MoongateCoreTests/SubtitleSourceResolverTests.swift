@@ -151,6 +151,37 @@ final class SubtitleSourceResolverTests: XCTestCase {
         XCTAssertTrue(score.reasons.contains("shortCueFragmentation"))
     }
 
+    func testLocalASRDetectsLongCJKShortCueHolds() throws {
+        let source = try writeSRT(name: "blackpink.long-hold.local-asr.ko.srt", cues: [
+            cue(start: 1.91, end: 5.06, text: "착"),
+            cue(start: 5.34, end: 10.16, text: "한"),
+            cue(start: 10.44, end: 12.10, text: "얼굴에"),
+            cue(start: 12.50, end: 14.00, text: "그렇지 못한대도"),
+            cue(start: 14.20, end: 15.70, text: "volume은 두 배로"),
+            cue(start: 16.00, end: 17.50, text: "거침없이 직진"),
+            cue(start: 17.80, end: 19.30, text: "나는 믿고 있어"),
+            cue(start: 19.60, end: 21.10, text: "지금 이 순간")
+        ])
+        let candidate = SubtitleSourceCandidate(
+            id: "local-ko",
+            kind: .localASR,
+            languageCode: "ko",
+            displayName: "Local Korean",
+            fileURL: source,
+            isGenerated: true,
+            provider: "whisper.cpp"
+        )
+
+        let score = SubtitleQualityScorer.score(
+            candidate: candidate,
+            requestedSourceLanguageCode: "ko",
+            videoDurationSeconds: nil
+        )
+
+        XCTAssertLessThanOrEqual(score.verdict, .lowConfidence)
+        XCTAssertTrue(score.reasons.contains("longShortCueHold"))
+    }
+
     func testQualityScorerPenalizesSoundEffectDominatedAndLongCueSources() throws {
         let source = try writeSRT(name: "video.auto.ja.srt", cues: [
             cue(start: 0, end: 13, text: "今日はとても長い説明がそのまま一つの字幕に詰め込まれています"),

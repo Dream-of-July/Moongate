@@ -336,6 +336,44 @@ class ViewingQualityTests(unittest.TestCase):
         self.assertTrue(local_candidate["usable"])
         self.assertTrue(local_candidate["selected"])
 
+    def test_source_candidate_report_marks_selected_low_quality_local_asr(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            platform = root / "source.vtt"
+            platform.write_text(
+                "WEBVTT\n\n"
+                "00:00:01.000 --> 00:00:02.000\nni\n\n"
+                "00:00:02.000 --> 00:00:03.000\nni\n\n"
+                "00:00:03.000 --> 00:00:04.000\ndare ni\n\n",
+                encoding="utf-8",
+            )
+            local_asr = root / "local-asr.ko.srt"
+            local_asr.write_text(
+                "1\n00:00:01,900 --> 00:00:05,100\n착\n\n"
+                "2\n00:00:05,100 --> 00:00:10,200\n한\n\n"
+                "3\n00:00:10,200 --> 00:00:25,600\n얼굴에\n\n",
+                encoding="utf-8",
+            )
+            report = build_viewing_sample_report(
+                sample_id="fallback-low-local",
+                title="Fallback Low Local",
+                category="kpop_music",
+                source_path=platform,
+                local_asr_path=local_asr,
+                translated_path=None,
+                source_language_code="ko",
+                target_language_code="zh-Hans",
+                preview_seconds=30.0,
+            )
+
+        candidates = build_source_candidate_reports(report)
+        local_candidate = next(candidate for candidate in candidates if candidate["kind"] == "local-asr")
+        self.assertEqual("local-asr", report.final_source_kind)
+        self.assertTrue(local_candidate["selected"])
+        self.assertFalse(local_candidate["usable"])
+        self.assertTrue(any(reason.startswith("longShortCueHold:") for reason in local_candidate["reasons"]))
+        self.assertIsNotNone(local_candidate["quality"])
+
     def test_pipeline_advice_records_fallback_decision_for_bad_japanese_music_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
