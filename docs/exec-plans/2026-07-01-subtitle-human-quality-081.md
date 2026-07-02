@@ -370,3 +370,20 @@ git diff --check
 - [x] All 8 new large-population-language samples score human-level recognition (92–100) and segmentation (100).
 - [x] Recognition verification COVERAGE reaches the 60% gate on the 59-sample corpus (35/35) via honest LLM judges on the new talk samples; `all_dimensions_pass: True`, overall 93.0.
 - [ ] Strict/strong-evidence recognition view (15 more strong-verified samples) — the higher bar for the 95% claim; next milestone.
+
+---
+
+## 0.8.2 后续：底层算法优化空间分析（2026-07-02，数据驱动）
+
+方法：以 scorecard（--acoustic，65 样本）per-sample 失败 + recognition evidence plan 为唯一输入，附否决登记簿（shouldBreak 词边界 / ±250ms 0.48 上限 / DTW 1.8s / whisper 重复幻觉）。每项须声明"为何不属于这四条"。
+
+| 子系统 | 当前指标 | headroom | 实验成本 | 判定 |
+|---|---|---|---|---|
+| **strict/traceable 识别证据链** | strict_verified 12/65，strict_mean **91.1**（已验证处质量高），strict gap 27 | 达 95% claim 的唯一路径 | 中（重跑 LLM judge + 补 sourceUrls，需 API budget）| **pursue（最高杠杆）**：非算法问题，是证据覆盖。质量已达标（strict_mean 91），缺的是可追溯裁判。下一步给 13 个 platform 源判裁判补 sourceUrls + 对未验证样本补 numeric judge。|
+| **分段 planner cue 边界** | segmentation strict_mean **95.9**，65/65 strong-verified，strict gap 0 | 近上限 | — | **defer**：已是最强维度，无明显 headroom。sebasi_english_self_study_ko early-cutoff（seg 86.3）是单样本，非失败家族。|
+| **acoustic-VAD 段对齐** | 仅 `mtedx_portuguese_weakness_pt`（acoustic 15.6 / internal 100）+ taylor-swift（歌，接受上限）出现 low-acoustic/high-internal | 孤例，非系统性 | 低（查该 clip 的 VAD/能量阈值）| **defer**：跨 65 样本仅 1 个非歌曲样本命中，是特定音频/VAD 伪影而非算法缺陷；internal=100 说明 cue 结构本身正确。不值得为 1 样本动 VAD 阈值（有全语料回归风险）。|
+| **LocalASRConfidence 阈值（ar/ru）** | ar dont_kill(50)/yarmouk(60) 低分=whisper 原生重复幻觉+code-switch 乱码 | 已被 isLowConfidence caveat 覆盖 | — | **rejected**：属否决登记簿第 4 条（whisper 重复幻觉=已接受诚实限制），本轮已加 EVAL 侧诚实提示，不动检测器（burst-loop 检测器对已被 confidence 覆盖的 case 是投机+误报风险，记忆 [[moongate-whisper-timing-90-attempt]] 已证）。|
+| **longShortCueHold -40 校准** | 双端已 parity（本轮 review 确认），source_decision 100 | 无失败信号 | — | **defer**：source_decision 维度满分，无翻转错误证据，罚分量级无需调。|
+| **拉丁子词重接表** | 本轮 ASR-1 已修（精确匹配替代 hasSuffix）| — | — | **done**：0.8.2 已修，不再是 headroom。|
+
+**结论**：唯一高杠杆项是 strict 识别证据链（pursue），且它是**证据/评测工作**不是算法改动——月之门当前算法在 speech（en/es/pt/fr/de/it/ja）已达人类水平（seg strict_mean 95.9 / trans 90.9 / 已验证识别 91.1），瓶颈是可追溯裁判覆盖不足，不是识别/分段/翻译质量。演唱中/粤/韩/阿拉伯重复幻觉是已拍板接受的本地 whisper 硬上限（否决登记簿）。**不存在"改代码就能显著提分"的算法优化空间**；下一里程碑纯粹是扩 strict 证据到 95% claim 所需的 39 个可追溯样本。
